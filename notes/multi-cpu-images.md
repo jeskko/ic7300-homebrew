@@ -170,11 +170,210 @@ Shannon entropy, measured directly:
   asked about directly** rather than reverse-derived — the user may simply
   remember what this was.
 
+## Confirmed: dual A/B flash slots, `body.bin` itself uses both — not a companion-chip image
+
+Traced this further in the fresh Ghidra project (`body.bin` rebased to
+`0x20005000`, see [[base-loader]]). `body.bin` contains `FUN_20062c64`,
+which runs the **exact same check** as `base.dat`
+(`strncmp(0x187f0000, "SX3765 V1.00-003", 0x10)`, same literal string
+embedded again at `0x20062d38`), then picks between two pairs of flash
+pointers based on the result:
+
+| | Slot A (`base.dat`'s `FLASH_1801`) | Slot B (`base.dat`'s `FLASH_1840`) |
+|---|---|---|
+| slot base | `0x18010000` | `0x18400000` |
+| pointer 1 | `0x18210000` (base `+0x200000`) | `0x18600000` (base `+0x200000`) |
+| pointer 2 | `0x18240000` (base `+0x230000`) | `0x18630000` (base `+0x230000`) |
+
+Both slots use **identical relative offsets** (`+0x200000`, `+0x230000`),
+and those land almost exactly on chunk1/chunk2 (the two `.ttf` fonts) per
+[[container-format]]'s offsets (`0x21002c`/`0x24002c` from container
+start, allowing for `base.dat`'s ~44-byte header offset and flash-sector
+rounding) — i.e. `body.bin` uses these as direct XIP pointers to read font
+glyphs straight out of whichever slot is currently active.
+
+**Conclusion: the 64 MB SPI flash holds two complete, parallel copies of
+the entire container** (main body + both fonts + chunk3/4/5), and
+`"SX3765 Vx.xx-xxx"` at `0x187f0000` is a **generation/active-slot
+marker** — checked identically by the boot loader (to pick which slot to
+decompress+run) and by the running firmware itself (to pick which slot's
+resources to read live). This is now strong evidence the marker string is
+repurposed/generic, not a sign of an embedded companion-chip image —
+supersedes the "probably" in the heading below, kept for history.
+
+This gives the update mechanism's likely shape: write a new container
+into the *inactive* slot, flip the `0x187f0000` marker, reboot. Still
+unconfirmed: the actual SPI erase/program routine — `FUN_20062c64` has no
+static callers found (same computed-call-table pattern as
+`FUN_2017ccf8`/the kernel init-array walker in [[base-loader]], invisible
+to xref scanning), so the entry point into the writer code is still
+unlocated.
+
+## Older working note (superseded by the section above, kept for history)
+
+Read (read-only) the prior `icom_loader.rep` Ghidra project's `base.dat`
+analysis — see [[base-loader]] for the full boot sequence. Its
+`unpack_from_flash_to_mem` does this right before decompressing the main
+body:
+
+```
+if flash[0x187f0000 : +0x10] == "SX3765 V1.00-003":
+    source = 0x18400000
+else:
+    source = 0x18010000
+decompress(source) -> RAM @ 0x20005000        # always this destination
+```
+
+`0x18400000 − 0x18010000 = 0x3f0000` ≈ **3.94 MB — almost exactly one
+container's size.** Best current read: the 64 MB SPI flash holds **two
+full copies of the update container back-to-back** (redundant/failsafe A/B
+slots), and the `"SX3765 Vx.xx-xxx"` string at `0x187f0000` (which sits
+between the two slots) is a boot-time marker used to pick the newer/valid
+one — **not** evidence of a second processor's firmware embedded in the
+container. This doesn't rule out a companion-chip image existing
+somewhere else, but it does mean the `FLASH_187F`/`0x18400000` numbers
+aren't that lead.
+
+**Caveat — do not conflate with the old `tunk.py` note:** the note's
+`"187f000"` (7 hex digits, `0x0187f000`) is a *different, ~16× smaller*
+number than the loader's real `0x187f0000` (8 hex digits) — they share
+leading digits by coincidence, not by being the same address. Checked
+whether the note's own two numbers are internally consistent instead: they
+are — `0x187f000 − 0x18212c8 = 0x5dd38` exactly, describing a
+384,312-byte region from `0x18212c8` to `0x187f000`. That's still ~25 MB,
+too big for `body.bin`/any container file, so it plausibly refers to a
+*different* data source entirely (e.g. a raw SPI flash dump from one of
+the other prior Ghidra projects) rather than to anything in our current
+`scratch/unpacked/`. Unresolved — don't spend more time on this specific
+number pair without finding what file it actually indexes into.
+
+**Update — the note's other offset, `0x4f2c`, IS resolved:** see
+[[firmware-update]]. It's the byte offset *inside the update file*
+(not the decompressed body) where the updater reads the 16-byte value it
+later flashes as the new `0x187f0000` marker. `0x18212c8`/`0x187f000`
+remain the only unexplained pair.
+
+## Checked: `vanah.rep` (prior project, `unpacked.dat` only) — no manual analysis to harvest
+
+Peeked at the prior `vanah` Ghidra project (read-only,
+`/data/misc/icom/7300/vanah.rep`), hoping for prior manual RE work on the
+main body. It doesn't have any:
+
+- Confirms the `0x20005000` base independently (loaded there back in Apr
+  2024) — consistent with the [[base-loader]] finding above.
+- But zero renamed functions, zero real comments, bookmarks are 100%
+  auto-analysis noise (`Bad Instruction`, `Found Code`) — never manually
+  worked, just imported and auto-analyzed then abandoned. Not a source of
+  findings, only of the base-address confirmation.
+- Its memory block is oddly oversized (`0x20005000`–`0x20645d33`, 6.55 MB,
+  vs. the real ~3.74 MB decompressed body). Checked the extra ~2.7 MB:
+  overwhelmingly `0xff` (erased-flash pattern) with only sparse scattered
+  non-FF bytes, no coherent second image. Most likely the analyst just
+  expanded the block and never filled it — **inconclusive, not evidence
+  for or against a second embedded image.**
+
+## DSP/FPGA/front-panel firmware investigation (this session, follow-up to [[hardware-debug-access]])
+
+Confirmed real, separate versioning for more components than expected.
+The radio's "Version Information" screen orchestrator (`FUN_20039714`)
+populates **7 distinct version rows**, including confirmed labels
+`"DSP(P)"`, `"DSP(D)"`, `"FPGA"` (found via string search at
+`~0x20037800`) alongside a Main entry — each row pulled from a shared
+live-status struct (`DAT_20037820`, itself never found being written —
+same indirect-access limitation as everywhere else this session).
+
+Found what looks like a **component descriptor table** near chunk3's
+known flash address (`0x18250000`) at `~0x20328c80`: repeating
+`{address, size, flags, ...}`-shaped records, several referencing
+addresses in the `0x1825xxxx` range with size-like fields around
+`0x1ffff`/`0x1f800` (~128KB) — too big to be chunk3 alone (previously
+assumed small/config-shaped) and too small to be the DSP's full
+firmware. **No static reference to the code that reads this table was
+found** — same recurring limitation as the rest of this investigation.
+Field semantics not confidently resolved; don't trust the byte-offset
+interpretation above without confirming against actual reader code.
+
+**Not yet answered**: where DSP (TMS320C6745) and FPGA (Cyclone IV)
+firmware actually live in the container, and what code loads/updates
+them. `chunk3.dat`/`chunk4.dat`/`chunk5`-tail remain the candidates, but
+none confirmed. This is exactly the kind of question live memory access
+(see [[hardware-debug-access]]) would resolve quickly — watching what
+touches this table, or the chunk3/4/5 addresses, at runtime — versus
+continued static guessing.
+
+## Strong new lead: a genuinely separate write mechanism exists for the "3 extra chunks" (user's DSP/FPGA-link hypothesis)
+
+User found via schematic: DSP's own flash (IC902, `EN25QH32A`) has its
+DO/DI/CLK/CS lines present at connector `J901`, and some of the FPGA's
+(`EP4CE55F231I7N`) pins (`DCLK`/`DATA0` — the standard Altera passive-serial
+config inputs) connect via the `MAIN-6` interconnect to signals named
+`SPDO`/`SPCK`. Hypothesis: the main CPU updates the DSP's flash over a
+separate link bus during firmware update, and the FPGA's config bitstream
+is fed by the DSP rather than directly by the main CPU. (Also noted: a
+`23LC1024T` SPI SRAM sits near the FPGA too — almost certainly just a
+volatile frame-buffer/scratch memory for display generation, not
+firmware storage; doesn't bear on this hypothesis either way.)
+
+Checked in `body.bin`: the "3 extra chunks" loop in `firmware_update_main`
+(per-chunk-index dispatch via `DAT_200264b4[]`, see [[firmware-update]])
+calls `FUN_20025044`, NOT `flash_write_chunked_from_file`. This is a
+**genuinely different write mechanism**:
+- 256-byte pages, write-then-verify, retry up to 5× per page (very
+  different shape from `spi_flash_program`'s simple page-program loop)
+- Its helper (`FUN_200b3040` → `FUN_200b10a0`) computes an address as
+  `(param_1 & 0xffffff) + 0xe2000000` — **checked against the RZ/A1H
+  hardware manual (full-text search): `0xe2000000` does not appear
+  anywhere in it, including the DMAC chapter.** So this is likely a
+  software-internal identifier/tag (possibly further transformed by
+  `FUN_200b0f68`, the queue consumer, not yet traced — not a literal
+  hardware peripheral base address like `SPI_BASE`/`PORT_BASE` are.
+  Don't over-read the specific address value; the mechanism shape
+  (separate from the main flash path, queued/async) is the solid part
+  of this finding, not this particular constant.
+- Submits that address into an **IRQ-disabled circular queue** (87
+  entries) and kicks off async processing on the first submission —
+  looks like a DMA/descriptor-queue-driven transfer, not simple bit-banged
+  GPIO. Polling loops around it (`FUN_200b521c`, `FUN_200b3030`) are
+  almost certainly completion checks for that async job.
+
+**This is strong, concrete support for the "separate link bus" part of
+the hypothesis** — real evidence of a genuinely distinct
+peripheral/mechanism used specifically for these chunks, separate from
+the main flash path. Not yet confirmed: which physical bus/chip this
+actually targets (needs the RZ/A1H hardware manual for what's at
+`0xe2000000`, or live JTAG access once available — see
+[[hardware-debug-access]]) and whether it's the DSP flash specifically
+vs. something else.
+
 ## Next steps
 1. Disassemble the ~32 bytes around `out.dat` offset `0x5dd38` (both as
    ARM and, if that doesn't parse as code, treat it as the start of a
    distinct sub-image and look for a header/vector-table shape specific to
-   the companion chip's own architecture, once identified).
+   the companion chip's own architecture, once identified) — lower
+   priority now that the dual-slot theory above better explains the
+   `0x187fxxxx`/`0x1840xxxx`/`0x1801xxxx` numbers.
 2. Try decompressing `chunk4.dat`'s content again (LZSS or otherwise) to
    see if the high entropy resolves into something more code/data-shaped.
 3. Ask the user directly what `snip` is, rather than continuing to guess.
+0. **New, likely resolution of the "SX3765" identity question**: see
+   [[hardware-debug-access]] — the IC-7300 schematic shows a front-panel
+   controller IC with a partially-legible label that looks like
+   `(UX-3765C)`, strongly suggesting "SX3765" is just that chip's part
+   number, not a companion firmware image. Also newly found there: the
+   real IF-DSP is a separate, different chip entirely (TI TMS320C6745),
+   raising the question of where *its* firmware lives — worth checking
+   before assuming the container-format investigation below covers
+   everything relevant to "how many processor images exist."
+4. ~~Check the `icom.gpr` project's `tunkki` program~~ — checked: it's just
+   an early nickname for v1.42's `unpacked.dat` (`executablePath` confirms
+   `7300_142/unpacked.dat`), based at `0x20005000`, same no-manual-analysis
+   state as `vanah`. Not the flash dump. `icom.gpr`'s other two programs
+   are earlier/superseded too: `out.dat` (Apr 4, the same content as
+   `tunkki` but at the wrong base `0x0` — chronologically the first,
+   pre-`0x20005000`-discovery import) and `7300_142.dat` (the raw
+   container, imported flat at base `0`, 0 functions — never disassembled,
+   reference-only). **None of the four prior Ghidra projects
+   (`icom`, `icom_loader`, `vanah`, `oisko`) contain a raw full-flash dump
+   or a companion-chip analysis** — the `0x18212c8`/`0x187f000` note pair's
+   target file remains unidentified. Worth just asking the user directly
+   next time, same as `snip`.

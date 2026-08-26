@@ -61,6 +61,14 @@ unpacker should derive these offsets properly (or at minimum verify the
 fixed offsets byte-for-byte against every version) rather than trust the
 hardcoded constants blindly.**
 
+**Confirmed via the real firmware update code** (see [[firmware-update]]):
+the actual updater in `body.bin` does exactly this — computes chunk
+offsets from `size1` (and presumably the rest of `size1..size7`) at
+runtime (`chunk_offset = size1 + 0x3c`, etc.) rather than hardcoding them
+like `tunk3.py` does. Confirms these header fields really are
+size/boundary fields as suspected; the rewritten unpacker's approach was
+the right call.
+
 ## Open questions (goals for the rewritten unpacker)
 
 1. What do `size1`..`size7` actually bound? Do any of them equal
