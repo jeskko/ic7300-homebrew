@@ -1,0 +1,15 @@
+# Ghidra project (binary DBs, regenerated locally — not source of truth)
+ghidra_project/
+
+# Extracted/regenerated firmware artifacts (large binaries, reproducible from
+# tools/ against the read-only originals under /data/misc/icom/7300/)
+scratch/
+*.dat
+*.ttf
+!tools/**/*.dat
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.claude/settings.local.json
