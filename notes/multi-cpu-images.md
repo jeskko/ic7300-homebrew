@@ -303,6 +303,37 @@ continued static guessing.
 
 ## Strong new lead: a genuinely separate write mechanism exists for the "3 extra chunks" (user's DSP/FPGA-link hypothesis)
 
+**Correction, 2026-08-27** (see [[ic7300-signal-chain]] for full
+reasoning): the service manual's circuit description states the FPGA
+loads its configuration from an "external EEPROM" at power-on — standard
+Altera passive-serial behavior. Combined with IC902's already-traced
+`DCLK`/`DATA0` routing, **IC902 is more likely the FPGA's own config
+flash, not "the DSP's own flash"** as this section originally assumed
+from physical proximity alone. Where the DSP's own program actually
+comes from is still open — plausibly no dedicated flash at all,
+boot-loaded into DSP RAM by the main CPU instead, which would fit neatly
+with the separate async write mechanism found below. The hardware
+evidence for a genuinely separate write mechanism (immediately below)
+still stands; only the "whose flash is IC902" attribution changes.
+
+**Further checked against the actual schematics, 2026-08-27** — real
+tension found and now leaning resolved: the block-level diagram (sheet
+4/MAIN-2) draws IC902 spatially right next to IC901 (the DSP), which
+initially looked like it might undercut the correction above. But the
+*detailed* component-level schematics (sheets 10/MAIN-4 and 12/MAIN-6)
+show IC902's `SPDI`/`SPDO`/`SPCK`/`SPCS` lines routing through to a
+signal cluster on the FPGA's sheet labeled `DONE`/`STAT`/`CFG`/`SPCK` —
+`DONE` and `STAT`(US) are textbook Altera/Intel passive-serial
+configuration handshake signal names, not something a general DSP boot
+flash would need. Given that, the block diagram's visual proximity to
+IC901 reads as sheet/board-layout grouping rather than a functional
+link, and the *detailed* schematic evidence (an actual named signal path
+to FPGA config handshake pins) is the stronger source. **Leaning
+confirmed: IC902 = FPGA config flash**, not the DSP's — though still
+worth a clean visual confirmation from the user given the small text
+this reading depends on. Full page-by-page notes in
+[[ic7300-signal-chain]].
+
 User found via schematic: DSP's own flash (IC902, `EN25QH32A`) has its
 DO/DI/CLK/CS lines present at connector `J901`, and some of the FPGA's
 (`EP4CE55F231I7N`) pins (`DCLK`/`DATA0` — the standard Altera passive-serial
@@ -355,15 +386,22 @@ vs. something else.
 2. Try decompressing `chunk4.dat`'s content again (LZSS or otherwise) to
    see if the high entropy resolves into something more code/data-shaped.
 3. Ask the user directly what `snip` is, rather than continuing to guess.
-0. **New, likely resolution of the "SX3765" identity question**: see
-   [[hardware-debug-access]] — the IC-7300 schematic shows a front-panel
-   controller IC with a partially-legible label that looks like
-   `(UX-3765C)`, strongly suggesting "SX3765" is just that chip's part
-   number, not a companion firmware image. Also newly found there: the
-   real IF-DSP is a separate, different chip entirely (TI TMS320C6745),
-   raising the question of where *its* firmware lives — worth checking
-   before assuming the container-format investigation below covers
-   everything relevant to "how many processor images exist."
+0. ~~"SX3765" identity question~~ — **CONFIRMED, 2026-08-27**: the
+   IC-7300 service manual's **Display Unit** IC list (user-supplied
+   screenshot) gives `IC501 = R5F104LCAFB`, marked **`SX-3765C-1`** —
+   this is a Renesas RL78-family MCU, and it's the display/front-panel
+   unit's own controller chip. Exact match for the schematic's
+   partially-legible `(UX-3765C)` label guessed at in
+   [[hardware-debug-access]] (that was a misread of `S` as `U`). This
+   settles it: **every `"SX3765 Vx.xx-yyy"` string in the firmware is a
+   compatibility/version reference to the display unit's MCU, not an
+   embedded firmware image for it** — consistent with (and now fully
+   explains) the dual-slot marker/version-table findings elsewhere in
+   this file. See [[ic7300-hardware]] for the full display-unit IC list.
+   The real IF-DSP is a separate, different chip entirely (TI
+   TMS320C6745, `IC901` — also now in [[ic7300-hardware]] with its exact
+   part number and paired boot flash `IC902`), so *its* firmware's
+   location in the container is still the open question, not this one.
 4. ~~Check the `icom.gpr` project's `tunkki` program~~ — checked: it's just
    an early nickname for v1.42's `unpacked.dat` (`executablePath` confirms
    `7300_142/unpacked.dat`), based at `0x20005000`, same no-manual-analysis

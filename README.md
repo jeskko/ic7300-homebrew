@@ -34,13 +34,35 @@ by but not built on top of the prior work there.
   with real Icom customizations on top (unprivileged user-mode tasks,
   per-task ASID/MMU isolation) not present in the stock port
   (`notes/kernel-rtos.md`).
-- 🔎 **Open**: where a second processor's firmware (companion chip
-  `"SX3765"`) actually lives — investigation so far favors it being a
-  repurposed marker string for the A/B update slots rather than an
-  embedded image; the container's `chunk5`/tail region remains the one
-  unexplained candidate (`notes/multi-cpu-images.md`).
+- ✅ **"SX3765" identity resolved**: it's the part marking on `IC501`
+  (`R5F104LCAFB`, Renesas RL78), the Display Unit's own MCU — confirmed
+  via the service manual's Display Unit parts list and independently
+  visible on the Front Unit schematic sheet. Every `"SX3765 Vx.xx-yyy"`
+  string in the firmware is a compatibility/version check against this
+  chip, not an embedded second-processor firmware image
+  (`notes/multi-cpu-images.md`).
+- ✅ **Diode-matrix regional gating**: physical layout, scan mechanism,
+  bit-to-diode mapping, and several individual diode functions confirmed
+  in code (D401/403/404/405/407/410/413/416), plus **official per-diode
+  version-population data** from the service manual parts list (which
+  diode is populated on which of the 7 named export variants) —
+  including a sharp new lead on long-unresolved `D419` (Japan-only) and
+  a flagged conflict with an earlier third-party claim about `D420`
+  (`notes/diode-matrix.md`).
+- ✅ **Full hardware BOM** for both the IC-7300 (all 5 boards: Main,
+  Display, RF, PA, Tuner — `notes/ic7300-hardware.md`) and, as a side
+  investigation, the IC-9700 (`notes/ic9700-hardware.md`), plus the
+  IC-7300's complete SDR signal chain and a 17-page schematic sheet map
+  (`notes/ic7300-signal-chain.md`).
 - 🔎 **Open**: user-flagged raw/uncompressed bitmap material not yet pinned
   down to a specific offset (`notes/bitmaps.md`).
+- 🔎 **Open, side investigation**: IC-9700 (different radio, separate
+  firmware format) — container structure mapped and compared across all
+  37 known releases, but the compression/encryption scheme itself is
+  **not cracked** after a thorough negative sweep (LZSS-family
+  parameters, buffer-seeding, XOR-whitening all tried and ruled out) —
+  see `notes/ic9700-container-format.md`. Genuine cold-start effort, no
+  prior art existed for this radio going in.
 
 ## Layout
 

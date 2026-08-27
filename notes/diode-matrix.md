@@ -47,6 +47,90 @@ by user) but are omitted from published diode-matrix references/photos —
 don't assume they're unused; possibly reserved for R&D/factory use. Not
 "N/A" in the sense of not existing, just undocumented.
 
+## Official per-version population data from the service manual Parts List (2026-08-27)
+
+User found it: service manual §5 Parts List, Main Unit, page 5-1, has
+per-diode `[#NN]` version tags directly against each `D4xx` line —
+authoritative population data (which physical variant each diode
+position is actually populated on), not something we've had to infer
+indirectly before. Read from a user-supplied page screenshot; small
+bracket text carries real misread risk on a table this dense, so
+confidence is noted per row — **treat anything not marked "high
+confidence" as worth a second look before leaning on it hard.**
+
+Version numbers per [[ic7300-signal-chain]]'s official table: `USA #02`,
+`EUR #03`, `ITR #05` (Italy), `ESP #06` (Spain), `TPE #07` (Taiwan),
+`KOR #08` (Korea), `EXP #12`. This parts list also uses `#01`, not
+present in that table — almost certainly `JAP` (Japan domestic), simply
+not listed as an export "Version" in that particular table.
+
+| Diode | Population per parts list | Confidence |
+|---|---|---|
+| D401 | all versions (no tag) | high |
+| D403 | all versions (no tag) | high |
+| **D404** | **`Only [#12]`** — EXP alone | high |
+| **D405** | **`Only [#05]`** — ITR (Italy) alone | high — matches this file's confirmed 60m/5.255MHz finding exactly, and now ties it to one specific country |
+| D407 | `[#05]`, `[#06]`, `[#07]`, `[#08]` — ITR/ESP/TPE/KOR | medium — 4 stacked tags, more room for a misread than the single-tag rows |
+| D408 | all versions (no tag) | high |
+| D410 | `[#03]`, `[#07]`, `[#08]` — EUR/TPE/KOR | medium |
+| D411 | all versions (no tag) | high |
+| D413 | `[#06]`, `[#08]`, `[#12]` — ESP/KOR/EXP | medium |
+| D414 | all versions (no tag) | high |
+| D416 | `[#03]`, `[#05]` — EUR/ITR | medium |
+| D417 | all versions (no tag) | high |
+| **D419** | **`Only [#01]`** — JAP alone | high |
+| D420 | all versions (no tag — **see conflict note below**) | medium |
+| D422 | all versions (no tag) | high |
+| **D423** | **`Only [#01]`** — JAP alone | high |
+
+**`D402`/`D406`/`D409`/`D412`/`D415`/`D418`/`D421` don't appear in this
+parts list at all** — not populated on *any* currently-documented
+variant. Strong confirmation of the existing "R&D-reserved pads" theory
+above for 412/415/418/421, and extends the same conclusion to 402/406/409
+(previously just "no consumer found", now also "not populated on any
+shipping variant" — consistent, not contradictory, with D402 already
+being a confirmed *live* input in `FUN_2003c0ec`: the bit exists and is
+read by firmware, it's just apparently never asserted on real hardware
+in production, at least across the versions this manual covers).
+
+**Conflict worth flagging, not silently resolving**: the user's earlier
+domain-knowledge lead (see "D423/D420 are JP-model-only" section below)
+said *both* D423 and D420 are Japan-only. This parts list confirms D423
+but shows **D420 with no version tag at all** (populated on every
+variant) — directly contradicting the D420 half of that claim, if this
+reading is right. D423 being genuinely Japan-only (`Only [#01]`) makes
+the Emergency Mode half of the original hypothesis more credible, not
+less — Japan-specific antenna-mismatch TX allowance is a real regulatory
+feature. D420's "Language" hypothesis doesn't fit "populated everywhere"
+as neatly (a diode present on every board can't itself be what
+distinguishes Japan from export versions) — worth the user double
+checking this specific row before treating D420 as settled either way.
+
+**New, sharply-focused lead for D419** (the diode this project has dug
+for across 3 sessions with zero results): it's **Japan-only**, same as
+D423. That reframes the search — instead of hunting broadly for any
+consumer, look specifically for **Japan-specific (TELEC/domestic
+regulatory) behavior**: different band edges, power limits, or a
+mandatory feature/restriction that only applies to the `#01` variant.
+Worth searching firmware strings for `JAP`/domestic-only markers the
+same way `"EMERGENCY MODE"` was found for D423, rather than continuing
+the bit-consumer sweep that's already come up empty 3 times.
+
+**Derived region-code hypothesis — NOT verified, arithmetic only, check
+before trusting**: combining this table with the already-confirmed
+4-bit region-code weights (`D404`=8, `D407`=4, `D410`=2, `D413`=1,
+present=1/absent=0) gives an apparent code per version: `USA`→0,
+`EUR`→2, `ITR`→4, `ESP`→5, `TPE`→6, `KOR`→7, `EXP`→9. Two of those
+(`USA`=0, `EXP`=9) fall **outside** the previously-confirmed valid range
+(1–7, from `DAT_2003c7fc`'s 16-entry table) — meaning either one or more
+of the medium-confidence bracket reads above (`D407`/`D410`/`D413`) has
+an error, or the real relationship between physical population and the
+firmware's region-code bit is inverted/offset from what's assumed here.
+**Don't treat this derived table as fact** — it's exactly the kind of
+check that's cheap to do properly with a clearer copy of the page or the
+user's own board, and would either confirm the bit-weight formula
+precisely or catch a real misread.
+
 ## D405/D402 found, D419 still not found (3rd session)
 
 Traced the master diode-init routine, `FUN_2003c530` (calls
@@ -354,6 +438,24 @@ scheme. **This independently confirms the region/variant mechanism is
 real, not just a plausible reading of the disassembly** — Icom really
 does ship country-specific hardware-strapped variants of this exact
 shape.
+
+**Upgraded to official confirmation, 2026-08-27**: the service manual
+itself (§ Introduction, page 1, user-supplied) has an authoritative
+`MODEL/VERSION/VERSION NUMBER/OPERATABLE BANDS` table, matching the
+third-party photo's numbers exactly (`USA #02`, `EUR #03`, `ITR #05`,
+`ESP #06`, `TPE #07`, `KOR #08`, `EXP #12` — no `JAP #01` row in this
+particular manual, otherwise identical) — no longer a third-party-photo
+claim, this is Icom's own documentation. It adds one new fact the photo
+didn't give us: **band access grouped by version** — `EUR`/`ITR`/`ESP`
+are `HF/50/70 MHz` (70 MHz/4m band unlocked), while `USA`/`TPE`/`KOR`/
+`EXP` are `HF/50 MHz` only (no 70 MHz). This lines up with the confirmed
+D405 60m-band finding and [[ic7300-signal-chain]]'s spec-sheet numbers
+(`70.000000~70.500000 MHz` transmit, marked "depending on the
+transceiver version" — same page also independently confirms the 60m
+segment as `5.255000~5.405000 MHz`, exactly matching this file's D405
+finding, and general-coverage receive as `0.030000~74.800000 MHz`,
+matching D416's finding to within rounding — see [[ic7300-signal-chain]]
+for the source).
 
 **Not yet reconciled precisely**: our internally-decoded 4-bit region
 code (diodes 404/407/410/413) only produces valid values 1-7 (`DAT_2003c7fc`'s
