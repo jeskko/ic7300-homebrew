@@ -413,7 +413,7 @@ the queue's actual traffic." Two small, low-priority loose ends noted along the 
 purpose, and confirming what `DAT_200050c4`/`DAT_200050c8` point at) — neither blocks the picture above,
 both cheap to close out if picked up.
 
-## `FUN_2002b29c`'s real caller found (20th session) — confirmed via raw disassembly, Ghidra needs a GUI fix to finish it
+## `FUN_2002b29c`'s real caller found and confirmed (20th session)
 
 Followed up on step 5 above. **`references_to` was blind here for the same reason it's been blind
 elsewhere in this project**: the caller was never disassembled by Ghidra at all, so no xref existed to
@@ -444,35 +444,57 @@ helper at `0x200b9490`: entry `id=0 -> 0x20005960`, entry `id=0x86 -> 0x200059b4
 note about a separate, narrow SWI-immediate-indexed table with "only one real entry"), then falls straight
 into the loop above.
 
-**Why this isn't written up as fully confirmed yet**: creating Ghidra `Function` objects at these
-addresses (to decompile them properly) produced garbage (`in_ZR`, `unaff_r4`/`unaff_r6`, `halt_baddata()`,
-"Bad instruction — Truncating control flow") at every one of them — the same known ARM/Thumb
-disassembly-context bug documented earlier in this file, freshly triggered in territory that had simply
-never been analyzed before (so no bookmark existed for it until just now). Confirmed via
-`annotate.list_bookmarks`: this session's probing added at least two new "Bad Instruction" bookmarks —
-`0x2003bb7c` (right where the loop's own trailing literal pool sits) and one at `0x20005954`, which
-already belongs to `swi_handler`'s own literal pool (the `PTR_DAT_20005954`/`0x20184850` constants this
-file's "swi_handler" section already documents) — meaning `0x20005960`'s status as a genuine separate
-function is the *least* certain part of this finding and needs care, not blind trust, once re-disassembled.
+**Confirmed by the user forcing ARM disassembly via the GUI over the two affected ranges** (same fix as
+`reset_handler`/`swi_handler`/`set_sys_mode_stack_pointer` before) — both now decompile cleanly and match
+the hand-derived reading exactly, no surprises:
 
-**What's solid vs. what needs the GUI fix, precisely**:
-- ✅ Solid (hand-verified against raw ARM opcodes, not dependent on Ghidra's decompiler): `FUN_2002b29c` is
-  called from a real loop at `0x2003bb48`-`0x2003bb7b`, itself reached by a jump from a function around
-  `0x200b94e8`-`0x200b950b` that does two table-writes and an `svc 1` first.
-- 🟡 Needs the GUI "force ARM disassembly" fix before trusting further: `0x2003bb48`-`0x2003bb7b` (the
-  loop), `0x200b94e8`-`0x200b950b` (the setup function) — both currently undefined bytes in Ghidra,
-  produced garbage decompiles once turned into `Function` objects this session (left in the live project
-  as `sys_monitor_task_loop_probe`/`sys_monitor_task_setup_probe`, deliberately placeholder-named, PLATE-
-  commented with this caveat — **don't trust their current decompiled bodies**).
-- 🔴 Not yet confirmed at all, likely wrong as currently understood: what `0x20005960`/`0x200059b4` (the
-  two table targets) really are — they sit immediately after `swi_handler`'s own literal pool, which
-  raises a real possibility they're something more kernel-internal than "two application message
-  handlers" as first guessed. Needs the GUI fix at `0x20005954`-ish applied *carefully* (it may need to
-  stay data, not become code) before this can be resolved either way. Left as
-  `handler_id0_probe`/`handler_id86_probe` in Ghidra, same placeholder-naming/caveat treatment.
+- **`sys_monitor_task_entry`** (`0x200b94e8`, renamed from the placeholder `sys_monitor_task_setup_probe`)
+  — a real task, statically activated via the descriptor at `0x20361318`
+  (`{entry_point=0x200b94e8, priority=3, flags=1, stack_size=0x800}`):
+  ```c
+  FUN_200b9490(0, DAT_200b968c);      // handler-table[0]    = 0x20005960
+  FUN_200b9490(0x86, DAT_200b9690);   // handler-table[0x86] = 0x200059b4
+  software_interrupt(1);               // SVC #1 -- the "one real entry" in the separate
+                                        // SWI-immediate-indexed table this file's "Confirmed:
+                                        // a real, ITRON-shaped preemptive kernel" section
+                                        // already documents (base+bound via 0x20184850)
+  sys_monitor_task_loop();              // tail-call, never returns
+  ```
+- **`sys_monitor_task_loop`** (`0x2003bb48`, renamed from `sys_monitor_task_loop_probe`) — the task's main
+  body, confirmed as a genuine unconditional loop:
+  ```c
+  do {
+      select_active_slot_resources();  // FUN_20062c64 -- re-checks the "SX3765 V1.00-003"
+                                        // literal (the SAME string base.dat's own boot-time
+                                        // A/B slot picker checks, see [[base-loader]]) and
+                                        // refreshes a couple of resource-pointer pairs
+                                        // accordingly -- an application-level echo of the
+                                        // boot loader's own slot-selection logic, not
+                                        // previously connected to anything at this level
+      FUN_2002b29c();                   // the cold-boot/power-state dispatcher itself
+  } while (true);
+  ```
+  (`FUN_201870ac()` at the loop's top, which the earlier hand-reading flagged as an unknown "wait/yield"
+  call, turned out to be trivial: just the usual kernel-context check + `SWI(0)` trap if not privileged,
+  no actual wait — so `FUN_2002b29c` really is called **unconditionally, every single loop iteration**,
+  not gated on any queue/message content.)
 
-**Next step, concretely**: once the user forces ARM disassembly over the two 🟡 ranges above (and takes a
-careful look at `0x20005954`'s neighborhood rather than assuming it should also become code), re-decompile
-all four probe functions and confirm/refute this section's reading — then rename them properly and fold
-the confirmed result into the "boot-chain completeness audit" section above, closing the one remaining
-gap identified there.
+**Net result**: `FUN_2002b29c` — and everything downstream of it (`FUN_2002b1c8`, `FUN_2002afc0`,
+`port_bulk_gpio_init_pass2`, the `DRESD`/DSP-reset write — see [[ic7300-signal-chain]]) — runs inside its
+own small, dedicated, statically-activated **system monitor task**, not via the message-dispatch loop
+`first_task_entry` implements. Two loose ends remain, both small and clearly scoped:
+1. **Who activates this task** (i.e. where `itron_act_tsk` gets called with descriptor `0x20361318`) isn't
+   found — no direct reference to that descriptor address exists, so it's reached through whatever
+   ID-indexed task-descriptor-table mechanism `FUN_201888f4` (`itron_act_tsk`'s real inner function) uses
+   internally, same situation as `first_task_entry`'s own activation. Not blocking — we know *what* runs,
+   just not the exact activation call site.
+2. **What `0x20005960`/`0x200059b4` (the two registered handler-table targets for SVC #1's IDs 0/`0x86`)
+   really are** is still open, and deliberately left unresolved — `0x20005960` sits immediately after
+   `swi_handler`'s own literal pool (`PTR_DAT_20005954`/`0x20184850`, already documented above), which
+   makes forcing disassembly there riskier than the two ranges just fixed (real chance part of that
+   region should stay data, not become code). Worth a careful, dedicated look later rather than a quick
+   GUI fix in passing.
+
+This closes the "boot-chain completeness audit" section's one open gap for practical purposes: the full
+path from power-on through the scheduler starting, into the system monitor task, into `DRESD` being
+driven low, is now traced end-to-end.
