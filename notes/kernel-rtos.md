@@ -152,3 +152,55 @@ noting here since it turned up in the same search pass.
    ITRON isn't the right frame — worth renaming once each one's wrapped
    FreeRTOS API is identified by comparing call-site argument shapes
    against `task.h`/`queue.h`/`semphr.h` signatures.
+
+## Chased `pvPortMalloc`, didn't find it — but mapped the ITRON trampoline table and a real static pool (14th session)
+
+User's idea: [[multi-cpu-images]]'s `chunk4`/`chunk5-tail` destination-table mystery involves a
+dynamically-populated RAM pointer — if `pvPortMalloc` (or Icom's equivalent) could be found and traced
+statically, it might resolve that without needing JTAG. Found the reference implementation
+(`heap_5_renesas.c`, in `scratch/r01an5093ej0170-rza1-swpkg/`) has real Renesas customizations
+(`R_OS_InitMemManager()` lazy-init, an `xDesiredBlock` allocation-hint global not in stock FreeRTOS) — good
+anchors in principle. **Did not find a general-purpose heap allocator matching it.** Recording what was
+actually found, since it's a real (if partial) map of adjacent territory:
+
+**All 19 `itron_act_tsk`-sibling trampolines identified and decompiled** (the full cluster sharing
+`in_kernel_context`'s call pattern, `0x20186d0c`-`0x201871d0`). Most (11 of 19) are **unconditional stubs**
+— they return a fixed error code (`0x82` in most cases) whenever called from kernel context, with no real
+implementation at all in this build; only 8 have a genuine inner function. Of those 8:
+- `itron_act_tsk` → `FUN_201888f4`: **confirmed real task-activation**, using a **static, compile-time
+  task descriptor** (`0x2033605c` = `{entry_point=0x201871f0 (Thumb), priority=2, flags=1,
+  stack_size=800}`) and a small fixed-size ID→TCB lookup table (`DAT_20188980`), not dynamic allocation.
+- `FUN_20188650` (wrapped by `FUN_20186da4`, also called directly from kernel bootstrap): lazy-init a
+  buffer described by a small config struct (count + buffer pointer), format it, return the buffer pointer
+  as a handle — reads as queue/message-buffer creation (`cre_mbf`-shaped), not a general allocator.
+- `FUN_20188726` (wrapped by `FUN_20186e98`): same shape as `FUN_20188650`, not yet distinguished further.
+- `FUN_20188a54` (wrapped by `FUN_2018713c`, 3 params — the best malloc-shape candidate before checking):
+  turned out to be a **callback/wait-object registration** primitive (checks a global "system ready" flag,
+  writes a type tag + two stored params into a small record) — not memory allocation.
+- `FUN_20186c18`, `FUN_201880c8`, `FUN_20186ce8`/`FUN_20187696` (message-buffer receive-shaped, via
+  `FUN_20186f08`) — not examined in enough depth to rule in or out, lowest-priority remaining candidates.
+
+**Found a real, static memory pool, just not its allocator.** Traced the kernel bootstrap
+(`kernel_start` → `FUN_20005298` → `FUN_20186d2c` → `FUN_20188574`, the one-time lazy-init routine matching
+`R_OS_InitMemManager`'s "if not yet initialised" shape) to `FUN_201876f0` — a genuine **region-descriptor
+setup** call (checks 8-byte alignment, writes an end-of-region marker) matching `vPortDefineHeapRegions`'s
+per-region logic, called with **static, compile-time constants**: base `0x20416198`, size `0x9f88`
+(40,840 bytes). Unlike the chunk4/5 destination table, **this address is a real constant in the image, not
+a runtime-populated placeholder** — a genuinely useful, concrete fact. But `references_to` on both the raw
+address and the global holding it turn up **nothing else** — no allocator function anywhere in the analyzed
+code touches this pool again after its one-time setup. Either the actual allocate/free calls reference it
+indirectly (an ID/handle-based lookup, matching real μITRON `get_blk(ID mplid, ...)` semantics — plausible
+given task activation above already uses ID-indexed tables, not raw addresses) or they're simply not among
+the 19 trampolines checked here.
+
+**Honest conclusion**: this firmware's ITRON-flavored kernel-object layer (tasks, and apparently
+queues/message-buffers) leans on **static, compile-time-configured descriptors**, not a general-purpose
+runtime heap — consistent with normal real-time embedded practice, but meaning it likely **isn't** what
+populates `multi-cpu-images`' chunk4/5 destination-pointer table. That table's populator is probably
+application-level code with its own buffer management (or a genuinely different allocator not among these
+19 candidates), not this kernel bootstrap layer. **Doesn't (yet) let live/JTAG analysis be postponed** for
+that specific question, but the static pool address/size and the trampoline map are solid, reusable facts
+for whoever picks this up next — particularly if a stronger malloc-candidate turns up (e.g. via `libpng`'s
+required user-malloc callback, confirmed present via `"libpng version 1.6.12"` in strings — PNG decoding
+*must* call some allocator, and it would show many more call sites than these narrow kernel-bootstrap
+paths, worth checking before further guessing here).
