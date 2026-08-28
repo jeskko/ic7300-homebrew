@@ -291,3 +291,32 @@ detail (which mode gets its own stack, and from where) not yet in [[base-loader]
 lurking" question rather than opening up new mysteries — 138 of 139 flagged spots are already fine. One
 small, real fix remains, and it's a nice, self-contained boot-sequence detail rather than anything touching
 the open `chunk4`/`chunk5`/DSP mysteries elsewhere in this project.
+
+## Fixed and confirmed: `set_sys_mode_stack_pointer` / `enter_user_mode` (18th session)
+
+User forced ARM re-disassembly over `0x200054c8`-`0x200054e7` via the GUI. Confirmed clean: every
+instruction now matches the `objdump` prediction from the previous session exactly, no more undefined
+bytes or garbled branch.
+
+**One small refinement**: `0x200054c8` (`0x00086060`) itself is not part of the new function — it's a
+literal-pool constant belonging to the *preceding* function (`FUN_20005458`, a VFP-register-clear/FPSCR-
+mask routine that loads it via `ldr r3,[0x200054c8]` as an FPSCR mask), which merely happens to also decode
+as a valid-looking `andeq r6,r8,r0,rrx` instruction by coincidence — classic "literal pool sitting right
+after a function's `bx lr`" artifact, harmless but worth not misreading as real code. The genuine function
+starts at `0x200054cc`.
+
+**Named and typed both halves**:
+- **`set_sys_mode_stack_pointer(void *sp_value)`** (`0x200054cc`) — switches to System mode, sets the
+  System-mode banked SP to `sp_value` (8-byte aligned), restores the caller's original mode, ISB. Real
+  early-boot stack initialization.
+- **`enter_user_mode(void)`** (`0x200054e8`, previously `FUN_200054e8`) — switches to User mode and
+  returns. **Found its real caller**: `FUN_20186d58` — already known from the very start of this file as
+  one of the three calls `FUN_20005298` makes right after `itron_act_tsk` activates the first task
+  (`FUN_20186d2c(); itron_act_tsk(...); FUN_20186d58();`). Decompiling `FUN_20186d58` shows it checks the
+  current CPU mode and a "scheduler started" flag, and calls `enter_user_mode` specifically when already in
+  System mode with that flag clear — **this is the scheduler-start privilege drop**, the actual moment
+  execution transitions from privileged boot code into the first task. Ties `set_sys_mode_stack_pointer`/
+  `enter_user_mode` directly into the already-documented early-boot call chain rather than leaving them as
+  an isolated fix.
+
+Both functions commented (PLATE) and left renamed/typed in the live Ghidra project for future sessions.
