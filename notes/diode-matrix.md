@@ -36,9 +36,9 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D413 | bottom, col4 | 4 | ✅ confirmed | Region-code bit, weight 1 |
 | D414 | middle, col4 | 12 | ❓ unknown | No consumer found yet |
 | D416 | bottom, col3 | 5 | ✅ confirmed | Gates the general-coverage RX unlock (0.030–74.8 MHz, 13-segment table), combined with region code 5 or 6. Also gates a separate 2-entry lookup (values 2/3, purpose TBD) |
-| D417 | middle, col3 | 13 | ❓ unknown | No consumer found yet |
-| D419 | bottom, col2 | 6 | ❓ unconfirmed | User: "must not be removed" (service-manual caution — possibly hardware-relevant rather than a software feature gate). No consumer found yet |
-| D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. No consumer found yet |
+| D417 | middle, col3 | 13 | ❓ unknown | No consumer found yet. Populated only on EUR/ITR/KOR (`[#03][#05][#06]`) per parts list (2026-08-28 correction — was previously misread as D416's data) |
+| D419 | bottom, col2 | 6 | ❓ unconfirmed | User: "must not be removed" (service-manual caution — possibly hardware-relevant rather than a software feature gate). No consumer found yet. Populated on all versions per parts list (2026-08-28 correction — the earlier "Japan-only" population read was wrong, see below) |
+| D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. No consumer found yet. **Confirmed Japan-only (`Only [#01]`) per parts list (2026-08-28 correction)** — matches D423, restores the user's original "D420/D423 both JP-only" domain-knowledge lead |
 | D422 | bottom, col1 | 7 | ❓ unconfirmed | User: "open TX 0.1–74.8 MHz". Actively dug for (see below) — no consumer found via several angles tried |
 | D423 | middle, col1 | 15 | ✅ confirmed (4th session) | Real, direct input (bit 15) to `FUN_2003df34`/`FUN_2003dcc0`, the master feature-gatekeeper — gates item-code overrides including at least `0x22/0x32/0x4b/0x71/0x73/0x79` and the `0x8f-0x93/0x94/0xe5` range. Strong support for the Emergency Mode hypothesis (sits directly in the same gatekeeper as all other regulatory feature checks); exact feature name per item code not yet resolved |
 
@@ -68,20 +68,39 @@ not listed as an export "Version" in that particular table.
 |---|---|---|
 | D401 | all versions (no tag) | high |
 | D403 | all versions (no tag) | high |
-| **D404** | **`Only [#12]`** — EXP alone | high |
-| **D405** | **`Only [#05]`** — ITR (Italy) alone | high — matches this file's confirmed 60m/5.255MHz finding exactly, and now ties it to one specific country |
-| D407 | `[#05]`, `[#06]`, `[#07]`, `[#08]` — ITR/ESP/TPE/KOR | medium — 4 stacked tags, more room for a misread than the single-tag rows |
+| **D404** | **`Only [#12]`** — EXP alone | high (machine-text confirmed) |
+| D405 | all versions (no tag) | high (machine-text confirmed — **corrected, see below**) |
+| D407 | `[#05]`, `[#06]`, `[#07]`, `[#08]` — ITR/ESP/TPE/KOR | high (machine-text confirmed) |
 | D408 | all versions (no tag) | high |
-| D410 | `[#03]`, `[#07]`, `[#08]` — EUR/TPE/KOR | medium |
+| D410 | `[#03]`, `[#07]`, `[#08]` — EUR/TPE/KOR | high (machine-text confirmed) |
 | D411 | all versions (no tag) | high |
-| D413 | `[#06]`, `[#08]`, `[#12]` — ESP/KOR/EXP | medium |
+| D413 | `[#06]`, `[#08]`, `[#12]` — ESP/KOR/EXP | high (machine-text confirmed) |
 | D414 | all versions (no tag) | high |
-| D416 | `[#03]`, `[#05]` — EUR/ITR | medium |
-| D417 | all versions (no tag) | high |
-| **D419** | **`Only [#01]`** — JAP alone | high |
-| D420 | all versions (no tag — **see conflict note below**) | medium |
+| D416 | all versions (no tag) | high (machine-text confirmed — **corrected, see below**) |
+| D417 | `[#03]`, `[#05]`, `[#06]` — EUR/ITR/KOR | high (machine-text confirmed — **corrected, see below**) |
+| D419 | all versions (no tag) | high (machine-text confirmed — **corrected, see below**) |
+| **D420** | **`Only [#01]`** — JAP alone | high (machine-text confirmed — **corrected, see below**) |
 | D422 | all versions (no tag) | high |
-| **D423** | **`Only [#01]`** — JAP alone | high |
+| **D423** | **`Only [#01]`** — JAP alone | high (machine-text confirmed) |
+
+**Correction (2026-08-28), superseding the rows above and the discussion below that relied on them.** The
+original reads of this table came from a user-supplied *page screenshot* — real OCR/visual-read risk on a
+dense table, which is exactly what happened. Re-extracted the actual parts list this session via
+`pdftotext -layout` directly against `IC-7300_Servicio.pdf` (machine text, not an image read — far more
+reliable, and the right method to reach for first next time this document needs checking). Comparing
+line-for-line:
+- **D405**: no tag at all (populated on *every* version) — **not** Italy-only. The "Only `[#05]`" read was
+  wrong; most likely visual bleed from `D404`'s real `[#12]` tag sitting directly above it in the table.
+- **D416 / D417**: the tags belong to **D417**, not D416 — `D416` has no tag (all versions), `D417` is
+  `[#03][#05][#06]` (EUR/ITR/KOR). The previous read had these two adjacent rows' data swapped.
+- **D419 / D420**: same swap pattern one row down — `D419` has no tag (all versions), `D420` is
+  **`Only [#01]`** (JAP alone). The previous read had D419 carrying D420's real tag and vice versa.
+
+Net effect: of the 5 rows corrected, the errors weren't confined to the "medium confidence, 4-stacked-tags"
+rows flagged at the time (D407/D410/D413 — which all check out exactly as originally read, upgraded to
+high confidence) — they were rows marked *high* confidence, in unflagged single-tag or no-tag rows. Take
+this as a caution against trusting a screenshot read's own confidence self-assessment on this document; a
+`pdftotext` extraction is cheap enough to just always do instead going forward.
 
 **`D402`/`D406`/`D409`/`D412`/`D415`/`D418`/`D421` don't appear in this
 parts list at all** — not populated on *any* currently-documented
@@ -93,28 +112,22 @@ being a confirmed *live* input in `FUN_2003c0ec`: the bit exists and is
 read by firmware, it's just apparently never asserted on real hardware
 in production, at least across the versions this manual covers).
 
-**Conflict worth flagging, not silently resolving**: the user's earlier
-domain-knowledge lead (see "D423/D420 are JP-model-only" section below)
-said *both* D423 and D420 are Japan-only. This parts list confirms D423
-but shows **D420 with no version tag at all** (populated on every
-variant) — directly contradicting the D420 half of that claim, if this
-reading is right. D423 being genuinely Japan-only (`Only [#01]`) makes
-the Emergency Mode half of the original hypothesis more credible, not
-less — Japan-specific antenna-mismatch TX allowance is a real regulatory
-feature. D420's "Language" hypothesis doesn't fit "populated everywhere"
-as neatly (a diode present on every board can't itself be what
-distinguishes Japan from export versions) — worth the user double
-checking this specific row before treating D420 as settled either way.
+**Conflict — resolved 2026-08-28, in the opposite direction from the original writeup.** The
+"D420 has no tag, contradicting the JP-only claim" conclusion above was itself based on a misread (see the
+correction note in the population-data section above): re-extracted via `pdftotext`, **D420 really is
+`Only [#01]`** — Japan alone, exactly like D423. The user's original domain-knowledge lead ("D423 and D420
+are both JP-model-only") is now **fully confirmed by the official parts list**, not contradicted. Both
+halves of the original hypothesis (D423 = Emergency Mode, D420 = Language) are back on equal footing as
+population-confirmed Japan-only diodes; D420's code consumer is still not found (see below), but "populated
+everywhere so can't be a JP/export differentiator" is no longer a reason to doubt the Language hypothesis.
 
-**New, sharply-focused lead for D419** (the diode this project has dug
-for across 3 sessions with zero results): it's **Japan-only**, same as
-D423. That reframes the search — instead of hunting broadly for any
-consumer, look specifically for **Japan-specific (TELEC/domestic
-regulatory) behavior**: different band edges, power limits, or a
-mandatory feature/restriction that only applies to the `#01` variant.
-Worth searching firmware strings for `JAP`/domestic-only markers the
-same way `"EMERGENCY MODE"` was found for D423, rather than continuing
-the bit-consumer sweep that's already come up empty 3 times.
+**D419 Japan-only lead — retracted (2026-08-28).** The "New, sharply-focused lead for D419: it's Japan-only"
+conclusion from the previous pass was based on the same misread that swapped D419/D420's rows (see
+correction note above). Re-extracted via `pdftotext`: **D419 has no version tag — populated on every
+variant**, same as most of the unresolved diodes. This reframing doesn't hold; back to D419 being a genuine
+"no consumer found in 4 sessions across every angle tried" diode with no distinguishing population data to
+narrow the search by. The user's service-manual caution ("must not be removed") remains the only lead, still
+consistent with a hardware-relevant rather than software-feature-gate role.
 
 **Derived region-code hypothesis — NOT verified, arithmetic only, check
 before trusting**: combining this table with the already-confirmed
@@ -122,14 +135,17 @@ before trusting**: combining this table with the already-confirmed
 present=1/absent=0) gives an apparent code per version: `USA`→0,
 `EUR`→2, `ITR`→4, `ESP`→5, `TPE`→6, `KOR`→7, `EXP`→9. Two of those
 (`USA`=0, `EXP`=9) fall **outside** the previously-confirmed valid range
-(1–7, from `DAT_2003c7fc`'s 16-entry table) — meaning either one or more
-of the medium-confidence bracket reads above (`D407`/`D410`/`D413`) has
-an error, or the real relationship between physical population and the
-firmware's region-code bit is inverted/offset from what's assumed here.
-**Don't treat this derived table as fact** — it's exactly the kind of
-check that's cheap to do properly with a clearer copy of the page or the
-user's own board, and would either confirm the bit-weight formula
-precisely or catch a real misread.
+(1–7, from `DAT_2003c7fc`'s 16-entry table).
+
+**Update (2026-08-28): a parts-list misread is no longer a live explanation for this.** All four of
+`D404`/`D407`/`D410`/`D413` were independently re-confirmed exactly as originally read, via direct
+`pdftotext` extraction of the manual (see the population-data correction note above — the misreads found
+this session were all in *other* rows: D405/D416/D417/D419/D420). So the anomaly is real: either the
+bit-weight formula itself is wrong (inverted polarity, wrong bit order, or an offset not accounted for), or
+the region-code table's mapping to named versions isn't the simple direct one assumed here. **Don't treat
+this derived table as fact** — still worth checking directly (e.g. against the user's own board's diode
+population and its known market variant), just not via re-reading the parts list again — that's now been
+done as carefully as it can be from this document.
 
 ## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
 
