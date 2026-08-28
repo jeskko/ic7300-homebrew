@@ -468,10 +468,26 @@ sub-components, every update.** `container.py`'s byte-accounting is still correc
 but its `chunk4`/`chunk5` split doesn't reflect how the real code understands this region — worth revising
 once this is fully mapped.
 
-**Where the data actually goes — traced 4 levels deep, stops short of a firm answer.** Each verified
-component's destination (`DAT_200264b4[0..2]` = `0x2018d224`/`0x203bb260`/`0x203bcea0`) is a **RAM**
-address, not a flash address — two of the three (`0x203bb260`/`0x203bcea0`) sit *past* `body.bin`'s own
-file-backed image end (`0x20395b17`), meaning they're BSS/scratch buffers, not persistent flashed data.
+**Where the data actually goes — traced 4 levels deep, stops short of a firm answer.**
+
+**Correction (11th session) to this section as first written**: re-examined the raw instructions at the
+call site (`0x20026080`-`0x20026090`) rather than trusting a shallow raw-byte read of `DAT_200264b4`.
+There's **one more level of indirection** than originally stated: `ldr r0,[0x200264b4]` loads a *single*
+pointer value (`0x2018d224`) from that literal-pool slot, then `ldr r1,[r0, r5, lsl #2]` dereferences
+*that* address, indexed by the loop counter, to get the real per-iteration destination — i.e. the true
+table of 3 destination pointers lives at `0x2018d224`, not at `0x200264b4` itself (the three consecutive
+words `0x2018d224`/`0x203bb260`/`0x203bcea0` originally read *at* `0x200264b4` were mostly coincidental
+adjacent data, not the real per-component destinations — only the first of those three, is actually used,
+as the pointer to the real table). Reading `0x2018d224` directly in the static image gives `{0x0,
+0x00050000, 0x00100000, 0x0}` — values far too small to be valid RAM addresses in this SoC's memory map.
+**Most likely explanation**: this table is populated at runtime by some initialization step before
+`firmware_update_main` ever runs, so the static (flashed) image just shows placeholder/zeroed content
+here — meaning **we can't compute a fixed destination address for this data via static analysis alone**,
+unlike `chunk1`/`chunk2`/`chunk3` (which do land at fixed, statically-computable flash addresses, already
+checked via `references_to`). This is exactly the kind of thing live/JTAG verification would resolve
+directly (watch what gets written to `0x2018d224` during boot, or single-step an actual update) rather
+than continuing to guess from the static image.
+
 The per-component writer, `FUN_20025044`, threads through `FUN_200b2fc8`/`FUN_200b3040` — which pack each
 data byte into a tagged 32-bit word (`0xb0000000`/`0xe2000000` in the top byte) and push it via
 `FUN_200b10a0` into a **generic ring-buffer queue** (87 slots × 16 bytes) — then `FUN_200b0f68` (the
