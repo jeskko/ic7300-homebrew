@@ -488,6 +488,37 @@ checked via `references_to`). This is exactly the kind of thing live/JTAG verifi
 directly (watch what gets written to `0x2018d224` during boot, or single-step an actual update) rather
 than continuing to guess from the static image.
 
+**Chased "is there a writer?" harder (16th session)** — user asked directly whether anything updates this
+address or something nearby, and whether that had actually been checked. It had, but only via Ghidra's
+resolved xref database (one hit, a reader). Went further this time:
+- **Raw hex search for the literal 4-byte value `0x2018d224` across the entire ~3.7 MB image**: exactly
+  **one** occurrence, at `0x200264b4` (the reader already found) — rules out a missed/broken xref, the kind
+  of gap this project has hit before with the ARM/Thumb disassembly-context bug. If a writer exists, it
+  does not reference this address as a direct literal anywhere in `body.bin`.
+- **Read the surrounding memory directly** rather than just the 16 bytes at the exact address: `0x2018d224`
+  sits right at the boundary of a distinct, unrelated-looking table of function pointers and short tag
+  bytes (`0x2018d1e0`-`0x2018d223`) that stops exactly there, with different, sparse-looking small-integer
+  content continuing after `0x2018d230`. Doesn't change the reading of the specific 12 bytes used as the
+  destination array (the code's own indexing confirms exactly `0x2018d224`/`+4`/`+8` are what's read), but
+  confirms this sits in a largely un-typed data region Ghidra hasn't structured — consistent with a writer
+  needing register-computed addressing that a literal search can never find, if one exists at all.
+- **Checked for a bulk BSS-clear/init loop that might cover this address without ever encoding it as a
+  literal** (the mechanism that would explain "zeroed in the static image, real value written generically
+  at boot"). Traced the actual pre-kernel boot path precisely: `reset_handler` → `FUN_2002b878` (hardware
+  register setup, not memory clearing) → `thunk_FUN_200b8690` → `FUN_200b848c`/`FUN_200b8630`. **Both turned
+  out to be GIC (interrupt controller) initialization** — per-interrupt-line priority/target/enable setup
+  matching the already-confirmed `0xE8202xxx` GIC registers (see [[kernel-rtos]]) — not a generic
+  memory-clear routine at all. No bulk-clear loop with address bounds to check this table against was found
+  on this path.
+- **Worth flagging, not asserted as fact**: `FUN_20025044`'s call chain masks its "destination" argument to
+  24 bits before tagging it (`FUN_200b3040`: `(param_1 & 0xffffff) + 0xe2000000`) — 24 bits matches this
+  SoC's flash address space size, and the table's actual static values (`0`, `0x50000`, `0x100000`) are
+  round enough to plausibly be **flash byte offsets** rather than RAM pointers. If so, no runtime writer
+  would be needed at all — these could be genuine compile-time constants, and the reason none was found is
+  that there isn't one. This isn't confirmed (the numbers don't obviously line up with the
+  already-established slot-A/slot-B flash layout either), but it's a real alternative to "runtime-populated,
+  needs JTAG" worth weighing against that assumption rather than defaulting to it.
+
 The per-component writer, `FUN_20025044`, threads through `FUN_200b2fc8`/`FUN_200b3040` — which pack each
 data byte into a tagged 32-bit word (`0xb0000000`/`0xe2000000` in the top byte) and push it via
 `FUN_200b10a0` into a **generic ring-buffer queue** (87 slots × 16 bytes) — then `FUN_200b0f68` (the
