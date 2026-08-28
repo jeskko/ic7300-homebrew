@@ -128,7 +128,7 @@ drive" question.
 | `SCPCK`/`SCPSS`/`SCPX`/`SCPR` | P8_3/4/6/5 | `RSPCK2`/`SSL20`/`MOSI2`/`MISO2` | RSPI channel 2, base `0xE800D800` | 🟡 only inside a generic multi-peripheral init table (`~0x200b7310`), not a dedicated driver |
 | `DSPCK`/`DSPR`/`DSPX` | P8_0/1/2 | `SSL00`/`MOSI0`/`MISO0` | RSPI channel 0, base `0xE800C800` | ❌ no reference found anywhere |
 | `HSK0`/`HSK1`/`FRWT`/`FPDX`/`DCSX`/`DCSR`/`FPSX`/`FPSR` | P8_8-15 | `SPBIO0x_`/`SPBCLK_`/`SPBSSL_` | **SPI Multi I/O Bus Controller channel 1**, base `0x3FEFB000` (channel 0, base `0x3FEFA000`, is the confirmed XIP boot-flash controller — see [[base-loader]]) | ❌ no reference found anywhere, in `body.bin` or `base.dat` |
-| `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line, wired to both `IC901` (DSP) pin 145 and `EN25QH32A`'s `WP` pin | not checked this session |
+| `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line, wired to both `IC901` (DSP) pin 145 and `EN25QH32A`'s `WP` pin | ✅ yes — see below (13th session) |
 
 **The clean, confirmed finding: `BCLK_`/`FRM_`/`DX_REC`/`DR_AF`/`DX_FMT`/`DR_RSV` together form a real,
 actively-used CPU↔DSP digital audio link** via the RZ/A1H's Serial Sound Interface, using **both SSIF
@@ -165,12 +165,75 @@ initial setup — the SSIF0/1 audio path is the one clear exception, with its ow
    understanding *if and how* the main CPU talks to the FPGA post-configuration (recall the FPGA's
    *bitstream* comes from `IC902` per the manual; this RSPI2 link, if actually used at runtime, would be a
    separate control/status channel, not bitstream loading).
-3. `DRESD` (P2_6) — a plain GPIO reset/write-protect line touching both the DSP and its neighbor flash —
-   not checked this session at all; would settle whether/when the main CPU actually resets or halts the
-   DSP, directly relevant to the "how does the DSP get its program" question.
+3. ~~`DRESD` (P2_6)~~ — **done, see "DRESD (P2_6) resolved" below (13th session).**
 4. None of this has yet been tied back to the unidentified ring-buffer consumer task from
    [[multi-cpu-images]]'s `FUN_20025044` trace — worth checking whether that consumer ultimately calls
    into the RSPI2 or SSIF/DMAC code found here, which would finally connect the two open threads.
+
+## `DRESD` (P2_6) resolved — boot-time-only, held at a fixed level (13th session)
+
+Traced by cross-referencing the RZ/A1H manual's port register map (§54.3, `PORTn_base` = `0xFCFE3000`,
+sub-block bases `Pn`=`+0`, `PSRn`=`+0x100`, `PPRn`=`+0x200`, `PMn`=`+0x300`, `PMCn`=`+0x400`,
+`PFCn`=`+0x500`, `PFCEn`=`+0x600`, `PNOTn`=`+0x700`, `PMSRn`=`+0x800`, `PMCSRn`=`+0x900`,
+`PIBCn`=`+0x4000`, `PBDCn`=`+0x4100`, `PIPCn`=`+0x4200`, each `+n×4` for port `n`) against every
+literal-pool reference to any of these bases in `body.bin`. This is the same "search for the base literal,
+check every candidate's offset" method used successfully for `P5` (diode scan) and `RSPI2`/`SSIF` earlier
+in this file — confirmed exhaustive here too: a raw hex search for every P2-register address as a
+standalone 4-byte constant (`P2`, `PM2`, `PMC2`, `PFC2`, `PFCE2`, `PPR2`, `PNOT2`, `PMSR2`, `PMCSR2`,
+`PIBC2`, `PBDC2`, `PIPC2` — all 12 sub-registers) turns up **zero** hits, and a full `objdump` disassembly
+(both Thumb-forced and ARM32) of `body.bin` has **zero** `movw`/`movt` pairs building `0xFCFE3xxx`
+anywhere either — so this codebase never builds a port address any way other than a literal-pool
+constant, making the literal-pool sweep genuinely exhaustive, not just "nothing obvious found."
+
+The *only* literal-pool constant equal to a P2-block base anywhere in `body.bin` is `0xFCFE7000` (the
+`PIBCn` block base), used by exactly two functions — renamed `port_bulk_gpio_init_pass1`
+(`FUN_200b4320`) and `port_bulk_gpio_init_pass2` (`FUN_200b4494`) in Ghidra, PLATE-commented with the full
+address derivation. Between them they configure **every** port 0-9's data/direction/function-control/
+buffer registers in one generic boot-time sweep (P5's direction setup, previously flagged in
+[[diode-matrix]] as "very likely folded into one of these two functions" without being verified, is
+confirmed present here too — `PM5 <- 0x700`, bits 8-10 input matching the diode-scan row-read pins,
+bits 0-7 output matching the column-drive pins, exactly as the scan routine requires).
+
+For `P2` specifically, the two passes leave:
+
+| Register | Pass 1 (`..pass1`) | Pass 2 (`..pass2`, final) | Bit 6 (`DRESD`) |
+|---|---|---|---|
+| `P2` (data/output) | `0x0000` | `0x0080` (bit7 only) | `0` — **driven LOW** |
+| `PM2` (direction) | `0xff80` | `0xf700` | `0` in both — **OUTPUT** |
+| `PMC2` (GPIO vs alt-func) | `0x0000` | `0x0000` | `0` — **plain GPIO**, never switched to an alt function |
+| `PIBC2` (input buffer enable) | `0x0000` | `0xf700` | not in the enabled set — **input buffer stays off** (consistent with a CPU-drives-only line that's never read back) |
+
+`port_bulk_gpio_init_pass1` is called from `FUN_20029ca4` (the power-state main loop — the one with the
+watchdog-kick magic-number sequences `0x5a5f`/`0x5afe`/`0xa57f` and the `WaitForInterrupt()` loop), so it
+re-runs on every power-on/standby-wake transition, not just once ever. `port_bulk_gpio_init_pass2` is
+called once from `FUN_2002afc0`, the cold-boot init sequence, immediately before `itron_act_tsk()` starts
+the RTOS scheduler's first task — i.e. pass 2 is the one whose values actually stick for the rest of
+runtime. **No other reference to any P2 register exists anywhere in `body.bin`** (the same exhaustive
+sweep that found these two functions), and [[base-loader]] already established `base.dat` never touches
+the port-register block at all.
+
+**Conclusion**: the main CPU sets `DRESD` (`P2_6`) as a plain GPIO output, drives it LOW once at boot/wake,
+and **never touches it again** — there is no reset-pulse or write-protect-toggle sequence anywhere in the
+traced firmware. Two readings, depending on which polarity `DRESD` actually is (not established from the
+schematic alone):
+- If active-low (`RESET_N`/`WP_N`-style, the common convention for a signal named with a trailing `D`
+  suggesting "data"/direct rather than an inverted name — genuinely ambiguous here), LOW means the DSP is
+  held in permanent reset and the neighbor flash permanently write-protected by the main CPU — which would
+  fit the existing hypothesis in this file's "FPGA configuration" section that **the DSP has no persistent
+  program flash of its own and is boot-loaded into RAM by the main CPU** (via the `FUN_20025044` ring-buffer
+  mechanism documented in [[multi-cpu-images]]): hold it in reset, feed it its program over that separate
+  channel, only then (if ever) release it — release would have to happen from somewhere `body.bin` doesn't
+  reach, or not happen in the traced control flow at all if the DSP is designed to run directly out of the
+  CPU-fed RAM without ever leaving reset for its core, or is released by fixed hardware timing rather than
+  software.
+- If active-high, LOW instead means reset released / WP disabled at boot — a much less interesting result
+  (the pin just sits in its inactive state permanently), though this reading sits awkwardly next to the
+  same DSP-has-no-own-flash hypothesis, since it would leave the neighbor flash permanently *writable* with
+  no code anywhere ever re-protecting it.
+
+Settling which of these two it is needs the schematic's actual active-level convention for `DRESD` (not
+captured in the pin table this session), or live probing once JTAG access is available — flagged here
+rather than guessed at.
 
 ## Front panel connection — confirmed, active UART driver found (12th session, continued)
 
