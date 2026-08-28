@@ -37,9 +37,9 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D414 | middle, col4 | 12 | ❓ unknown | No consumer found yet |
 | D416 | bottom, col3 | 5 | ✅ confirmed | Gates the general-coverage RX unlock (0.030–74.8 MHz, 13-segment table), combined with region code 5 or 6. Also gates a separate 2-entry lookup (values 2/3, purpose TBD) |
 | D417 | middle, col3 | 13 | ❓ unknown | No consumer found yet. Populated only on EUR/ITR/KOR (`[#03][#05][#06]`) per parts list (2026-08-28 correction — was previously misread as D416's data) |
-| D419 | bottom, col2 | 6 | ❓ unconfirmed | User: "must not be removed" (service-manual caution — possibly hardware-relevant rather than a software feature gate). No consumer found yet. Populated on all versions per parts list (2026-08-28 correction — the earlier "Japan-only" population read was wrong, see below) |
+| D419 | bottom, col2 | 6 | ✅ confirmed (5th session) | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D422** — see "D419/D422 resolved" section below. Present (D422 absent) → continuous TX 0.1–74.8 MHz, exactly the mod-guide's "open TX" figure. Populated on all versions per parts list (2026-08-28 correction — the earlier "Japan-only" population read was wrong) |
 | D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. No consumer found yet. **Confirmed Japan-only (`Only [#01]`) per parts list (2026-08-28 correction)** — matches D423, restores the user's original "D420/D423 both JP-only" domain-knowledge lead |
-| D422 | bottom, col1 | 7 | ❓ unconfirmed | User: "open TX 0.1–74.8 MHz". Actively dug for (see below) — no consumer found via several angles tried |
+| D422 | bottom, col1 | 7 | ✅ confirmed (5th session) | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D419** — see "D419/D422 resolved" section below. Present (D419 absent) → continuous TX 1.6–54 MHz (fills the HF/6m gap only, not the full 0.1–74.8 MHz range the user's external claim attributed to D422 alone) |
 | D423 | middle, col1 | 15 | ✅ confirmed (4th session) | Real, direct input (bit 15) to `FUN_2003df34`/`FUN_2003dcc0`, the master feature-gatekeeper — gates item-code overrides including at least `0x22/0x32/0x4b/0x71/0x73/0x79` and the `0x8f-0x93/0x94/0xe5` range. Strong support for the Emergency Mode hypothesis (sits directly in the same gatekeeper as all other regulatory feature checks); exact feature name per item code not yet resolved |
 
 `D412`/`D415`/`D418`/`D421`: pads exist on the physical board (confirmed
@@ -147,6 +147,69 @@ this derived table as fact** — still worth checking directly (e.g. against the
 population and its known market variant), just not via re-reading the parts list again — that's now been
 done as carefully as it can be from this document.
 
+## D419/D422 resolved, and D401-absent behavior fully traced (5th session)
+
+Triggered by the user asking what happens when D401 is absent. Traced `FUN_2003c0ec` (the diode-scan
+follow-up already documented above) end to end via Ghidra (MCP back up this session): it builds **two**
+frequency-range lists — an RX list via `FUN_2003bd80` and a TX list via `FUN_2003be94` — then intersects
+them with `FUN_2003bfc8`. Both list-builders share an identical structure and, critically, a previously
+unexamined table-selector call.
+
+**D419 (bit 6) and D422 (bit 7) — confirmed, first consumer found in 4 sessions.** `FUN_2003be94`'s TX
+table selection calls `FUN_2003bd34(scan_value)`, which extracts exactly these two bits (D422 = bit 7,
+D419 = bit 6 — nobody else's bits) and returns a 0-3 selector:
+
+| D419 | D422 | Selector | TX table (decoded from data, both HF ranges merge into one continuous range where adjacent) |
+|---|---|---|---|
+| absent | absent | 1 | `1.6–30 MHz` + `50–54 MHz` (standard HF ham bands + 6m, gap between them) |
+| absent | **present** | 2 | `1.6–54 MHz` continuous (HF/6m gap filled) |
+| **present** | absent | 3 | **`0.1–74.8 MHz` continuous** — the exact figure from the mod-guide/service-manual "open TX" claim |
+| **present** | **present** | 0 | defers to a per-region-code table array (region 0 decoded: textbook USA plan — 160/80/60(5.255-5.405)/40(7.0-7.3 full)/30/20/17/15/12/10/6m(50-54)) |
+
+**Reassigns which diode the "0.1-74.8MHz open TX" folklore actually describes.** The user's external
+lead attributed that figure to D422; the code shows it's actually **D419 present with D422 absent** that
+produces it — D422 alone (D419 absent) only fills the HF/6m gap (1.6–54 MHz), a narrower effect. Also
+notable: since the (corrected, see above) parts list shows **both D419 and D422 populated on every
+shipping version**, every real unmodified radio hits the selector-0 row (per-region table) — the flat
+"open" ranges above only apply if a diode has been physically removed, i.e. this is precisely the
+mechanism the mod-community folklore is describing. This also gives a concrete, code-level reason for
+the service manual's "D419 must not be removed" caution beyond just "it's a factory-set strap": removing
+it (with D422 still present) moves the radio onto an unswept/uncharacterized TX range outside the
+per-region table's tested band segments.
+
+Region-code table array cross-check: region 5 and 6's TX-table pointers are the *same addresses* as
+their RX-table pointers in the already-documented D416 general-coverage array — i.e. the same enumerated
+ham-band table (160m through 10m, decoded: 1.8-1.9/3.5-3.5125/5.255-5.405/7.0-7.1/10.1-10.15/14.0-14.35/
+18.068-18.168 MHz for region 5) serves both RX and TX gating there, a solid internal-consistency check
+that the table parsing here is correct. Region 0's TX table (decoded above) matches the textbook USA
+band plan exactly (full 7.0-7.3 MHz 40m, 28-29.7 MHz 10m, no 70 MHz/4m) — first concrete evidence for
+what region-code 0 (the arithmetic-derived "USA" guess) actually corresponds to. Regions 1 and 7 were
+also spot-checked: region 1 is byte-for-byte identical to region 0 (same plan); region 7 differs only in
+160m's lower edge (1.81 MHz instead of 1.80 MHz) — plausibly EXP, since it's the only version whose
+diode combination (D404 present, which is EXP-exclusive per the parts list) can reach region-code 7 at
+all. Regions 2/3/4's tables not yet pulled.
+
+**D401 absent — traced precisely, not just asserted.** Both `FUN_2003bd80` and `FUN_2003be94` gate each
+source-table entry on: `(D401 present) OR (entry's min frequency >= ~74.906 MHz)` (constants
+`DAT_2003c814`/`DAT_2003c818` resolve to this threshold). When D401 is present this is always true
+(normal operation). When D401 is **absent**, every real table checked — the default HF/6m table, the
+region 5/6 ham-band table, and all four D419/D422 TX tables above — has every entry's minimum well below
+74.9 MHz, so **no entry survives the filter for either list**. The loop's unconditional tail then writes
+a single output range `[0, 0xFFFFFFFF]` regardless — i.e. **D401 absent doesn't select a more permissive
+table, it makes the entire RX+TX range-restriction mechanism degenerate into "every frequency is valid."**
+Consistent with `is_feature_enabled_for_region`'s other D401-gated menu/feature codes, essentially all of
+which resolve to their permissive "enabled" arm when D401 is absent rather than performing the
+region-code check at all.
+
+**Caveat**: the general-coverage RX-unlock table (`0x8f`/`0x90-0x93`/`0x95`/`0x96`/`0xdf`-`0xf6` item
+codes, documented in the 3rd-session section below) is gated by a wholly separate condition — D416
+present + region-code 5-or-6 — that never tests D401. That specific table's behavior is unaffected by
+D401 either way.
+
+**Updated tally**: 2 more of the long-unresolved diodes confirmed this session (D419, D422). Remaining
+fully unresolved: D408, D411, D414, D417, D420 (D420 now has confirmed Japan-only population data but
+still no code consumer found).
+
 ## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
 
 **Methodology note, worth recording**: this session's `ghidra` MCP server connection failed at startup (confirmed the Ghidra process itself was alive and answering HTTP on `127.0.0.1:8080` — `curl` got a normal MCP protocol response — but the session's tool registration was stale/refused and could not be revived without a session restart). Rather than block, did this entire round of digging via **raw disassembly of the extracted `body.bin` with `arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000`**, no Ghidra involved at all. Cross-checked the technique against already-documented functions first (`FUN_2003c530`'s call chain matched the existing notes exactly) before trusting new reads. This worked well for straight-line ARM decoding but has none of Ghidra's xref database — "does anything else reference this address" had to be answered by grepping a full linear disassembly for literal pc-relative loads of the address in question, which only finds direct/simple references, not computed ones. Once Ghidra access is back, these new leads (especially the bit-reversal export function below) are exactly the kind of thing its xref search would finish off in minutes.
@@ -216,6 +279,10 @@ chain (`scan_diode_matrix_p5`, `sync_diode_matrix_to_eeprom`,
 Bit 6 doesn't appear in any consumer found so far, across two separate
 digging sessions from different angles.
 
+**Resolved, 5th session** — see "D419/D422 resolved" section above. The consumer wasn't in any of the
+functions already traced from this call chain; it's `FUN_2003be94`'s TX-table selector, a sibling function
+to `FUN_2003bd80` not fully examined until then.
+
 **Started a broader EEPROM parameter catalogue** (see
 [[eeprom-catalogue]]) on the theory that some diode bits might be read
 via the EEPROM-persisted value (parameter `0x3e44`) directly rather than
@@ -272,6 +339,10 @@ table re-read above), all dead ends. Good candidate to set aside for
 live verification (watchpoint on the TX-indicator state variable, or
 single-stepping the display-update routine while tuning across a band
 edge) rather than continue speculative static searching.
+
+**Resolved, 5th session** — see "D419/D422 resolved" section above. `FUN_2003bd34`/`FUN_2003be94`,
+neither of which existed in this project's notes until then. Turns out the real "0.1-74.8MHz open TX"
+effect is D419's, not D422's — D422 alone only extends TX to 1.6-54 MHz.
 
 ## Living reference: region code from diodes 404/407/410/413
 
