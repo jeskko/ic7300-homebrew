@@ -512,3 +512,30 @@ plausible read, though nothing confirms which one specifically.
 productive by itself — would want an actual reason to expect a specific format first. `chunk5-tail`
 (the larger, originally-flagged candidate) hasn't had this same direct empirical check yet — worth doing
 before drawing conclusions about the whole "second processor" hypothesis from `chunk4` alone.
+
+## `chunk5_tail.bin` imported too — same empirical result, same conclusion (10th session, continued)
+
+Same treatment: imported as its own program (base `0x0`, ARM), ran auto-analysis. **Zero functions, zero
+disassembled instructions** — checked the listing at the start, the middle (`0xc0000`), and confirmed via
+`functions.list` after analysis completed (fast, consistent with "nothing to disassemble" rather than
+still-running, matching `chunk4`'s behavior exactly). Same conclusion as `chunk4`: not plain ARM code.
+
+**Byte-level shape**: starts at a notably *higher* baseline than `chunk4` (~5.19 bits/byte at offset `0`,
+vs `chunk4`'s ~0.5), climbs to a ~7.0-7.1 bits/byte plateau by ~offset `0x2000` (16 KB in), then holds
+there with only minor dips (down to ~6.0-6.3) in the last few KB before EOF. Checked for sharp jumps
+(>1.5 bits/byte between adjacent 2 KB blocks) across the *entire* 1.68 MB file: **zero** — this is one
+continuous statistical regime start to finish, not several concatenated sub-files of different shapes.
+No format magic bytes (gzip/zlib/PNG/BMP/RIFF/ZIP/ELF) at a header position either.
+
+**Updated read on the "second processor firmware" hypothesis**: this makes the "plain, directly-
+executable companion-chip image" version of the hypothesis noticeably less likely, not just for ARM but
+in general — the same "real code shows sharp structure, this shows smooth statistical ramps" reasoning
+applies, and at a higher, more strongly random-looking plateau than `chunk4`. Doesn't kill the broader
+"second processor" idea outright (a *compressed or encrypted* image bound for another chip would still
+look exactly like this from the outside — high, uniform entropy, no visible header — and the already-
+confirmed outer LZSS layer decoding cleanly to an exact EOF is real, structured framing, not noise), but
+the specific sub-hypothesis "decompress once and you'll find recognizable machine code" is now
+empirically checked and doesn't hold for either `chunk4` or `chunk5-tail`, in this analysis at least. The
+`FUN_20025044`/ring-buffer/event-flag delivery mechanism traced earlier in this file remains the more
+promising thread if this is picked up again — finding *that* consumer task would settle the question on
+firmer ground than further format-guessing on the bytes themselves.
