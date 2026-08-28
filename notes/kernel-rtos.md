@@ -739,3 +739,29 @@ bodies are real code now, nothing left showing garbage), even though a few purpo
 rather than disassembly problems. The two still-genuinely-unresolved *identities* are `kernel_start`'s own
 mystery task (`0x203907C4`) and the fully-dynamic `thunk_FUN_2007ea68` case — both need live/JTAG
 visibility, not more static reading, per the reasoning already laid out earlier in this file.
+
+**Follow-up: does any catalogued task touch the DSP or `DRESD` directly? No.** Checked systematically:
+- `DRESD` (`P2_6`): the exhaustive literal-pool search in [[ic7300-signal-chain]] already established only
+  `port_bulk_gpio_init_pass1`/`pass2` ever reference the whole P2 register block — and those are only
+  reached via `sys_monitor_task_loop → FUN_2002b29c → FUN_2002b1c8/FUN_2002afc0`. **`sys_monitor_task_entry`
+  remains the only task that touches `DRESD`**, exactly as already documented — none of the newly-examined
+  8 tasks add to this.
+- **DSP-adjacent hardware** (SSIF0/1 audio-DMA registers, RSPI2): checked `references_to` on the SSIF/DMAC
+  transfer function (`FUN_200b5dc0`/`FUN_200b5cdc`) — all 6 callers sit in the `0x200b1xxx`-`0x200b7xxx`
+  driver cluster (reached via `FUN_200b0f68`'s case `2`, i.e. through the same ISR/event-handler mechanism
+  as `rspi2_transmit`, not from inside any application task's own code). **None of the 12 catalogued tasks
+  call into SSIF or RSPI2 driver code directly** — that hardware is touched only from the ISR/event-handler
+  layer sitting below the task layer.
+- `audio_buffer_task_2006bb58`/`2006c2c4`: their own globals (`DAT_2006c3d4`, `DAT_2006c404`, etc., all read
+  and confirmed this session) resolve to **plain RAM addresses**, not hardware registers — these two tasks
+  manage buffers only, with no direct register-level touch found. If they really are the WAV
+  record/playback subsystem (still unconfirmed), any actual DSP/SSIF interaction would happen one layer
+  further down, through the same shared event/queue mechanism `FUN_200b0f68` drains — not visible in these
+  two tasks' own code.
+- **The one real DSP connection at the *task* level**: `sd_menu_dispatch_task`'s case `0xb` calls
+  `firmware_update_main`, whose "3 extra chunks" mechanism (`FUN_20025044` → the `0xb0`/`0xe2`-tagged ring
+  buffer) is [[multi-cpu-images]]'s standing hypothesis for how **DSP Program/DSP Data firmware** actually
+  reaches its destination during an update — but that ring buffer's real consumer is still not found (RSPI2/
+  SSIF-audio/front-panel-UART were ruled out last session). So the honest answer is: **one task
+  (`sd_menu_dispatch_task`) is the trigger point for the one mechanism suspected of reaching the DSP, but
+  no task's own code — including that one — has been shown to touch DSP hardware directly.**
