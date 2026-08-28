@@ -27,10 +27,10 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D403 | top, col8 | 16 | ✅ confirmed | Selects Type 1 (present) vs Type 2 (absent) market designation; also gates a 51st, non-standard CTCSS tone (150.0 Hz). **Ruled out** for 60m/5MHz via the one consumer traced (`get_type1_type2_designation`) — that path is CTCSS, not band access |
 | D404 | bottom, col7 | 1 | ✅ confirmed | Region-code bit, weight 8 (see region table below) |
 | D405 | middle, col7 | 9 | ✅ confirmed | **Gates a specific ~5.255 MHz (60m-area) frequency in `FUN_2003bd80`'s range table — D405 present excludes it, D405 absent includes it.** Resolves the D403-vs-D405 conflict from external sources in favor of D405 |
-| D406 | top, col7 | 17 | ❓ unknown | No consumer found yet |
+| D406 | top, col7 | 17 | ✅ confirmed (4th session) | Input to `FUN_2003c530`'s post-scan classification (see below) — present → classification byte = 1, takes priority over D409 |
 | D407 | bottom, col6 | 2 | ✅ confirmed | Region-code bit, weight 4 |
 | D408 | middle, col6 | 10 | ❓ unknown | No consumer found yet |
-| D409 | top, col6 | 18 | ❓ unknown | No consumer found yet |
+| D409 | top, col6 | 18 | ✅ confirmed (4th session) | Input to `FUN_2003c530`'s post-scan classification (see below) — present (and D406 absent) → classification byte = 2 |
 | D410 | bottom, col5 | 3 | ✅ confirmed | Region-code bit, weight 2 |
 | D411 | middle, col5 | 11 | ❓ unknown | No consumer found yet |
 | D413 | bottom, col4 | 4 | ✅ confirmed | Region-code bit, weight 1 |
@@ -40,7 +40,7 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D419 | bottom, col2 | 6 | ❓ unconfirmed | User: "must not be removed" (service-manual caution — possibly hardware-relevant rather than a software feature gate). No consumer found yet |
 | D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. No consumer found yet |
 | D422 | bottom, col1 | 7 | ❓ unconfirmed | User: "open TX 0.1–74.8 MHz". Actively dug for (see below) — no consumer found via several angles tried |
-| D423 | middle, col1 | 15 | ❓ unconfirmed | User hypothesis: Emergency Mode. No consumer found yet |
+| D423 | middle, col1 | 15 | ✅ confirmed (4th session) | Real, direct input (bit 15) to `FUN_2003df34`/`FUN_2003dcc0`, the master feature-gatekeeper — gates item-code overrides including at least `0x22/0x32/0x4b/0x71/0x73/0x79` and the `0x8f-0x93/0x94/0xe5` range. Strong support for the Emergency Mode hypothesis (sits directly in the same gatekeeper as all other regulatory feature checks); exact feature name per item code not yet resolved |
 
 `D412`/`D415`/`D418`/`D421`: pads exist on the physical board (confirmed
 by user) but are omitted from published diode-matrix references/photos —
@@ -130,6 +130,43 @@ firmware's region-code bit is inverted/offset from what's assumed here.
 check that's cheap to do properly with a clearer copy of the page or the
 user's own board, and would either confirm the bit-weight formula
 precisely or catch a real misread.
+
+## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
+
+**Methodology note, worth recording**: this session's `ghidra` MCP server connection failed at startup (confirmed the Ghidra process itself was alive and answering HTTP on `127.0.0.1:8080` — `curl` got a normal MCP protocol response — but the session's tool registration was stale/refused and could not be revived without a session restart). Rather than block, did this entire round of digging via **raw disassembly of the extracted `body.bin` with `arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000`**, no Ghidra involved at all. Cross-checked the technique against already-documented functions first (`FUN_2003c530`'s call chain matched the existing notes exactly) before trusting new reads. This worked well for straight-line ARM decoding but has none of Ghidra's xref database — "does anything else reference this address" had to be answered by grepping a full linear disassembly for literal pc-relative loads of the address in question, which only finds direct/simple references, not computed ones. Once Ghidra access is back, these new leads (especially the bit-reversal export function below) are exactly the kind of thing its xref search would finish off in minutes.
+
+**D406 (bit 17) and D409 (bit 18) — confirmed.** `FUN_2003c530` (the master diode-init routine, already documented below) does more than orchestrate the scan: right after the scan and its two follow-up calls (`FUN_2003c0ec`, `FUN_2003c4dc`), it re-reads the live scan value and tests these two bits directly:
+```
+tst  r0, #0x20000      ; bit 17 = D406
+beq  <D406 absent>
+mov  r0, #1                    ; D406 present -> classification = 1
+b    <store>
+<D406 absent>:
+tst  r0, #0x40000      ; bit 18 = D409
+beq  <neither>
+mov  r0, #2                    ; D409 present -> classification = 2
+b    <store>
+<neither>:
+mov  r0, #0                    ; classification = 0
+<store>:
+strb r0, [r4, #1]              ; r4 = pointer at DAT_2003c800, i.e. the same
+                                ; control struct whose +4 is the live scan value
+```
+The resulting byte is then also mirrored to a second struct (`*DAT_2003c858 + 0x29`). **D406 takes priority if both are present.** Confirmed the bit-17/18 read really is the live diode-scan value: `DAT_2003c800`'s stored word is a pointer (0x20390210 in this firmware build), and `[that pointer + 4]` resolves to the exact same live address that `DAT_2003c7f8` and `DAT_2003ea4c` also point to — three different globally-named pointers all aliasing the one live scan cell. What the resulting 0/1/2 classification actually *drives* isn't traced yet (would need to find readers of `struct+1`/`struct+0x29` — no xref tool available this session to chase that, see methodology note above).
+
+**D423 (bit 15) — confirmed, and it's a strong hit.** Found directly in `FUN_2003df34`, the "is_feature_enabled_for_region" master gatekeeper documented further below, and its sibling `FUN_2003dcc0` (a generic "read a setting's current value, formatted per its type descriptor" function — same value-format-byte scheme as the already-documented menu-item table). Both load the live scan value via yet another alias pointer, `DAT_2003ea4c` (confirmed to resolve to the same live cell as above), and `tst r2, #0x8000` (bit 15) directly gates hard-coded special-case overrides for several item codes (at least `0x22`, `0x32`, `0x4b`, `0x71`, `0x73`, `0x79`, and the `0x8f`-`0x93`/`0x94`/`0xe5` range inside `FUN_2003df34`'s dispatch) — these bypass the generic type-formatted read path entirely, consistent with them being synthetic/computed values rather than plain stored settings. This is D423 sitting directly inside the *same* function that gates every other confirmed regional/regulatory feature in this firmware — about as strong a piece of static evidence as this project has found for "D423 gates a real regulatory feature," matching the user's Emergency Mode hypothesis, though the specific item code that *means* Emergency Mode isn't pinned down yet (would need the Set Mode string table cross-reference, still open per below).
+
+**New lead for the remaining unknowns — a likely full-settings export/clone path.** Found two new, previously-undocumented functions while chasing the above:
+- **`FUN_2003c70c`**: takes the full 24-bit live scan value and **reverses the bit order within each of its three row-bytes** (bit 0↔bit 7, 1↔6, etc., independently per byte), writing 3 output bytes — i.e. repacking the internal scan-shift bit order into the "natural" column-reading order (D401 as the high bit, not the low bit). Called from exactly two places: (1) `0x200100a4`, inside a small helper that looks like it's encoding the diode bytes as two BCD-style nibbles; (2) `0x200397d8`, inside a much larger function that first calls **seven** other field-builder functions at fixed offsets (`+1`, `+0x29`, `+0x51`, `+0x79`, `+0x39`, `+0x61`, `+0x89` — evenly spaced, classic fixed-record layout) before appending the reversed diode bytes and passing everything through a generic copy/format routine (`FUN_2003903c`).
+- **`FUN_2003ddd4`**: loops item codes `0` through `0x146` (326 total) calling `FUN_2003dcc0` (the value-formatted setting reader that also tests D423 above) for every single one — reads unmistakably like a **bulk "dump every setting" export**, the shape of Icom's clone/backup-to-another-radio or factory-test full-dump mechanism, not a single menu screen.
+
+Neither function's own caller has been traced further up (what triggers the export, where the output buffer ends up — CI-V response, SD card, EEPROM). But a function that touches *all* diode/region bits at once and feeds into what looks like a full clone/settings dump is exactly the kind of place D408/D411/D414/D417/D419/D420/D422 (the remaining fully-unconfirmed diodes) would plausibly surface, if they're read at all outside the region-code/RX-table/D423 paths already found. **Top lead for next session, especially once Ghidra access is back** — xref-searching these two functions' callers and `FUN_2003903c`'s other callers would likely resolve this quickly.
+
+**Also identified**: `FUN_2003c530`'s very first call, to a previously-undocumented tiny function now readable as `FUN_2003bc58` — it tail-calls the generic settings getter for parameter `0x3e44` *into the live scan buffer*, **before** the hardware scan runs, capturing the last-persisted value as `r5`/`[sp]` for the change-detection pass (`FUN_2003c27c`/`FUN_2003c174`) that happens at the end of the function, after the fresh scan has overwritten the buffer. Minor completeness addition to the already-documented call chain, not a new finding in its own right.
+
+**Bits 19-23 (top row's non-existent columns 1-5) — confirmed genuinely untested** anywhere in the ~9KB `0x2003ba00`-`0x2003e000` diode-cluster code region (checked via a full linear ARM disassembly of that range, grepped for every `tst`/`ubfx` instruction). Consistent with those positions being real hardware N/A pads, not just "not found yet."
+
+**Updated tally**: of the 12 diodes that were "no consumer found"/"unconfirmed" going into this session (402 was already partial), **3 are now confirmed** (406, 409, 423). **7 remain fully unresolved**: D408, D411, D414, D417 (never had any hypothesis), D419, D420, D422 (all three have hypotheses, still no code consumer found by any method tried across 4 sessions now).
 
 ## D405/D402 found, D419 still not found (3rd session)
 
@@ -332,7 +369,9 @@ the schematic's N/A positions). Mapped onto the user's diode numbers:
   parameter-ID-keyed get/set API, tying together both parts of the
   user's original question.
 
-Not yet confirmed by this firmware: diodes 402, 405, 408, 411, 414, 417,
+Not yet confirmed by this firmware *(as of the 2nd session; superseded —
+402, 405, 406, 409, and 423 are now all confirmed, see the 3rd- and
+4th-session sections below)*: diodes 402, 405, 408, 411, 414, 417,
 419, 420, 422, 423, 406, 409 (middle row entirely, most of top row, and
 the higher bottom-row columns) — no reference to those specific bit
 positions found in `body.bin`. Either genuinely unused in this
@@ -485,8 +524,11 @@ column`): **D423 (middle, col1) → bit 15**, **D420 (middle, col2) → bit
 14**.
 
 Checked all 8 known consumers of the live diode-scan value
-(`DAT_2003c7f8`) — none test bits 14/15. Independently confirmed both
-named features are real and present in this firmware via string search:
+(`DAT_2003c7f8`) — none test bits 14/15 *(superseded, 4th session: bit 15/D423
+**is** now a confirmed consumer, in `FUN_2003df34`/`FUN_2003dcc0` — see the
+4th-session section above; bit 14/D420 is still unconfirmed)*. Independently
+confirmed both named features are real and present in this firmware via
+string search:
 `"SPEECH Language"`/`"Display Language"` (menu items), `"EMERGENCY
 MODE"` (banner string) and `"EMERGENCY"` (a top-level Set Mode category
 alongside RX/TX/DISPLAY/KEYER MEMORY). The `"EMERGENCY MODE"` banner is
@@ -494,18 +536,17 @@ drawn by `FUN_2009060c`, a screen-rendering function — it displays the
 banner based on an already-computed flag, but doesn't itself test the
 diode bits, so its setter is what would need to be found.
 
-**Not resolved — the setter for that flag isn't among the 8 known
-diode-scan consumers.** Two explanations not yet distinguished: (1) it's
-read via the EEPROM parameter path (`0x3e44` through the generic
-`FUN_2001e510` getter) independently of the live RAM copy we've been
-tracing — haven't exhaustively checked all callers of that generic
+**Not resolved (D420 only) — the setter for that flag isn't among the 8
+known diode-scan consumers** *(D423's half of this is now resolved, see
+4th-session section above — real, direct bit-15 consumer found in
+`FUN_2003df34`/`FUN_2003dcc0`)*. Two explanations not yet distinguished for
+D420: (1) it's read via the EEPROM parameter path (`0x3e44` through the
+generic `FUN_2001e510` getter) independently of the live RAM copy we've
+been tracing — haven't exhaustively checked all callers of that generic
 getter; or (2) it's in a code path/task not yet reached by any trace so
-far. Genuinely plausible the user's hypothesis is directionally correct
-(both features are real, JP-only diodes are a real thing per the
-photographic evidence too) — just not proven at the bit level yet. Good
-candidate for live verification once JTAG access is available (watch
-`DAT_2003c7f8` bits 14/15, or `0x3e44` EEPROM reads, and see what
-touches them) rather than more static tracing.
+far. Good candidate for live verification once JTAG access is available
+(watch bit 14, or `0x3e44` EEPROM reads, and see what touches it) rather
+than more static tracing.
 
 ## Major finding: the band-edge table is the general-coverage RX unlock, confirms D416
 

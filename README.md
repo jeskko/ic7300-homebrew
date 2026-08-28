@@ -42,12 +42,17 @@ by but not built on top of the prior work there.
   chip, not an embedded second-processor firmware image
   (`notes/multi-cpu-images.md`).
 - ✅ **Diode-matrix regional gating**: physical layout, scan mechanism,
-  bit-to-diode mapping, and several individual diode functions confirmed
-  in code (D401/403/404/405/407/410/413/416), plus **official per-diode
-  version-population data** from the service manual parts list (which
-  diode is populated on which of the 7 named export variants) —
-  including a sharp new lead on long-unresolved `D419` (Japan-only) and
-  a flagged conflict with an earlier third-party claim about `D420`
+  bit-to-diode mapping, and individual diode functions confirmed in code
+  for 11 of 19 documented positions
+  (D401/403/404/405/406/407/409/410/413/416/423 — the last three added a
+  4th session in via raw ARM disassembly after the Ghidra MCP connection
+  dropped, including strong direct evidence for D423 = Emergency Mode),
+  plus **official per-diode version-population data** from the service
+  manual parts list (which diode is populated on which of the 7 named
+  export variants). 7 positions remain unresolved (D408/411/414/417
+  fully unknown, D419/D420/D422 have hypotheses but no code consumer
+  found across 4 sessions) — a newly-found likely clone/full-settings-export
+  function is the top lead for finishing these
   (`notes/diode-matrix.md`).
 - ✅ **Full hardware BOM** for both the IC-7300 (all 5 boards: Main,
   Display, RF, PA, Tuner — `notes/ic7300-hardware.md`) and, as a side
