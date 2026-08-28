@@ -643,3 +643,59 @@ would either confirm or refute the "3 chunks = Front CPU + DSP Data + DSP Progra
 (2) if confirmed, re-examine `FUN_20025044`'s RAM-buffer destinations (once the runtime-populated pointer
 table issue from the correction above is resolved, ideally via JTAG) to see which component goes out over
 SCIF3 (front panel) vs. whatever channel reaches the DSP.
+
+## The exact 5-field-to-component mapping, confirmed (22nd session) — the file-offset trace itself hits a real wall
+
+Followed up on next step (1) above. **The component-to-offset mapping is now precisely nailed down**,
+resolving the one part of the earlier hypothesis that was still just "a very close structural match":
+read `DAT_200a9bb0`'s actual backing array in RAM (five `{flag, string_ptr, length}` records, 12 bytes
+each) and dereferenced every string pointer directly. Result — `FUN_200a94c8`'s five compared 4-byte
+fields map to components in this exact order:
+
+| `iVar2` offset | Component (confirmed via live string read) |
+|---|---|
+| `+0xa0` | `Main CPU:` |
+| `+0xa4` | `Front CPU:` |
+| `+0xa8` | `DSP Program:` |
+| `+0xac` | `DSP Data:` |
+| `+0xb0` | `FPGA:` |
+
+This directly refines the hypothesis: since `Main CPU` (the primary body, already handled by
+`firmware_update_main`'s main bulk write) and `FPGA` (its own dedicated config EEPROM, per the service
+manual) are the two components *not* among the "3 extra chunks", the three that remain —
+`Front CPU` (`+0xa4`), `DSP Program` (`+0xa8`), `DSP Data` (`+0xac`) — sit at **consecutive, ascending
+offsets**, the same natural ordering as `firmware_update_main`'s three sequentially-processed chunk
+indices (`0`/`1`/`2`). The straightforward reading, if the two orderings correspond 1:1 (not yet proven,
+see below): **chunk 0 = Front CPU, chunk 1 = DSP Program, chunk 2 = DSP Data** — a specific assignment,
+not just an unordered set of three, and a genuinely stronger result than this file had before.
+
+**What's still open, and why**: didn't manage to trace `iVar2` (`DAT_200a9ba4`, resolves to the fixed RAM
+address `0x203ff76c`) back to an SD-card file offset this session — hit a real wall, not a shortcut taken:
+- `references_to` on `0x200a9ba4` (the literal-pool slot holding this address) finds only the two reads
+  already inside `FUN_200a94c8` itself — no writer anywhere in Ghidra's xref database.
+- The raw value `0x203ff76c` recurs as a 4-byte match roughly **30 times** throughout `body.bin` — but an
+  `objdump` grep for it being *loaded* via `pc`-relative addressing (`@ 0x203ff76c`) anywhere in the image
+  returns **zero hits**. The ~30 matches are coincidental/unrelated 4-byte collisions or (more likely)
+  private literal-pool copies used by *other*, unrelated code that happen to store this same address for
+  a different purpose — not confirmed to be real accesses to this specific struct.
+- Chased one promising-looking lead — a literal match on `0x203ff76c + 0x9c` (`0x203ff808`, the exact RAM
+  address of the compared fields) — to two call sites (`FUN_20043a08`, `FUN_2008cff8`). **Both turned out
+  to be false leads**: this codebase uses a `+0x9c`-relative-to-base convention very generically across
+  many *unrelated* per-screen "candidate vs. current settings" structures (confirmed by reading
+  `FUN_2008cff8` in full — a ~10 KB UI settings-comparison function handling several *other* screens'
+  compare-and-highlight logic, using the identical `base+0x9c` idiom for entirely different settings).
+  Recording this so a future session doesn't re-chase the same false lead.
+- Checked all ~23 call sites of the generic "read N bytes from open file" primitive (`FUN_200bc6a4`)
+  outside `firmware_update_main` itself for one passing a destination resolving to `0x203ff76c` — none
+  found among the several traced by hand; the remainder are generic seek/read wrapper functions one level
+  removed from their own callers, and fully enumerating all of them was not pursued to completion this
+  session (diminishing returns without a faster way to bulk-check destination arguments).
+
+**Assessment**: this now sits in the same category as the `chunk4`/`chunk5` destination table and several
+task-descriptor questions elsewhere in this project — a runtime-populated global whose *writer* isn't
+findable through the literal-pool/xref techniques that have worked well elsewhere, most likely because
+it's filled via a bulk read whose destination is computed/passed through several layers of generic file-IO
+wrapper functions rather than referenced as a direct literal. The component **identity** mapping above is
+solid and new; the **byte-offset** confirmation the hypothesis ultimately needs is not — flagged accurately
+rather than asserted. Live JTAG (watch what gets written to `0x203ff76c` while browsing the version-check
+screen with a real update SD card inserted) would resolve this quickly and directly.
