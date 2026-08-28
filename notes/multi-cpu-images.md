@@ -520,14 +520,23 @@ resolved xref database (one hit, a reader). Went further this time:
   needs JTAG" worth weighing against that assumption rather than defaulting to it.
 
 The per-component writer, `FUN_20025044`, threads through `FUN_200b2fc8`/`FUN_200b3040` — which pack each
-data byte into a tagged 32-bit word (`0xb0000000`/`0xe2000000` in the top byte) and push it via
-`FUN_200b10a0` into a **generic ring-buffer queue** (87 slots × 16 bytes) — then `FUN_200b0f68` (the
+data byte into a tagged 32-bit word (`0xb0000000`-`0xb7000000`/`0xe2000000` in the top byte) and push it
+via `FUN_200b10a0` into a **generic ring-buffer queue** (87 slots × 16 bytes) — then `FUN_200b0f68` (the
 queue's drain/consumer side) sets an RTOS event-flag bit (`FUN_200b8308(0xa1)`) to wake whatever task
-actually processes the queue. **That consumer task hasn't been identified** — `FUN_200b0f68` only handles
-queue mechanics (advance indices, signal the event), it doesn't itself interpret the `0xb0`/`0xe2` tag
-bytes. Whether this is a companion-chip command/data link (which would make this the second-processor
-delivery mechanism this file has been chasing) or a same-CPU inter-task work queue for something mundane
-is **not yet determined** — don't over-read the tag bytes as confirmation of either. 
+actually processes the queue.
+
+**Correction (22nd session) — `FUN_200b0f68` does more than "just queue mechanics", but still not the
+`0xb0`/`0xe2` tags specifically.** Picked up while chasing the RSPI2 lead in [[ic7300-signal-chain]]:
+`FUN_200b0f68` actually has a real `switch` on each entry's tag byte with 5 concrete cases (`0`: signal
+event `0xa1` and stop; `1`: a Port-8 reconfiguration gate; `2`: the SSIF/DMAC audio-transfer function;
+`3`: a genuine RSPI2 SPI-transmit function, confirmed real and active — see [[ic7300-signal-chain]]; `4`:
+a front-panel/SCIF3-adjacent function). **None of these 5 cases match `chunk4`/`chunk5`'s own tag range
+(`0xb0`-`0xb7`/`0xe2`)** — so `chunk4`/`chunk5` entries, if pushed through this exact queue, hit none of
+them and fall through unhandled by this function. This is a real, useful negative result: it rules out
+RSPI2, the SSIF/audio-DMA path, and the front-panel UART as `chunk4`/`chunk5`'s consumer, without
+identifying what actually is. **The consumer for the `0xb0`/`0xe2` tag range specifically is still not
+identified** — whether this is a companion-chip command/data link or something else remains open, now with
+three concrete candidates ruled out rather than zero.
 
 **Concrete next step, if this thread is picked back up**: find the task that waits on the event-flag group
 at `DAT_200b86a0+0x114` bit 1 and consumes this specific ring buffer — that task's own interpretation of

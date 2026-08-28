@@ -137,10 +137,10 @@ drive" question.
 | `FPDX` | P8_11 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `W1`, `DIFFIO_L28n` | ❌ no reference found |
 | `FPSX` | P8_14 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `U1`, `DIFFIO_L24n` | ❌ no reference found |
 | `FPSR` | P8_15 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `V1`, `DIFFIO_L25n` | ❌ no reference found |
-| `SCPCK` | P8_3 | `RSPCK2` | RSPI channel 2, base `0xE800D800` | — (no DSP pin) | `G1`, `DIFFCLK_0n` | 🟡 only inside a generic multi-peripheral init table (`~0x200b7310`), not a dedicated driver |
-| `SCPSS` | P8_4 | `SSL20` | RSPI channel 2 | — (no DSP pin) | `F1`, `DIFFIO_L9n` | 🟡 same table |
-| `SCPX` | P8_6 | `MOSI2` | RSPI channel 2 | — (no DSP pin) | `C1`, `DIFFIO_L4n` | 🟡 same table |
-| `SCPR` | P8_5 | `MISO2` | RSPI channel 2 | — (no DSP pin) | `E1`, `DIFFIO_L8n` | 🟡 same table |
+| `SCPCK` | P8_3 | `RSPCK2` | RSPI channel 2, base `0xE800D800` | — (no DSP pin) | `G1`, `DIFFCLK_0n` | ✅ **confirmed live driver, see below (22nd session)** |
+| `SCPSS` | P8_4 | `SSL20` | RSPI channel 2 | — (no DSP pin) | `F1`, `DIFFIO_L9n` | ✅ same driver |
+| `SCPX` | P8_6 | `MOSI2` | RSPI channel 2 | — (no DSP pin) | `C1`, `DIFFIO_L4n` | ✅ same driver |
+| `SCPR` | P8_5 | `MISO2` | RSPI channel 2 | — (no DSP pin) | `E1`, `DIFFIO_L8n` | ✅ same driver |
 | `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line | 146, `\RESET` (**confirmed DSP reset input**, active-low per schematic notation — corrected from an earlier "pin 145" transcription) | — | ✅ yes — see below (13th/14th sessions) |
 
 **Note on this table's evolution**: the "Peripheral" column's "(was: ...)" entries are the CPU-manual-alt-function-only guesses from the 12th session, kept visible rather than silently deleted — the 14th session's DSP-side pin data (below) refines or replaces several of them.
@@ -197,25 +197,80 @@ inert design, similar to several diode-matrix findings), or (now the better-supp
 DSP-side data above) these pins were never SPI-Multi-I/O pins to begin with and the CPU manual's
 alternate-function table simply wasn't the right lens for this particular pin group.
 
-**Important caveat carried over from the diode-matrix work**: every register base found here (`P2`/`P3`/
-`P8` at `0xFCFE3008`/`300C`/`3020`, and `RSPI2` at `0xE800D800`) turns up **only inside large, generic,
-multi-peripheral bulk-initialization tables** (the same `~0x200bXXXX`-region tables already documented for
-the diode matrix's Port 5 setup) — not as a dedicated runtime driver reading/writing that specific
-register on its own. That's expected for one-time boot/mode configuration, but it means **this session
-hasn't yet found the actual runtime code that drives ongoing RSPI2/FPGA traffic**, if any exists beyond
-initial setup — the SSIF0/1 audio path is the one clear exception, with its own dedicated-looking table.
+**Important caveat carried over from the diode-matrix work, now resolved for RSPI2 specifically**: every
+register base found here (`P2`/`P3`/`P8` at `0xFCFE3008`/`300C`/`3020`, and `RSPI2` at `0xE800D800`) turns
+up inside large, generic, multi-peripheral bulk-initialization tables (the same `~0x200bXXXX`-region
+tables already documented for the diode matrix's Port 5 setup) — that part still stands for one-time
+boot/mode configuration in general, but **RSPI2 itself is no longer just a generic-table entry — see
+"RSPI2 confirmed as a real, actively-used SPI link to the FPGA" below (22nd session).**
 
 **Concrete next steps, in priority order**:
 1. Decompile the function containing the `0x20060700` SSIF/DMAC table fully, to confirm the DMA-driven
    audio-streaming read and nail down exactly which RAM buffers it moves data to/from.
-2. Decompile whichever function contains the `~0x200b7310` RSPI2 entries — this is the best lead for
-   understanding *if and how* the main CPU talks to the FPGA post-configuration (recall the FPGA's
-   *bitstream* comes from `IC902` per the manual; this RSPI2 link, if actually used at runtime, would be a
-   separate control/status channel, not bitstream loading).
+2. ~~Decompile whichever function contains the `~0x200b7310` RSPI2 entries~~ — **done, see "RSPI2 confirmed
+   as a real, actively-used SPI link to the FPGA" below (22nd session).**
 3. ~~`DRESD` (P2_6)~~ — **done, see "DRESD (P2_6) resolved" below (13th session).**
-4. None of this has yet been tied back to the unidentified ring-buffer consumer task from
-   [[multi-cpu-images]]'s `FUN_20025044` trace — worth checking whether that consumer ultimately calls
-   into the RSPI2 or SSIF/DMAC code found here, which would finally connect the two open threads.
+4. ~~Tie this back to the unidentified ring-buffer consumer task from [[multi-cpu-images]]'s `FUN_20025044`
+   trace~~ — **partially done: the consumer (`FUN_200b0f68`) does drive this RSPI2 link, among others, but
+   NOT for the `chunk4`/`chunk5` (`0xb0`/`0xe2`-tagged) traffic specifically — see below, this is a real,
+   useful negative result, not a full connection.**
+
+## RSPI2 confirmed as a real, actively-used SPI link to the FPGA (22nd session)
+
+Decompiled the function containing the `~0x200b7310` table (it's a literal-pool/data block, not code —
+the actual driver functions sit just before it in memory) and traced its users precisely.
+
+**`FUN_200b6c50` — a genuine, byte-at-a-time SPI transmit function over RSPI channel 2**:
+```c
+void FUN_200b6c50(byte first_byte, int buf, uint count)
+{
+    do { } while (!(*SPSR2 & 0x40));       // poll RSPI2 status register (0xE800D803) for TX-ready
+    *SPCMD2 |= 0x80; *SPCMD2 &= ~0x80;     // toggle a command-register bit (0xE800D820) — direction/mode
+    *SPCR2 = 0x48;                          // 0xE800D800 — RSPI2 control register
+    *SPDR2_byte = first_byte;               // 0xE800D804 — RSPI2 data register, first byte out
+    for (i = 0; i < count; i++)
+        *SPDR2_byte = buf[i];                // the rest of the buffer, one byte per iteration
+    // then updates a RAM ring-buffer write-position field and signals event 0xa2
+}
+```
+This is unambiguous: real register polling, a real per-byte transmit loop over actual RSPI2 hardware
+registers (`SPCR2`/`SPCMD2`/`SPSR2`/`SPDR2`, all at `0xE800D800`-`0xE800D820` exactly matching the RZ/A1H
+manual's RSPI channel 2 register block) — **this firmware unambiguously drives real, ongoing SPI traffic
+over the pins already mapped to the FPGA's differential I/O (`SCPCK`/`SCPSS`/`SCPX`/`SCPR`)**. The
+"not confirmed live" caveat on this link from earlier sessions is retracted.
+
+**Wired into the same generic async job-queue infrastructure documented for `chunk4`/`chunk5` in
+[[multi-cpu-images]]** — a genuinely new, useful connection, though not the one originally hoped for.
+`FUN_200b0f68` (the ring-buffer drain/consumer function [[multi-cpu-images]] already found servicing the
+`chunk4`/`chunk5` producer) turns out to have a real `switch` on each queued job's tag byte, not just
+"queue mechanics" as characterized there — 5 concrete cases:
+- `0`: signals event `0xa1` (the exact event `chunk4`/`chunk5`'s own tag range was already tied to)
+- `1`: a readiness/retry check gating a Port-8 reconfiguration (`FUN_200b0cd4`, already found this session
+  while tracing `DRESD` — sets `PSR8` bits `0x10000000`/`0x40000000`)
+- `2`: `FUN_200b5cdc`/`FUN_200b5dc0` — the SSIF/DMAC cache-flush-and-transfer function from this file's
+  DSP/FPGA audio section
+- `3`: **`FUN_200b6c50` — our new RSPI2 transmit function**
+- `4`: `FUN_200b38ac` — the same front-panel/SCIF3-adjacent function referenced in this file's front-panel
+  section
+
+**Important correction to [[multi-cpu-images]]'s ring-buffer writeup**: `chunk4`/`chunk5`'s own entries are
+tagged with `0xb0`-`0xb7`/`0xe2` in the tag byte (`FUN_200b2fc8`/`FUN_200b3040`'s packing scheme) — **none
+of which match this switch's small-integer cases (`0`-`4`)**. So `chunk4`/`chunk5`'s tagged jobs, if pushed
+through this exact ring buffer, would hit none of these 5 cases and fall through unhandled by
+`FUN_200b0f68` itself — **this confirms RSPI2 is real and active, but confirms (doesn't refute) that it is
+*not* how `chunk4`/`chunk5` data reaches wherever it goes.** [[multi-cpu-images]]'s open question ("who
+consumes the `0xb0`/`0xe2`-tagged entries specifically") remains genuinely open — this session narrows it
+by ruling out RSPI2/SSIF/front-panel-UART as the answer, rather than by answering it directly.
+
+**Driver init found too**: `FUN_200b665c` configures Port 8's pins (via the same bit-manipulation idiom as
+`port_bulk_gpio_init_pass1`/`pass2`) and registers four event handlers via `register_event_handler` — IDs
+`0x115`, `0x2a`, `0x2b`, and `0xa2` (the last one wired to `FUN_200b6444`, RSPI2's own status-wait/init
+counterpart to the transmit function above). This is the real RSPI2 driver's setup routine.
+
+**Bottom line**: RSPI2 is a genuine, IRQ-driven, ongoing CPU→FPGA SPI link — resolves this file's
+long-standing "real traffic vs. init-only" question with a clear yes. It shares its dispatch/queue plumbing
+with the front-panel UART and SSIF/audio-DMA paths (a real, useful map of this firmware's async-job
+architecture), but is confirmed *not* the transport for the `chunk4`/`chunk5` mystery specifically.
 
 ## `DRESD` (P2_6) resolved — boot-time-only, held at a fixed level (13th session)
 
