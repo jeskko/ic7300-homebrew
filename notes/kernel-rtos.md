@@ -320,3 +320,95 @@ starts at `0x200054cc`.
   an isolated fix.
 
 Both functions commented (PLATE) and left renamed/typed in the live Ghidra project for future sessions.
+
+## Boot-chain completeness audit (19th session) — traced through to the real first task, one gap identified
+
+User asked "how complete is our understanding of the boot process" while chasing what eventually brings
+the DSP out of reset (see [[ic7300-signal-chain]]'s `DRESD` finding). Walked the whole chain end-to-end
+against the live Ghidra project rather than trusting prior notes at face value — found and fixed one
+analysis artifact, and disassembled a genuinely never-before-analyzed function (the first task's actual
+body). Full chain, current state:
+
+1. **Boot ROM / `base.dat`** (flash, XIP) — ✅ solid, see [[base-loader]]: MMU setup, SPI flash bring-up,
+   LZSS-decompress the chosen body variant to RAM at `0x20005000`, `VBAR` repoint, jump in.
+2. **`body.bin`'s own vector table → `reset_handler`** — ✅ solid: cache/branch-predictor cleanup,
+   `mmu_init_body()`, `FUN_2002b878()` (a port-register read/modify/write sequence, not yet individually
+   named — minor, low-priority gap), then two indirect calls resolved this session:
+   `DAT_200050c4` → `thunk_FUN_200b8690` (a tiny thunk running `FUN_200b848c()`/`FUN_200b8630()` — some
+   pre-kernel hardware bring-up, not decompiled further; low priority) and `DAT_200050c8` → **`kernel_start`
+   itself** (`0x20005290`) — confirms `reset_handler`'s last act really is handing off into the sequence
+   below, closing what was an open item as of last check. Never returns.
+3. **`kernel_start` (`0x20005290`)** — ✅ now fully re-verified against the raw ARM listing (it's plain
+   ARM code, `blx` calls throughout, cleanly disassembled — no ARM/Thumb confusion here). **Found and
+   fixed a Ghidra artifact**: a spurious second `Function` object, `FUN_20005298`, existed starting at
+   `kernel_start`'s *second instruction* — not a real function at all, just an analyzer mis-split (PLATE-
+   commented at `0x20005298` explaining this, `kernel_start` itself cross-references it). The real,
+   single, unbroken sequence, with real literal values pulled directly from the listing (previously only
+   named, never dumped):
+   ```
+   sp = *0x200052b4                  ; = 0x205DCC60 -- the initial kernel boot stack pointer
+   run_ctors_and_start_kernel()        ; walks a C++ static-ctor table (0x2017cd14-0x2017cd18,
+                                        ; {arg0,arg1,arg2,fnptr} per entry) -- confirms a real
+                                        ; C-runtime-init step DOES exist, answering an until-now
+                                        ; unasked question ("is there a ctor/BSS-init stage at all?")
+   FUN_20186d2c()                       ; kernel/RTOS bootstrap (static heap-region setup, etc.
+                                        ; -- already documented above, 14th session)
+   r0 = *0x200052b0                     ; = 0x203907C4 -- the first task's ID/descriptor slot,
+                                        ; runtime-populated (confirmed blank/0xff in the static
+                                        ; image, per this file's "Open questions" #3)
+   itron_act_tsk(r0, 0)                  ; activate the first task
+   FUN_20186d58()                         ; scheduler-start dispatch -> enter_user_mode() (18th
+                                          ; session, privilege drop into the first task)
+   b .                                    ; halt loop, unreachable once the first SWI context
+                                          ; switch fires
+   ```
+   **No BSS-zero step was found separately** — worth flagging honestly rather than assuming: either it's
+   folded into the ctor-table walk (plausible, some `libgcc`/startup variants do this), or `body.bin`'s
+   decompressed image already has BSS pre-zeroed as shipped (this codebase's whole image comes from a
+   single LZSS-decompressed blob, not a separate flash-to-RAM copy + zero-fill, so "already zero" is a
+   perfectly reasonable outcome here, not a specific gap needing more searching) — not chased further this
+   session, low priority.
+
+4. **The first task's actual body — ✅ NEW, disassembled for the first time this session.** The task
+   descriptor at `0x2033605c` (`entry_point=0x201871f0|1` (Thumb), `priority=2`, `flags=1`) pointed at an
+   address Ghidra had *never analyzed at all* — still raw undefined bytes despite being a live,
+   runtime-reached entry point (a genuine analysis gap, same general family as the ARM/Thumb
+   disassembly-context bugs elsewhere in this project, though this one is "never disassembled" rather
+   than "mis-disassembled"). Created the function (`first_task_entry`) and decompiled it — a clean,
+   generic **ITRON/FreeRTOS message-dispatch loop**, not itself the hardware-init code:
+   ```
+   loop:
+     msg = queue_receive(*puRam20187224, INFINITE)     ; FUN_20186de4 (itron trampoline) ->
+                                                         ; FUN_20186c74, a real ring-buffer-backed
+                                                         ; queue-receive implementation
+     if status != RECEIVED: retry
+     handler = msg_dispatch_lookup_trampoline(msg.param) ; 0x2018711c -> resolve_and_invoke_msg_callback,
+                                                          ; which validates the message record
+                                                          ; (validate_msg_record), checks a
+                                                          ; "has-registered-callback" flag, and
+                                                          ; resolves the callback pointer
+     if handler != NULL: handler(msg.param)
+   ```
+   This is a real, previously-undocumented piece of the boot picture: **the first task isn't the hardware-
+   init code itself — it's a generic dispatcher that waits for messages and routes them to registered
+   handlers.** `*puRam20187224` (the queue handle) is itself runtime-populated (holds `0x203907d8` at the
+   point checked), consistent with everything else in this codebase that needs a fresh per-boot system
+   table.
+
+5. **The still-open gap**: `FUN_2002b29c` (the cold-boot-vs-power-state dispatcher that leads to
+   `FUN_2002afc0`'s hardware init — `port_bulk_gpio_init_pass2`, the `DRESD`/DSP-reset write, etc. — see
+   [[ic7300-signal-chain]]) has **zero direct callers anywhere in `body.bin`**. Given the dispatch
+   mechanism just found in step 4, the obvious reading is that it's registered as a callback and reached
+   through exactly this message-dispatch loop, not called directly — but **which message ID reaches it,
+   and who posts the very first message that kicks off the rest of the boot sequence, hasn't been found
+   yet.** This is now the concrete, well-scoped next step for "how does execution get from the scheduler
+   starting to real hardware init running" — and, per the reason this audit started, it's also the most
+   likely place to eventually find whatever (if anything, in software) releases the DSP from reset.
+
+**Honest completeness verdict**: the chain from power-on through to the scheduler running its first task
+is now solid and gap-free (steps 1-4). The one real, unresolved link is step 5 — a classic "callback
+registered somewhere, dispatched by ID, static analysis can't easily enumerate the ID→handler table
+without either finding the registration call sites for every handler or getting live/JTAG visibility into
+the queue's actual traffic." Two small, low-priority loose ends noted along the way (`FUN_2002b878`'s
+purpose, and confirming what `DAT_200050c4`/`DAT_200050c8` point at) — neither blocks the picture above,
+both cheap to close out if picked up.
