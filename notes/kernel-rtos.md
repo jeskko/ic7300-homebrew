@@ -412,3 +412,67 @@ without either finding the registration call sites for every handler or getting 
 the queue's actual traffic." Two small, low-priority loose ends noted along the way (`FUN_2002b878`'s
 purpose, and confirming what `DAT_200050c4`/`DAT_200050c8` point at) — neither blocks the picture above,
 both cheap to close out if picked up.
+
+## `FUN_2002b29c`'s real caller found (20th session) — confirmed via raw disassembly, Ghidra needs a GUI fix to finish it
+
+Followed up on step 5 above. **`references_to` was blind here for the same reason it's been blind
+elsewhere in this project**: the caller was never disassembled by Ghidra at all, so no xref existed to
+find. Fell back to the project's established `objdump`-ground-truth technique (`arm-none-eabi-objdump -D
+-b binary -m arm --adjust-vma=0x20005000`, plain ARM mode, over the full `body.bin`) and grepped for
+`2002b29c` as a branch target across the whole image — found a real `bl 0x2002b29c` at `0x2003bb70`,
+inside a small, complete, sensible-looking ARM function:
+
+```
+2003bb48: blx 0x201870ac      ; call, store result into *0x2039020c
+2003bb54: mov r4, #0
+2003bb58: ldr r5, [0x2039030e]; ...
+2003bb5c: strb r4, [r5]        ; *0x2039030e = 0
+2003bb60: mov r7, #1
+2003bb64: ldr r6, [0x20390311]
+2003bb68: strb r4, [r6]        ; *0x20390311 = 0        <- loop target
+2003bb6c: bl 0x20062c64         ; (probably a wait/yield primitive, not yet examined)
+2003bb70: bl 0x2002b29c          ; *** the call we were chasing ***
+2003bb74: strb r7, [r5]          ; *0x2039030e = 1
+2003bb78: b 0x2003bb68            ; loop forever
+```
+
+This loop is entered via an unconditional jump (`b 0x2003bb48`) from `0x200b950c`, which is itself the
+tail of a function starting around `0x200b94e8` that — per the same raw-disassembly reading — writes two
+entries into what looks like a small ID-indexed handler table (via a bounds-checked "`table[id] = ptr`"
+helper at `0x200b9490`: entry `id=0 -> 0x20005960`, entry `id=0x86 -> 0x200059b4`), then executes `svc
+0x1` (a different SVC immediate than the usual `SWI(0)` reschedule trap — matches this file's earlier
+note about a separate, narrow SWI-immediate-indexed table with "only one real entry"), then falls straight
+into the loop above.
+
+**Why this isn't written up as fully confirmed yet**: creating Ghidra `Function` objects at these
+addresses (to decompile them properly) produced garbage (`in_ZR`, `unaff_r4`/`unaff_r6`, `halt_baddata()`,
+"Bad instruction — Truncating control flow") at every one of them — the same known ARM/Thumb
+disassembly-context bug documented earlier in this file, freshly triggered in territory that had simply
+never been analyzed before (so no bookmark existed for it until just now). Confirmed via
+`annotate.list_bookmarks`: this session's probing added at least two new "Bad Instruction" bookmarks —
+`0x2003bb7c` (right where the loop's own trailing literal pool sits) and one at `0x20005954`, which
+already belongs to `swi_handler`'s own literal pool (the `PTR_DAT_20005954`/`0x20184850` constants this
+file's "swi_handler" section already documents) — meaning `0x20005960`'s status as a genuine separate
+function is the *least* certain part of this finding and needs care, not blind trust, once re-disassembled.
+
+**What's solid vs. what needs the GUI fix, precisely**:
+- ✅ Solid (hand-verified against raw ARM opcodes, not dependent on Ghidra's decompiler): `FUN_2002b29c` is
+  called from a real loop at `0x2003bb48`-`0x2003bb7b`, itself reached by a jump from a function around
+  `0x200b94e8`-`0x200b950b` that does two table-writes and an `svc 1` first.
+- 🟡 Needs the GUI "force ARM disassembly" fix before trusting further: `0x2003bb48`-`0x2003bb7b` (the
+  loop), `0x200b94e8`-`0x200b950b` (the setup function) — both currently undefined bytes in Ghidra,
+  produced garbage decompiles once turned into `Function` objects this session (left in the live project
+  as `sys_monitor_task_loop_probe`/`sys_monitor_task_setup_probe`, deliberately placeholder-named, PLATE-
+  commented with this caveat — **don't trust their current decompiled bodies**).
+- 🔴 Not yet confirmed at all, likely wrong as currently understood: what `0x20005960`/`0x200059b4` (the
+  two table targets) really are — they sit immediately after `swi_handler`'s own literal pool, which
+  raises a real possibility they're something more kernel-internal than "two application message
+  handlers" as first guessed. Needs the GUI fix at `0x20005954`-ish applied *carefully* (it may need to
+  stay data, not become code) before this can be resolved either way. Left as
+  `handler_id0_probe`/`handler_id86_probe` in Ghidra, same placeholder-naming/caveat treatment.
+
+**Next step, concretely**: once the user forces ARM disassembly over the two 🟡 ranges above (and takes a
+careful look at `0x20005954`'s neighborhood rather than assuming it should also become code), re-decompile
+all four probe functions and confirm/refute this section's reading — then rename them properly and fold
+the confirmed result into the "boot-chain completeness audit" section above, closing the one remaining
+gap identified there.
