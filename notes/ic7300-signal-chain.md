@@ -117,18 +117,33 @@ then checked `body.bin` for real register references — this directly bears on 
 "where does the DSP get its program, and what does the `FUN_20025044`/ring-buffer mechanism actually
 drive" question.
 
-| Signal(s) | CPU pin(s) | Manual alt-function | Peripheral | Confirmed referenced in `body.bin`? |
-|---|---|---|---|---|
-| `BCLK_` | P2_8 | `SSISCK0` | SSIF0 bit clock | ✅ yes (see below) |
-| `FRM_` | P2_9 | `SSIWS0` | SSIF0 word select (frame sync) | ✅ yes |
-| `DX_REC` | P2_10 | `SSIRxD0` | SSIF0 receive data | ✅ yes |
-| `DR_AF` | P2_11 | `SSITxD0` | SSIF0 transmit data | ✅ yes |
-| `DX_FMT` | P3_6 | `SSIRxD1` | SSIF1 receive data | ✅ yes |
-| `DR_RSV` | P3_7 | `SSITxD1` | SSIF1 transmit data | ✅ yes |
-| `SCPCK`/`SCPSS`/`SCPX`/`SCPR` | P8_3/4/6/5 | `RSPCK2`/`SSL20`/`MOSI2`/`MISO2` | RSPI channel 2, base `0xE800D800` | 🟡 only inside a generic multi-peripheral init table (`~0x200b7310`), not a dedicated driver |
-| `DSPCK`/`DSPR`/`DSPX` | P8_0/1/2 | `SSL00`/`MOSI0`/`MISO0` | RSPI channel 0, base `0xE800C800` | ❌ no reference found anywhere |
-| `HSK0`/`HSK1`/`FRWT`/`FPDX`/`DCSX`/`DCSR`/`FPSX`/`FPSR` | P8_8-15 | `SPBIO0x_`/`SPBCLK_`/`SPBSSL_` | **SPI Multi I/O Bus Controller channel 1**, base `0x3FEFB000` (channel 0, base `0x3FEFA000`, is the confirmed XIP boot-flash controller — see [[base-loader]]) | ❌ no reference found anywhere, in `body.bin` or `base.dat` |
-| `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line, wired to both `IC901` (DSP) pin 145 and `EN25QH32A`'s `WP` pin | ✅ yes — see below (13th session) |
+| Signal(s) | CPU pin(s) | Manual alt-function | Peripheral | DSP pin (`IC901`, TMS320C6745) | FPGA pin (`IC1351`) | Confirmed referenced in `body.bin`? |
+|---|---|---|---|---|---|---|
+| `BCLK_` | P2_8 | `SSISCK0` | SSIF0 bit clock | 126, `ACLKX0`/`ECAP0`/`APWM0`/`GP2[12]` (McASP0 bit clock) | `A19`, `RDN4` | ✅ yes (see below) |
+| `FRM_` | P2_9 | `SSIWS0` | SSIF0 word select (frame sync) | 127, `AFSX0`/`GP2[13]`/`BOOT[10]` (McASP0 frame sync) | `A16`, `DIFFIO_T30n` | ✅ yes |
+| `DX_REC` | P2_10 | `SSIRxD0` | SSIF0 receive data | 116, `AXR0[4]`/`RMII_RXD[0]`/`GP3[4]` (McASP0 serializer 4) | — | ✅ yes |
+| `DR_AF` | P2_11 | `SSITxD0` | SSIF0 transmit data | 117, `AXR0[5]`/`RMII_RXD[1]`/`GP3[5]` (McASP0 serializer 5) | — | ✅ yes |
+| `DX_FMT` | P3_6 | `SSIRxD1` | SSIF1 receive data | 118, `AXR0[6]`/`RMII_RXER`/`GP3[6]` (McASP0 serializer 6) | — | ✅ yes |
+| `DR_RSV` | P3_7 | `SSITxD1` | SSIF1 transmit data | 120, `AXR0[7]`/`MDIO_CLK`/`GP3[7]` (McASP0 serializer 7) | — | ✅ yes |
+| `DSPCK` | P8_0 | `SSL00` | (was: RSPI ch.0) | 162, `ACLKX1`/`EPWM0A`/`GP3[15]` (**McASP1** bit clock) | `Y1`, `DIFFIO_L29n` | ❌ no CPU-side reference found |
+| `DSPR` | P8_1 | `MOSI0` | (was: RSPI ch.0) | 175, `AXR1[2]`/`GP4[2]` (McASP1 serializer 2) | `AA1`, `DIFFIO_L31n` | ❌ no CPU-side reference found |
+| `DSPX` | P8_2 | `MISO0` | (was: RSPI ch.0) | 176, `AXR1[1]`/`GP4[1]` (McASP1 serializer 1) | — | ❌ no CPU-side reference found |
+| `DCSX` | P8_12 | — | (was: SPI Multi I/O ch.1) | 163, `AFSX1`/`EPWMSYNCI`/`EPWMSYNC0`/`GP4[10]` (McASP1 frame sync X) | — | ❌ no reference found |
+| `DCSR` | P8_13 | — | (was: SPI Multi I/O ch.1) | 166, `AFSR1`/`GP4[13]` (McASP1 frame sync R) | — | ❌ no reference found |
+| `HSK0` | P8_8 | — | (was: SPI Multi I/O ch.1) | 100, `EMB_A[3]`/`GP7[5]` (DSP **external memory bus address bit 3**) | — | ❌ no reference found |
+| `HSK1` | P8_9 | — | (was: SPI Multi I/O ch.1) | 98, `EMB_A[4]`/`GP7[6]` (EMIF address bit 4) | — | ❌ no reference found |
+| `FRWT` | P8_10 | — | (was: SPI Multi I/O ch.1) | 96, `EMB_A[6]`/`GP7[8]` (EMIF address bit 6) | — | ❌ no reference found |
+| `RTD` | P8_7 | — | (not in original 20-signal table; DSP-side companion of the `EMB_A` group) | 97, `EMB_A[5]`/`GP7[7]` (EMIF address bit 5) | — | ❌ no reference found |
+| `FPDX` | P8_11 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `W1`, `DIFFIO_L28n` | ❌ no reference found |
+| `FPSX` | P8_14 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `U1`, `DIFFIO_L24n` | ❌ no reference found |
+| `FPSR` | P8_15 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `V1`, `DIFFIO_L25n` | ❌ no reference found |
+| `SCPCK` | P8_3 | `RSPCK2` | RSPI channel 2, base `0xE800D800` | — (no DSP pin) | `G1`, `DIFFCLK_0n` | 🟡 only inside a generic multi-peripheral init table (`~0x200b7310`), not a dedicated driver |
+| `SCPSS` | P8_4 | `SSL20` | RSPI channel 2 | — (no DSP pin) | `F1`, `DIFFIO_L9n` | 🟡 same table |
+| `SCPX` | P8_6 | `MOSI2` | RSPI channel 2 | — (no DSP pin) | `C1`, `DIFFIO_L4n` | 🟡 same table |
+| `SCPR` | P8_5 | `MISO2` | RSPI channel 2 | — (no DSP pin) | `E1`, `DIFFIO_L8n` | 🟡 same table |
+| `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line | 146, `\RESET` (**confirmed DSP reset input**, active-low per schematic notation — corrected from an earlier "pin 145" transcription) | — | ✅ yes — see below (13th/14th sessions) |
+
+**Note on this table's evolution**: the "Peripheral" column's "(was: ...)" entries are the CPU-manual-alt-function-only guesses from the 12th session, kept visible rather than silently deleted — the 14th session's DSP-side pin data (below) refines or replaces several of them.
 
 **The clean, confirmed finding: `BCLK_`/`FRM_`/`DX_REC`/`DR_AF`/`DX_FMT`/`DR_RSV` together form a real,
 actively-used CPU↔DSP digital audio link** via the RZ/A1H's Serial Sound Interface, using **both SSIF
@@ -140,15 +155,47 @@ DMA-driven continuous audio/IQ sample stream between the main CPU and the DSP, n
 handshake. This is almost certainly the digitized-audio path the service manual's block diagram already
 describes (DSP ↔ FPGA ↔ analog front end), now traced to real register-level firmware evidence.
 
-**Genuinely negative, and telling**: the SPI Multi I/O Bus Controller's *second* channel (`0x3FEFB000`,
-which P8_8-15's alternate-function names point straight at) has **zero references anywhere** in either
-`body.bin` or `base.dat` — checked via the same page-prefix hex search technique used successfully
-elsewhere in this project. If this channel really is what those 8 pins use, **this firmware doesn't
-configure or use it** — a real, if inconclusive, result: either this hardware capability goes unused (a
-populated-but-inert design, similar to several diode-matrix findings), or these particular pins are
-actually driven as plain GPIO after all (their Port 8 data register also isn't referenced directly as a
-literal, so this doesn't resolve cleanly either way — see next paragraph). RSPI0 (the `DSPCK`/`DSPX`/
-`DSPR` candidate) is similarly unreferenced as a direct literal.
+**DSP-side pin data (14th session) independently confirms this from the other end**: `BCLK_`/`FRM_` land
+on DSP pins `ACLKX0`/`AFSX0` (McASP0's shared bit-clock/frame-sync) and `DX_REC`/`DR_AF`/`DX_FMT`/`DR_RSV`
+land on `AXR0[4]`/`AXR0[5]`/`AXR0[6]`/`AXR0[7]` — four serializer pins on that **same** McASP0 port. TI's
+McASP natively supports exactly this "one clock/frame-sync pair, multiple serializer data pins" topology,
+which is precisely the CPU-side "SSIF0+SSIF1 paired, sharing SSIF0's clock/word-select" mechanism already
+found in the `0x20060700` table — two completely independent readings (CPU manual + register table vs.
+DSP datasheet pinout) landing on the same structure is about as solid as static confirmation gets here.
+Also notable: `BCLK_`/`FRM_` **also** land on FPGA pins (`A19`/`RDN4` and `A16`/`DIFFIO_T30n`) — so this
+clock/frame-sync pair is shared three ways (CPU/DSP/FPGA), meaning the FPGA is very likely a *listener or
+co-participant* on this same synchronized audio/IQ stream, not just adjacent hardware.
+
+**Genuinely negative, refined by 14th-session DSP-pin data**: the SPI Multi I/O Bus Controller's *second*
+channel (`0x3FEFB000`) still has **zero references anywhere** in either `body.bin` or `base.dat`, and the
+DSP-side pinout now explains why the CPU-manual-alt-function guess was likely wrong to begin with, for two
+different sub-groups of these 8 pins:
+- `DSPCK`/`DSPR`/`DSPX`/`DCSX`/`DCSR` (`P8_0/1/2/12/13`) land on DSP pins `ACLKX1`/`AXR1[2]`/`AXR1[1]`/
+  `AFSX1`/`AFSR1` — **McASP1**, the DSP's *second* audio serial port instance, not SPI at all. Same
+  "shared clock/frame-sync + serializer data pin" McASP topology as the confirmed McASP0/SSIF0+1 link
+  above, just a second, independent instance — plausibly a second audio/IQ stream (e.g. TX audio, or a
+  second IQ pair) running in parallel with the first. `DSPCK`/`DSPR` also land on FPGA pins (`Y1`/
+  `DIFFIO_L29n`, `AA1`/`DIFFIO_L31n`), the same three-way sharing pattern as `BCLK_`/`FRM_` above.
+- `HSK0`/`HSK1`/`FRWT`/`RTD` (`P8_7/8/9/10`) land on DSP pins `EMB_A[3]`/`EMB_A[4]`/`EMB_A[6]`/`EMB_A[5]` —
+  the DSP's **external memory bus address lines**, not a handshake/flow-control protocol as the CPU-side
+  alt-function names ("SPBIO"/handshake-style naming) had suggested. Genuinely unclear yet what the main
+  CPU does with 4 bits of the DSP's own EMIF address bus tied to its GPIOs — possibly a debug/bus-snoop tap,
+  possibly these are mis-transcribed and actually belong to a different sub-circuit; **zero CPU-side
+  references either way**, so this remains unused/unexplained on the firmware side regardless.
+- `FPDX`/`FPSX`/`FPSR` (`P8_11/14/15`) have **no DSP pin at all** — FPGA-only (`W1`/`DIFFIO_L28n`,
+  `U1`/`DIFFIO_L24n`, `V1`/`DIFFIO_L25n`). Combined with `SCPCK`/`SCPSS`/`SCPX`/`SCPR` also landing on
+  FPGA-only differential pins (`G1`/`DIFFCLK_0n`, `F1`/`DIFFIO_L9n`, `C1`/`DIFFIO_L4n`, `E1`/`DIFFIO_L8n`),
+  this whole 7-pin group is a genuine **CPU↔FPGA-only differential I/O bus that never touches the DSP** —
+  likely related to the `IC1212` "LVDS DRIVE" clock-distribution block noted separately in this file's
+  "Reference clocks" section (worth checking if that's the same net cluster). Still zero confirmed runtime
+  driver on the CPU side beyond the generic RSPI2 init-table entry for the `SCP*` subset — see the caveat
+  below.
+
+Either way, **this firmware doesn't configure or use the SPI Multi I/O Bus Controller's second channel** —
+a real, if inconclusive, result: either that hardware capability goes genuinely unused (a populated-but-
+inert design, similar to several diode-matrix findings), or (now the better-supported reading, per the
+DSP-side data above) these pins were never SPI-Multi-I/O pins to begin with and the CPU manual's
+alternate-function table simply wasn't the right lens for this particular pin group.
 
 **Important caveat carried over from the diode-matrix work**: every register base found here (`P2`/`P3`/
 `P8` at `0xFCFE3008`/`300C`/`3020`, and `RSPI2` at `0xE800D800`) turns up **only inside large, generic,
@@ -214,26 +261,21 @@ the port-register block at all.
 
 **Conclusion**: the main CPU sets `DRESD` (`P2_6`) as a plain GPIO output, drives it LOW once at boot/wake,
 and **never touches it again** — there is no reset-pulse or write-protect-toggle sequence anywhere in the
-traced firmware. Two readings, depending on which polarity `DRESD` actually is (not established from the
-schematic alone):
-- If active-low (`RESET_N`/`WP_N`-style, the common convention for a signal named with a trailing `D`
-  suggesting "data"/direct rather than an inverted name — genuinely ambiguous here), LOW means the DSP is
-  held in permanent reset and the neighbor flash permanently write-protected by the main CPU — which would
-  fit the existing hypothesis in this file's "FPGA configuration" section that **the DSP has no persistent
-  program flash of its own and is boot-loaded into RAM by the main CPU** (via the `FUN_20025044` ring-buffer
-  mechanism documented in [[multi-cpu-images]]): hold it in reset, feed it its program over that separate
-  channel, only then (if ever) release it — release would have to happen from somewhere `body.bin` doesn't
-  reach, or not happen in the traced control flow at all if the DSP is designed to run directly out of the
-  CPU-fed RAM without ever leaving reset for its core, or is released by fixed hardware timing rather than
-  software.
-- If active-high, LOW instead means reset released / WP disabled at boot — a much less interesting result
-  (the pin just sits in its inactive state permanently), though this reading sits awkwardly next to the
-  same DSP-has-no-own-flash hypothesis, since it would leave the neighbor flash permanently *writable* with
-  no code anywhere ever re-protecting it.
+traced firmware. **Polarity resolved (14th session)**: user re-checked the schematic and confirmed
+`DRESD` lands on DSP (`IC901`, TMS320C6745) pin 146, labeled `\RESET` — the backslash is the schematic's
+own active-low notation, so this is unambiguously the DSP's reset input (not, as first transcribed,
+pin 145 — corrected here). **LOW means the DSP is held in reset**, and the same net's other leg
+write-protects the neighbor `EN25QH32A` flash — both asserted together, permanently, by this firmware.
 
-Settling which of these two it is needs the schematic's actual active-level convention for `DRESD` (not
-captured in the pin table this session), or live probing once JTAG access is available — flagged here
-rather than guessed at.
+This confirms the first reading above and fits the existing hypothesis in this file's "FPGA
+configuration" section cleanly: **the DSP has no persistent program flash of its own — the main CPU
+holds it in reset from boot and never releases it in `body.bin`'s traced control flow**, consistent with
+it being boot-loaded into RAM by the main CPU instead (via the `FUN_20025044` ring-buffer mechanism
+documented in [[multi-cpu-images]]). Release, if it ever happens, must come from somewhere `body.bin`
+doesn't reach — worth keeping in mind as a possible role for the still-unexplained `chunk4`/`chunk5-tail`
+consumer once that's pinned down, or it genuinely never gets released in software and something else
+(fixed hardware timing, a one-shot power-on RC delay wired directly to the DSP rather than through the
+CPU) brings the DSP out of reset independently of this GPIO.
 
 ## Front panel connection — confirmed, active UART driver found (12th session, continued)
 
