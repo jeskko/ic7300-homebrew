@@ -172,6 +172,34 @@ initial setup — the SSIF0/1 audio path is the one clear exception, with its ow
    [[multi-cpu-images]]'s `FUN_20025044` trace — worth checking whether that consumer ultimately calls
    into the RSPI2 or SSIF/DMAC code found here, which would finally connect the two open threads.
 
+## Front panel connection — confirmed, active UART driver found (12th session, continued)
+
+User provided the front-panel connector's signal table: `FRES`(`P1_0`), `LRXD`(`P6_0`), `PWRK`(`P1_7`,
+"probably the power key"), `LTDX`(`P6_1`).
+
+**`LRXD`/`LTDX` (Local RX/TX Data) — confirmed real, active UART link to the front-panel/display unit.**
+`P6_0`/`P6_1`'s manual alt-functions are `RxD3`/`TxD3` — **SCIF channel 3** (base `0xE8008800`). Searched
+`body.bin` for this register page and found a **tight cluster of 5 references** at `~0x2003757c`
+(`SCSMR_3`/`SCSCR_3`/`SCFSR_3`/`SCFCR_3`/`SCFTDR_3` — the mode/control/status/FIFO-control/transmit-FIFO
+registers, all together), unlike the DSP/FPGA candidates above which only ever showed up inside generic
+multi-peripheral tables. Decompiled the driver function directly: real status-bit dispatch (tests bits
+`0x02`/`0x08`/`0x10`/`0x20`/`0x40`/`0x80` of the SCIF status byte — framing/overrun/break/RX-full/TX-empty
+style flags), **fixed `0x21`-byte (33-byte) packet framing** (`FUN_2017c710`/`FUN_20037214` both operate
+on exactly 33 bytes at a time), a retry counter with a threshold of 5, and IRQ-disable/re-enable bracketing
+around the shared state — a genuine, complete link-layer driver, not a stub. This is almost certainly the
+protocol carrying keypad/encoder/VFO-knob input and display/UI update commands to and from the front-panel
+MCU (`IC501`, the already-identified `R5F104LCAFB` RL78 — see [[multi-cpu-images]]'s "SX3765" resolution).
+Also calls `FUN_200b8308(0xec)` — the **same** generic RTOS event-flag-set utility found gating the
+`chunk4`/`chunk5` ring-buffer consumer in [[multi-cpu-images]], just with a different event number (`0xec`
+here vs `0xa1` there) — confirms it's a shared OS primitive used by multiple independent subsystems, not a
+sign the two paths are related.
+
+**`FRES`/`PWRK` — no dedicated peripheral alt-function found for either `P1_0` or `P1_7`** in the manual's
+pin table (both show only unrelated alternates: `RIIC0SCL`/`TCLKA`/`IRQ0`/etc. for `P1_0`,
+`RIIC3SDA`/`RLIN30RX`/`IRQ7`/etc. for `P1_7`) — consistent with both being plain GPIO, as expected for a
+front-panel reset line and a physical power-button read. Not traced further this session (no obvious
+register-level lead the way the UART/audio signals had).
+
 ## Schematic sheet map (2026-08-27 sweep)
 
 Swept all 17 pages of `/data/misc/icom/7300/doc/IC-7300_Schematic_Diagram_2.pdf`
