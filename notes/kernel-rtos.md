@@ -573,7 +573,7 @@ task list; **not** a trampoline call, found by checking `FUN_201888f4`'s callers
 | `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `0x2006bb58` | 0 | 0x800 | 🟡 new — explicit garbage decompile (many `unaff_rX`) |
 | `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `0x2006c2c4` | 0 | 0x800 | 🟡 new — explicit garbage decompile |
 | `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | ❌ still unresolved — no static caller of the thunk found either (see 21st session) |
-| `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `0x200aa580` | **-1** | 0x1000 | 🟡 new — explicit garbage decompile, `halt_baddata` immediately |
+| `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `0x200aa580` (`bmp_capture_task`) | **-1** | 0x1000 | ✅ **resolved, 25th session — the BMP screen-capture-to-SD-card task**, see below (no disassembly issue at all here, decompiles cleanly) |
 | `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `0x200b9c00` | 1 (highest seen) | 0x1800 | 🟡 new — **mixed**: garbage at entry, but real-looking code visible further in (calls `FUN_200cb5dc`/`FUN_200cb72c`/`FUN_200cb278`/`FUN_200cbcf0`/`FUN_200b9fc8` — a plausible read/parse/retry protocol handler) |
 | *(no direct call site found)* | `0x20361318` | `0x200b94e8` | 3 | 0x800 | ✅ examined (20th/21st sessions) — `sys_monitor_task_entry` |
 
@@ -587,6 +587,69 @@ touched by Ghidra's auto-analysis at all** (no direct caller in the static call 
 created → invisible to the bookmark-based sweep method used in the 17th session). Left all 8 as
 placeholder-named (`task_probe_<address>`), un-renamed `Function` objects with this status — **don't trust
 any of their current decompiled bodies**.
+
+## Going through the new tasks via `objdump` ground truth, no GUI fix yet available (25th session)
+
+Rather than wait for each address to get the GUI fix, read every remaining task's real ARM disassembly
+directly via `objdump` (the established, trustworthy fallback used throughout this project) to classify
+them without depending on Ghidra's decompiler at all.
+
+**`bmp_capture_task` (`0x200aa580`) — fully resolved, no disassembly issue here at all.** Turned out
+`0x200aa580` itself decompiles perfectly cleanly (Ghidra was never confused about *this specific address*
+— the garbage-decompile symptom reported earlier came from creating the `Function` boundary right at the
+task entry before checking whether the entry instruction itself was even part of the problem; here it
+wasn't). Body is a trivial infinite loop calling two already-clean functions:
+```c
+loop:
+    bmp_capture_signal_done();   // FUN_200aa548 -- signals a queue/semaphore
+    bmp_capture_write_file();    // FUN_200aa3c0 -- see below
+```
+`bmp_capture_write_file` (`FUN_200aa3c0`) is unambiguous: it builds a real **Windows BMP file** —
+constructs a 14-byte `BITMAPFILEHEADER` (magic `"BM"` = `0x424d`, file-header size field = `54` =
+`0x36`) immediately followed by a 40-byte `BITMAPINFOHEADER` (`biSize` = `40` = `0x28`, standard fields
+including a 24-bit-depth-shaped value), then calls two more functions to actually write pixel data and
+polls for completion before signalling done. **This is the IC-7300's screen-capture-to-SD-card feature**
+— renamed and PLATE-commented in Ghidra (`bmp_capture_task`/`bmp_capture_write_file`/
+`bmp_capture_signal_done`), no GUI fix needed.
+
+**The `FUN_2006c4a8` pair (`0x2006bb58`/`0x2006c2c4`) — real shape confirmed, purpose only partially
+pinned down.** Both are genuine ARM state-machine tasks (not garbage) reading a state byte from a **shared**
+global struct at `0x2006c3d4` (`+4` for one task, `+5` for the other) and jumping through a
+`addcc pc,pc,r0,lsl#2` table — 9 states for the first, 11 for the second. Their shared setup functions
+(`FUN_2006c45c`/`FUN_2006c410`, already cleanly analyzed, called once before either task starts) initialize
+near-identical 0x1a-byte descriptor structs — `{ready=0, ready=0, buf_size=0x40, count=0, mode=3,
+sentinel=-1, 0, tag_byte, tag_byte}` — differing only in the last two tag bytes (`0x20`/`0x40` for one,
+`0x60`/`0x60` for the other). One of the first task's states calls `FUN_2006bc84` → `FUN_200bc6a4`, **the
+same generic "read N bytes from an open file" primitive `firmware_update_main` uses for SD-card reads** —
+a real, if partial, clue. **Two plausible readings, not settled either way**: the `0x40`-byte chunk size
+matches both a classic SD/FAT sector-adjacent buffering size *and* a USB full-speed endpoint max-packet
+size — don't over-read the tag bytes as confirming either. Given the confirmed file-read call, buffered
+SD-card I/O (plausibly the WAV recorder/player, which the IC-7300 has) is at least as well-supported as a
+USB-endpoint-pair guess — recorded as open rather than asserting the more "interesting"-sounding option.
+
+**`0x20027528` — real code, the largest state machine found this session (42 states, `cmp r0,#0x29`),
+purpose not yet classified.** Same general shape as the pair above (calls `FUN_20186f60`, zeroes fields in
+a per-task struct first) but substantially bigger — worth a dedicated look on its own before guessing what
+it is.
+
+**`0x2001745c` — real code, not yet classified.** Calls `FUN_2017d454` first, conditionally
+`FUN_20186e68` (a different itron-cluster trampoline than the `FUN_20186f60`/`FUN_20186e98` pair seen
+elsewhere), and reads/writes small structs before its own dispatch. Has the largest stack of any task
+found (`0x2000` = 8192 bytes) — worth noting as a hint toward something with deep call chains or large
+local buffers.
+
+**`0x200095d8`/`0x20014384` — real bodies now confirmed via `objdump` (already noted last session), still
+not classified beyond "periodic/loop-driven, calls into the itron trampoline cluster".** `0x20014384`'s
+loop (`blx 0x20186d0c` with `r0=5`, `bl 0x20015628`, store result, loop) reads as a genuine
+"do-something-every-5-ticks" polling task; `0x200095d8`'s body is longer and not fully read yet.
+
+**Status after this session**: 1 of 8 fully resolved (`bmp_capture_task`), 2 of 8 have their real shape
+confirmed but purpose only partially pinned down (the `FUN_2006c4a8` pair), 1 of 8 confirmed real but
+uncharacterized (`0x20027528`, the biggest one), 3 of 8 confirmed real but not yet deeply read
+(`0x2001745c`, `0x200095d8`, `0x20014384`), and `0x200b9c00` unchanged from last session (mixed
+garbage/real, not re-checked this pass). The GUI ARM-disassembly fix would still help all of these decompile
+properly in Ghidra, but per `bmp_capture_task`'s example, `objdump` alone is enough to make real progress
+without waiting for it.
 
 **Two priorities for next time**:
 1. **Force ARM disassembly via the GUI** over all 8 new addresses (same fix pattern used successfully for
