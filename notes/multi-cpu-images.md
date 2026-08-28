@@ -555,3 +555,14 @@ empirically checked and doesn't hold for either `chunk4` or `chunk5-tail`, in th
 `FUN_20025044`/ring-buffer/event-flag delivery mechanism traced earlier in this file remains the more
 promising thread if this is picked up again — finding *that* consumer task would settle the question on
 firmer ground than further format-guessing on the bytes themselves.
+
+## Real DSP/FPGA hardware links found — see [[ic7300-signal-chain]] (12th session)
+
+User derived a full CPU↔DSP↔FPGA pin mapping from the schematics; cross-referenced against the RZ/A1H
+manual and `body.bin`, this confirmed a **real, actively-used digital audio link between the main CPU and
+the DSP** (RZ/A1H's SSIF0+SSIF1 peripherals, DMA-driven) and a **candidate SPI control link to the FPGA**
+(RSPI channel 2) that's referenced only in generic init tables so far, not a dedicated driver. Full
+mapping table and register-search results in [[ic7300-signal-chain]]'s "DSP/FPGA control signal mapping"
+section — don't duplicate it here, but do check it before continuing this thread: the open task of finding
+`FUN_20025044`'s ring-buffer consumer (above) should be checked against whether it ultimately calls into
+the RSPI2 code found there, which would finally connect these two open questions.

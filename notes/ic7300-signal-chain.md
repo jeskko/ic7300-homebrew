@@ -108,6 +108,70 @@ extra chunks" during firmware updates, rather than that mechanism being
 re-reading that section's conclusions with this correction in mind
 before extending the investigation further.
 
+## DSP/FPGA control signal mapping — user-derived from schematics, cross-referenced against the RZ/A1H manual (12th session)
+
+User read the schematics directly and produced a CPU-pin → DSP-pin → FPGA-pin table for every
+DSP/FPGA-adjacent signal (20 signals total, all on CPU Ports 2/3/8). Cross-referenced every CPU pin
+against the RZ/A1H manual's multi-function pin table to identify the actual on-chip peripheral involved,
+then checked `body.bin` for real register references — this directly bears on [[multi-cpu-images]]'s open
+"where does the DSP get its program, and what does the `FUN_20025044`/ring-buffer mechanism actually
+drive" question.
+
+| Signal(s) | CPU pin(s) | Manual alt-function | Peripheral | Confirmed referenced in `body.bin`? |
+|---|---|---|---|---|
+| `BCLK_` | P2_8 | `SSISCK0` | SSIF0 bit clock | ✅ yes (see below) |
+| `FRM_` | P2_9 | `SSIWS0` | SSIF0 word select (frame sync) | ✅ yes |
+| `DX_REC` | P2_10 | `SSIRxD0` | SSIF0 receive data | ✅ yes |
+| `DR_AF` | P2_11 | `SSITxD0` | SSIF0 transmit data | ✅ yes |
+| `DX_FMT` | P3_6 | `SSIRxD1` | SSIF1 receive data | ✅ yes |
+| `DR_RSV` | P3_7 | `SSITxD1` | SSIF1 transmit data | ✅ yes |
+| `SCPCK`/`SCPSS`/`SCPX`/`SCPR` | P8_3/4/6/5 | `RSPCK2`/`SSL20`/`MOSI2`/`MISO2` | RSPI channel 2, base `0xE800D800` | 🟡 only inside a generic multi-peripheral init table (`~0x200b7310`), not a dedicated driver |
+| `DSPCK`/`DSPR`/`DSPX` | P8_0/1/2 | `SSL00`/`MOSI0`/`MISO0` | RSPI channel 0, base `0xE800C800` | ❌ no reference found anywhere |
+| `HSK0`/`HSK1`/`FRWT`/`FPDX`/`DCSX`/`DCSR`/`FPSX`/`FPSR` | P8_8-15 | `SPBIO0x_`/`SPBCLK_`/`SPBSSL_` | **SPI Multi I/O Bus Controller channel 1**, base `0x3FEFB000` (channel 0, base `0x3FEFA000`, is the confirmed XIP boot-flash controller — see [[base-loader]]) | ❌ no reference found anywhere, in `body.bin` or `base.dat` |
+| `DRESD` | P2_6 | (plain GPIO — no alt function claimed) | Reset/write-protect line, wired to both `IC901` (DSP) pin 145 and `EN25QH32A`'s `WP` pin | not checked this session |
+
+**The clean, confirmed finding: `BCLK_`/`FRM_`/`DX_REC`/`DR_AF`/`DX_FMT`/`DR_RSV` together form a real,
+actively-used CPU↔DSP digital audio link** via the RZ/A1H's Serial Sound Interface, using **both SSIF
+channels 0 and 1 together** (a standard RZ/A1H pairing mode where SSIF1 shares SSIF0's clock/word-select
+to create a synchronized 2-channel stream). Found a dedicated setup table around `0x20060700`-`0x20060770`
+referencing `SSICR_0` (`0xE820B000`), `SSICR_1`/other SSIF1 registers (`0xE820B800`+), *and* what look like
+paired DMAC channel addresses (`0xE8200000` range) in the same table — consistent with a genuine
+DMA-driven continuous audio/IQ sample stream between the main CPU and the DSP, not just a one-time control
+handshake. This is almost certainly the digitized-audio path the service manual's block diagram already
+describes (DSP ↔ FPGA ↔ analog front end), now traced to real register-level firmware evidence.
+
+**Genuinely negative, and telling**: the SPI Multi I/O Bus Controller's *second* channel (`0x3FEFB000`,
+which P8_8-15's alternate-function names point straight at) has **zero references anywhere** in either
+`body.bin` or `base.dat` — checked via the same page-prefix hex search technique used successfully
+elsewhere in this project. If this channel really is what those 8 pins use, **this firmware doesn't
+configure or use it** — a real, if inconclusive, result: either this hardware capability goes unused (a
+populated-but-inert design, similar to several diode-matrix findings), or these particular pins are
+actually driven as plain GPIO after all (their Port 8 data register also isn't referenced directly as a
+literal, so this doesn't resolve cleanly either way — see next paragraph). RSPI0 (the `DSPCK`/`DSPX`/
+`DSPR` candidate) is similarly unreferenced as a direct literal.
+
+**Important caveat carried over from the diode-matrix work**: every register base found here (`P2`/`P3`/
+`P8` at `0xFCFE3008`/`300C`/`3020`, and `RSPI2` at `0xE800D800`) turns up **only inside large, generic,
+multi-peripheral bulk-initialization tables** (the same `~0x200bXXXX`-region tables already documented for
+the diode matrix's Port 5 setup) — not as a dedicated runtime driver reading/writing that specific
+register on its own. That's expected for one-time boot/mode configuration, but it means **this session
+hasn't yet found the actual runtime code that drives ongoing RSPI2/FPGA traffic**, if any exists beyond
+initial setup — the SSIF0/1 audio path is the one clear exception, with its own dedicated-looking table.
+
+**Concrete next steps, in priority order**:
+1. Decompile the function containing the `0x20060700` SSIF/DMAC table fully, to confirm the DMA-driven
+   audio-streaming read and nail down exactly which RAM buffers it moves data to/from.
+2. Decompile whichever function contains the `~0x200b7310` RSPI2 entries — this is the best lead for
+   understanding *if and how* the main CPU talks to the FPGA post-configuration (recall the FPGA's
+   *bitstream* comes from `IC902` per the manual; this RSPI2 link, if actually used at runtime, would be a
+   separate control/status channel, not bitstream loading).
+3. `DRESD` (P2_6) — a plain GPIO reset/write-protect line touching both the DSP and its neighbor flash —
+   not checked this session at all; would settle whether/when the main CPU actually resets or halts the
+   DSP, directly relevant to the "how does the DSP get its program" question.
+4. None of this has yet been tied back to the unidentified ring-buffer consumer task from
+   [[multi-cpu-images]]'s `FUN_20025044` trace — worth checking whether that consumer ultimately calls
+   into the RSPI2 or SSIF/DMAC code found here, which would finally connect the two open threads.
+
 ## Schematic sheet map (2026-08-27 sweep)
 
 Swept all 17 pages of `/data/misc/icom/7300/doc/IC-7300_Schematic_Diagram_2.pdf`
