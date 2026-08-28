@@ -351,10 +351,12 @@ body). Full chain, current state:
                                         ; unasked question ("is there a ctor/BSS-init stage at all?")
    FUN_20186d2c()                       ; kernel/RTOS bootstrap (static heap-region setup, etc.
                                         ; -- already documented above, 14th session)
-   r0 = *0x200052b0                     ; = 0x203907C4 -- the first task's ID/descriptor slot,
-                                        ; runtime-populated (confirmed blank/0xff in the static
-                                        ; image, per this file's "Open questions" #3)
-   itron_act_tsk(r0, 0)                  ; activate the first task
+   r0 = *0x200052b0                     ; = 0x203907C4 -- a runtime-populated descriptor slot
+                                        ; (confirmed blank/0xff in the static image, per this
+                                        ; file's "Open questions" #3)
+   itron_act_tsk(r0, 0)                  ; activate a task -- **correction, 24th session: NOT
+                                          ; first_task_entry, see below** -- this slot's real
+                                          ; task is still unidentified
    FUN_20186d58()                         ; scheduler-start dispatch -> enter_user_mode() (18th
                                           ; session, privilege drop into the first task)
    b .                                    ; halt loop, unreachable once the first SWI context
@@ -392,6 +394,26 @@ body). Full chain, current state:
    handlers.** `*puRam20187224` (the queue handle) is itself runtime-populated (holds `0x203907d8` at the
    point checked), consistent with everything else in this codebase that needs a fresh per-boot system
    table.
+
+   **Correction (24th session)**: the text above previously implied `first_task_entry` is activated by
+   `kernel_start`'s own `itron_act_tsk(r0, 0)` call (step 3). **That's wrong.** Prompted by a direct question
+   ("did we miss any tasks?"), checked `references_to` on `FUN_201888f4` (`itron_act_tsk`'s real inner
+   function) directly, not just on the `itron_act_tsk` trampoline — found exactly 2 callers: the trampoline
+   itself, and `FUN_20188574` (the kernel bootstrap's own lazy-init routine, called from `FUN_20186d2c`,
+   i.e. **earlier** in `kernel_start`'s sequence than its own `itron_act_tsk` call). `FUN_20188574` calls
+   `FUN_201888f4` **directly, bypassing the trampoline entirely** (it already runs in a privileged context,
+   so it skips the trampoline's mode-check/SWI-trap logic) — with argument `0x2033605c`, confirmed by
+   reading the literal directly: **this is `first_task_entry`'s own descriptor.** Same function also
+   creates, in the line right before, the message queue `first_task_entry` waits on (`FUN_20188650`,
+   writing the new queue handle to `0x203907d8` — the exact address `*puRam20187224` resolves to at
+   runtime, confirmed by reading both literals) — a clean, closed loop: **`FUN_20188574` both creates
+   `first_task_entry`'s queue and activates `first_task_entry` itself, in that order, before `kernel_start`
+   reaches its own `itron_act_tsk` call.** `kernel_start`'s own call therefore activates some *other*,
+   still-unidentified task via the runtime-populated slot `0x203907C4` — genuinely open, not
+   `first_task_entry` as previously written. This also means the "11 call sites" count from the 21st
+   session (verified exhaustively for calls to the *trampoline*) was never claimed to cover direct
+   inner-function calls — checked that gap now too: `FUN_201888f4` has only the 2 callers just described,
+   so no further direct-call activations are being missed.
 
 5. **The still-open gap**: `FUN_2002b29c` (the cold-boot-vs-power-state dispatcher that leads to
    `FUN_2002afc0`'s hardware init — `port_bulk_gpio_init_pass2`, the `DRESD`/DSP-reset write, etc. — see
@@ -540,7 +562,9 @@ independent methods — see above)**, each with its task descriptor read directl
 
 | Caller | Descriptor | Entry point | Priority | Stack | Status this session |
 |---|---|---|---|---|---|
-| `kernel_start` (`0x200052a4`) | `0x203907c4`→`0x2033605c` (indirect, runtime-populated) | `0x201871f0` | 2 | 0x320 | ✅ examined (14th/19th sessions) — `first_task_entry`, generic message-dispatch loop |
+`FUN_20188574` (kernel bootstrap, direct inner-function call — see the 24th-session correction below the
+task list; **not** a trampoline call, found by checking `FUN_201888f4`'s callers directly) | `0x2033605c` | `0x201871f0` | 2 | 0x320 | ✅ examined (14th/19th sessions) — `first_task_entry`, generic message-dispatch loop |
+| `kernel_start` (`0x200052a4`) | `0x203907c4` (runtime-populated, genuinely unidentified — **corrected 24th session, was previously miscredited as `first_task_entry`'s activator**) | ? | ? | ? | ❌ open — real task, unknown identity |
 | `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `0x200095d8` | **-2** | 0x400 | 🟡 new — Ghidra decompile silently **wrong** (no error flagged, but `objdump` shows a completely different real body: loop calling `blx 0x20186d0c`-style trampolines) |
 | `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `0x20014384` | 0 | 0x800 | 🟡 new — **same silent-wrong-decode problem**: `objdump` shows a real periodic loop (`blx 0x20186d0c` with `r0=5`, `bl 0x20015628`, store, loop) that Ghidra's decompile completely misses, showing an unrelated one-shot body instead |
 | `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `0x2001745c` | 1 | 0x2000 (largest stack seen) | 🟡 new — explicit "Bad Instruction"-style garbage (`in_ZR`/`halt_baddata`) |
@@ -579,3 +603,14 @@ Also worth remembering: the descriptor's `priority` field takes small **negative
 checked for sign) — `FUN_201888f4` (`itron_act_tsk`'s real inner function) explicitly allows priority in
 `-3..3`, confirmed already in this file's very first section — so negative priorities are a real, valid,
 used range in this firmware, not a sign of a misread field.
+
+**Follow-up (24th session) — user asked "did we miss any tasks?", and yes, in a specific way**: not a
+missing *task* (all 12 rows above were already in the catalog), but a wrong *attribution* — `kernel_start`'s
+own `itron_act_tsk` call had been miscredited as activating `first_task_entry`, when it actually activates
+a genuinely separate, still-unidentified task (see the corrected boot-chain sequence and the table above).
+Caught by checking `references_to` on `itron_act_tsk`'s *inner* function directly (`FUN_201888f4`) rather
+than only on the public trampoline — this also confirmed there's exactly one such "direct, trampoline-
+bypassing" activation in the whole image (inside the kernel bootstrap, for `first_task_entry`), so no
+*additional* hidden activations of that kind are being missed either. **Net effect: the task count actually
+went up by one** — `kernel_start`'s own slot is a real 12th/13th task (on top of the dynamic
+`thunk_FUN_2007ea68` case), just with its identity still unknown, exactly like that other one.
