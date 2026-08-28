@@ -52,3 +52,23 @@ internal vector table (its first 0x20 bytes, `8× LDR PC,[PC,#0x18]`) is the
 **second-stage** one, active only after step 4 above repoints `VBAR` — its
 literal pool resolves to `0x20005050`-range addresses, consistent with this.
 Re-import/re-base any decompressed body in Ghidra at `0x20005000`.
+
+## Confirmed: does not touch the diode matrix or the EEPROM
+
+Already implicit in the 5-step boot sequence above (no GPIO/I2C peripheral
+access of any kind — just MMU setup, SPI flash read, LZSS decompress,
+`VBAR` repoint, jump), but verified directly rather than just inferred by
+absence: searched all 66,000 bytes of `base.dat` (loaded as a memory block
+in the live Ghidra project, `0x17ffffd4`-`0x180101a3`) for any literal
+reference to the EEPROM's peripheral register block. The EEPROM (`IC351`,
+see [[diode-matrix]]) sits on **RIIC2** (`P1_4`/`P1_5`, `ECK`/`EDT`) —
+register block `RIIC2CR1`..`RIIC2DRR` = `0xFCFEE800`-`0xFCFEE840` per the
+RZ/A1H hardware manual. A hex search for that address's byte prefix (both
+byte orders checked) across the entire `base.dat` region returns **zero
+matches** — validated against a known-good literal first (the documented
+vector-table target `0x1800008c`, found correctly at `0x18000020`), so
+this is a real negative, not a broken search. Combined with the
+already-confirmed absence of any P5 (diode scan port) reference: **`base.dat`
+touches neither the diode matrix nor the EEPROM at any point during boot**
+— both are purely `body.bin`'s (the application firmware's) concern, never
+touched before the jump into RAM.
