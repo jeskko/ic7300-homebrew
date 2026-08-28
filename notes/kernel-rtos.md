@@ -204,3 +204,40 @@ for whoever picks this up next — particularly if a stronger malloc-candidate t
 required user-malloc callback, confirmed present via `"libpng version 1.6.12"` in strings — PNG decoding
 *must* call some allocator, and it would show many more call sites than these narrow kernel-bootstrap
 paths, worth checking before further guessing here).
+
+## Found it: the general-purpose `malloc`/`free`/`realloc`, via `libpng` (15th session)
+
+Chased the `libpng` lead from the previous session's dead end. Found the string references for two known
+libpng messages (`"a background color must be supplied..."`, `"Can't set both read_data_fn..."`) landing
+in code matching `png_set_background`/`png_set_read_fn`/`png_set_write_fn` exactly (fixed struct offsets
+`0x1a0`=io_ptr, `0x198`/`0x19c`=read/write_data_fn, `700`=error_fn — a `png_error()`-shaped function
+confirmed at `FUN_200d3e14`, complete with libpng's `"#nnnnnn "` error-code-prefix parsing convention).
+Traced from there to `FUN_200d494c` (`png_create_read_struct`, allocates a `0x468`-byte struct, sets
+`zbuf_size`/`flags` fields) → `FUN_200ce4d0` (`png_create_struct_2`, builds a template on the stack, then
+calls the real allocator) → `FUN_200d488c` (`png_malloc`-shaped: allocate-or-`png_error("Out of memory")`)
+→ `FUN_200d4678` (**`png_malloc_base`, confirmed exactly**: checks a user-supplied `malloc_fn` at struct
+offset `0x3b4` first, PNG_USER_MEM_SUPPORTED-style, falls back to a platform default) → **`FUN_20186230`,
+the platform default allocator**.
+
+**`FUN_20186230` is a real, general-purpose `malloc()`.** Lazy-initializes a free list spanning a genuine
+**static heap region, `0x20587b64`-`0x205dcb60` (347,132 bytes / ~339 KB)** on first call, then searches it
+via `FUN_20186bc8` — a classic first-fit-with-split free-list allocator (block header = `{size, next}`,
+8-byte-aligned). **Confirmed general-purpose, not PNG-specific**: 14 call sites total, spread across
+completely unrelated code — a large cluster at `0x2007a000`-`0x2007e000`, another at `0x20144xxx`, plus
+internal use from `realloc`. Also found its siblings, completing the full triad:
+- **`free()` = `FUN_20184b5c`** — textbook address-ordered free-list insertion with coalescing (merges with
+  both the previous and next block if adjacent). Its free-list-head global (`DAT_20184bb4`) and `malloc`'s
+  (`DAT_20186278`) are two separate literal-pool copies of the *same* address (`0x20390b00`, verified by
+  reading both) — correctly shared state, not a bug.
+- **`realloc()` = `FUN_20187228`** — found via a call site right next to the `itron_act_tsk` trampoline
+  table from the previous session (`0x20187266`); handles the `realloc(NULL, size) == malloc(size)` case
+  explicitly by calling `FUN_20186230` directly.
+
+**Does this resolve the [[multi-cpu-images]] chunk4/5 destination-table mystery?** Checked directly:
+**no** — `0x2018d224` (that table's address) falls well outside this heap's bounds (`0x20587b64`-
+`0x205dcb60`), so it isn't backed by this allocator. That specific structure is still some other kind of
+static/reserved buffer, not explained by finding this malloc. But this is still a major, reusable find:
+**any future "is this a dynamically-allocated buffer" question in this firmware now has a real answer to
+check against** — read the candidate pointer, see if it falls in `0x20587b64`-`0x205dcb60`, and if so this
+whole call chain (`FUN_20186230`/`FUN_20186bc8`/`FUN_20184b5c`/`FUN_20187228`) is exactly what produced and
+manages it.
