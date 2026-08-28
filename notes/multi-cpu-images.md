@@ -566,3 +566,49 @@ mapping table and register-search results in [[ic7300-signal-chain]]'s "DSP/FPGA
 section — don't duplicate it here, but do check it before continuing this thread: the open task of finding
 `FUN_20025044`'s ring-buffer consumer (above) should be checked against whether it ultimately calls into
 the RSPI2 code found there, which would finally connect these two open questions.
+
+## Strong string/UI evidence the "3 optional chunks" are Front CPU + DSP Data + DSP Program (13th session)
+
+User's hunch: find the function that downloads a firmware update to the front panel, and it might explain
+the mystery chunks. Didn't find that exact function, but found something almost as good — direct textual
+proof of what the update mechanism actually tracks as separate components.
+
+**The version-info screen lists five independently-versioned components**, found via string dump around
+`0x2035e3f4`-`0x2035e420`: `FPGA:`, `Main CPU:`, `Front CPU:`, `DSP Data:`, `DSP Program:`. Nearby, two
+distinct update-progress messages: `"Updating DSP/FPGA firmware."` (`0x2035e8f4`) and
+`"Updating MAIN CPU firmware."` (`0x2035e910`) — confirming the update UI treats "DSP/FPGA" as one phase,
+separate from the main CPU body/font/chunk3 write already traced in [[firmware-update]].
+
+**Found the version-compatibility-check function itself**: `FUN_200a94c8` (screen/case `0x14` in the big
+UI screen dispatcher `FUN_20080380`) directly `memcmp`s **five 4-byte version fields**
+(`iVar2+0xa0`/`+0xa4`/`+0xa8`/`+0xac`/`+0xb0`, read from the parsed update file) against five stored
+"currently installed" values (`DAT_200a9bb0+4`/`+0x10`/`+0x1c`/`+0x28`/`+0x34`, each a 12-byte record) —
+and renders a mismatch warning naming each component (via `FUN_200ac6e0`) if any differ. This is a very
+close structural match to the version-info screen's five labels above — strong (if not yet 100% confirmed
+field-for-field) evidence the update container carries five separate version tags, one per
+independently-tracked component, not just the two ("main body" and "DSP/FPGA blob") assumed so far.
+
+**How this fits the already-traced mechanism**: [[diode-matrix]]/this file's earlier sessions found
+`firmware_update_main` writes the main body + fonts + chunk3 in one bulk flash write (bounded by `size1`),
+then separately processes **exactly three** more components via `FUN_20025044` (destinations still
+unresolved — see the correction above) whose file offsets land inside `chunk4`+`chunk5-tail`'s byte range.
+**Three non-main-CPU components** (`FUN_20025044`'s loop) lining up against **four** non-main-CPU labels
+on the version screen (`FPGA`, `Front CPU`, `DSP Data`, `DSP Program`) is consistent with: FPGA's actual
+bitstream comes from its own dedicated EEPROM (`IC902`, already established via the service manual — not
+through this update file's chunk mechanism at all) while still getting a version *tag* checked here for
+compatibility, and the three `FUN_20025044` components are **Front CPU firmware, DSP Data, and DSP
+Program** — matching the "3 extra chunks" exactly. Plausible, well-supported, but **not yet confirmed
+field-for-field** — would need to trace exactly which update-file byte offsets feed
+`FUN_200a94c8`'s `iVar2+0xa0..0xb0` and check whether they line up with `firmware_update_main`'s already-
+mapped `local_9c[]` offsets for the three components.
+
+**Confirms the front-panel link is real infrastructure for this**, independently: [[ic7300-signal-chain]]
+found a genuine, active SCIF3 UART driver for `LRXD`/`LTDX` (front-panel MCU link) in the same session that
+led here — a real transport for "Front CPU" firmware to travel over, consistent with this hypothesis.
+
+**Next steps, in order**: (1) trace backward from `FUN_200a94c8`'s `iVar2` parameter to find which SD-card
+file offset it's read from, and check against `firmware_update_main`'s `local_9c[]` chunk offsets — this
+would either confirm or refute the "3 chunks = Front CPU + DSP Data + DSP Program" mapping directly;
+(2) if confirmed, re-examine `FUN_20025044`'s RAM-buffer destinations (once the runtime-populated pointer
+table issue from the correction above is resolved, ideally via JTAG) to see which component goes out over
+SCIF3 (front panel) vs. whatever channel reaches the DSP.
