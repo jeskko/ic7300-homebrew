@@ -482,18 +482,50 @@ the hand-derived reading exactly, no surprises:
 **Net result**: `FUN_2002b29c` — and everything downstream of it (`FUN_2002b1c8`, `FUN_2002afc0`,
 `port_bulk_gpio_init_pass2`, the `DRESD`/DSP-reset write — see [[ic7300-signal-chain]]) — runs inside its
 own small, dedicated, statically-activated **system monitor task**, not via the message-dispatch loop
-`first_task_entry` implements. Two loose ends remain, both small and clearly scoped:
-1. **Who activates this task** (i.e. where `itron_act_tsk` gets called with descriptor `0x20361318`) isn't
-   found — no direct reference to that descriptor address exists, so it's reached through whatever
-   ID-indexed task-descriptor-table mechanism `FUN_201888f4` (`itron_act_tsk`'s real inner function) uses
-   internally, same situation as `first_task_entry`'s own activation. Not blocking — we know *what* runs,
-   just not the exact activation call site.
-2. **What `0x20005960`/`0x200059b4` (the two registered handler-table targets for SVC #1's IDs 0/`0x86`)
-   really are** is still open, and deliberately left unresolved — `0x20005960` sits immediately after
-   `swi_handler`'s own literal pool (`PTR_DAT_20005954`/`0x20184850`, already documented above), which
-   makes forcing disassembly there riskier than the two ranges just fixed (real chance part of that
-   region should stay data, not become code). Worth a careful, dedicated look later rather than a quick
-   GUI fix in passing.
+`first_task_entry` implements.
+
+## Chasing the two remaining loose ends (21st session)
+
+**Loose end 2 resolved at the mechanism level: `FUN_200b9490` is a generic, ~50-call-site-wide event/ISR
+handler registration primitive, not anything specific to the system monitor task.** Renamed
+`register_event_handler(event_id, handler_ptr)` — bounds-checked write into a global `id`-indexed table
+(bound `DAT_200b9684`, table base `DAT_200b9688`). `references_to` turned up **49 call sites** (with more
+beyond the first page) spread across the entire firmware — including, tellingly, the already-documented
+front-panel UART init (`FUN_20036ee8`, registers IDs `0xe9`-`0xec` alongside `FUN_200b83d0`/
+`FUN_200b8244`/`FUN_200b8308`/`FUN_200b8328` — the *same* generic RTOS event-flag utilities this project
+already found gating the front-panel driver and the `chunk4`/`chunk5` ring-buffer consumer, see
+[[multi-cpu-images]] and [[ic7300-signal-chain]]). This is clearly the shared event/ISR-dispatch
+infrastructure underlying a large fraction of this firmware's driver architecture — `sys_monitor_task_entry`
+registering IDs `0`/`0x86` is just two more ordinary entries in the same table, nothing exotic. Sanity-
+checked one of the UART's own registered handlers (`0x20036c68`, target of `DAT_200375ac`) — it's real,
+sensible ARM code (`stmdb sp!,{r3,r4,r5,r6,r7,lr}`, a normal handler prologue) that **also isn't yet
+defined as a full Ghidra `Function`**, for the same structural reason as our two targets: reachable only
+through this table, invisible to call-graph-based function discovery. This substantially de-risks the
+earlier worry about `0x20005960` specifically — it's very likely just an ordinary small handler in this
+same widespread pattern, not something uniquely dangerous to disassemble; still not force-fixed this
+session (no new information changed the specific "sits right next to `swi_handler`'s literal pool" caution
+from before), but the risk read is now better-calibrated: low, not "genuinely uncertain."
+
+**Loose end 1, exhaustively checked, ends in a real (not lazy) static-analysis dead end.** Cross-validated
+three independent ways that `itron_act_tsk` (`0x20187044`) has **exactly 11 real call sites in all of
+`body.bin`** — Ghidra's own `references_to`, an `objdump` ARM-mode grep, and an `objdump` Thumb-mode grep
+all agree on the same 11 addresses, no more. Checked every single one's first argument: none resolves,
+statically, to the system monitor task's descriptor (`0x20361318`) — most are direct `DAT_` literals
+pointing at a *different* cluster of descriptors (`0x2019 88xx`-`0x2019 89xx` range, several distinct
+application tasks including the UI/display task `FUN_2007ef5c` and one more at `0x200b9c00`), one is
+`kernel_start`'s own single-purpose runtime-populated slot (`0x203907C4`, already known to be blank in the
+static image), and one (`FUN_2007ea68`/`thunk_FUN_2007ea68`) takes a caller-supplied pointer whose own
+caller **also has zero references anywhere, in either ARM or Thumb disassembly** — the same invisible-
+caller situation `FUN_2002b29c` was in before the GUI fix, except here there's no `bl`/`blx` instruction
+anywhere in the image to even point at (checked via the same `objdump` grep technique, clean negative).
+**Honest conclusion**: this task's activation is reached through either a computed/register-indirect branch
+(not a plain immediate `bl`, so invisible to text-based disassembly search entirely) or a genuinely
+different, not-yet-identified creation primitive — not a disassembly-context bug like the one that blocked
+`FUN_2002b29c`'s caller, and not fixable by the same "force ARM disassembly at address X" technique, since
+there's no single address to fix. Matches this file's own long-standing, already-accepted position that
+task/TCB activation is a real static-analysis dead end elsewhere too (see "Open questions" #3 above) —
+correctly a low-priority loose end, not worth further static effort; would resolve immediately with live
+JTAG visibility into the one dynamic call site.
 
 This closes the "boot-chain completeness audit" section's one open gap for practical purposes: the full
 path from power-on through the scheduler starting, into the system monitor task, into `DRESD` being
