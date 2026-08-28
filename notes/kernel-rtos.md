@@ -677,3 +677,65 @@ bypassing" activation in the whole image (inside the kernel bootstrap, for `firs
 *additional* hidden activations of that kind are being missed either. **Net effect: the task count actually
 went up by one** — `kernel_start`'s own slot is a real 12th/13th task (on top of the dynamic
 `thunk_FUN_2007ea68` case), just with its identity still unknown, exactly like that other one.
+
+## All 8 remaining tasks resolved cleanly — the user had already done the GUI fixes (26th session)
+
+Went the `objdump`-ground-truth route in the 25th session without re-checking whether Ghidra's decompiles
+had changed — they had. **The user had already forced ARM disassembly over all 8 remaining addresses**;
+every one now decompiles cleanly, no garbage, no silent-wrong-decode. Re-examined all of them properly.
+Two genuinely significant finds:
+
+**`sd_menu_dispatch_task`** (`0x20027528`, renamed from `task_probe_20027528`) — the big 42-case dispatcher
+turns out to be the **SD-card operations menu's central task**, driven by a command-ID field read from a
+shared struct after each queue-wait:
+```c
+switch (cmd_id) {
+    case 0xb: iVar2 = firmware_update_main();   // *** confirmed direct call ***
+    case 0xc/0xd/0x11/0x15/0x17-0x28: ~20 distinct FUN_2002xxxx handlers
+      (format, save/load settings, memory-keyer file ops, etc. — not
+      individually identified)
+    ...
+}
+```
+This is a genuinely important, concrete confirmation: `firmware_update_main` is invoked as one command
+among many from this ordinary SD-card-menu task, not from any special/separate path — useful context for
+anyone picking the `chunk4`/`chunk5` mystery back up, since it confirms the whole update flow starts from
+routine user-menu interaction on this one task, nothing more exotic.
+
+**`civ_command_dispatch_task`** (`0x200b9c00`, renamed from `task_probe_200b9c00`, provisional name — see
+caveat below) — a structured command-protocol handler: waits on a queue for a command ID (`FUN_20186de4`,
+the same queue-receive primitive `first_task_entry` uses), reads a framed byte sequence one byte at a time
+via a retry loop until the accumulated length matches the expected ID, then **invokes the command through
+a function-pointer table indexed by that ID** (`(**(code**)(DAT_200ba194 + id*4))(...)`), and waits for
+completion before looping. Byte-at-a-time framing + opcode-indexed dispatch table is exactly the shape of
+a structured remote-control protocol handler — **plausibly the CI-V command processor** (the IC-7300's
+documented remote-control protocol), but this is a hypothesis from shape alone, not confirmed by any
+CI-V-specific string, opcode value, or hardware link yet — treat the name as provisional, worth revisiting
+if the real protocol identity ever gets pinned down (e.g. by matching specific opcodes in the function-
+pointer table against published CI-V command references).
+
+**The `FUN_2006c4a8` pair** (`audio_buffer_task_2006bb58`/`2006c2c4`) — confirmed real state machines
+sharing state at `0x2006c3d4`. Went one level deeper into their sub-handlers this session:
+`FUN_2006b99c` does position/seek-style arithmetic and calls `FUN_2006ad30`; other sub-calls show buffer-
+position math wrapping against a size field at `DAT_2006c404+0x30` — a classic ring-buffer wraparound
+shape. **Leaning towards a circular audio buffer manager (plausibly the SD-card WAV record/playback
+feature)** rather than the USB-endpoint-pair guess floated last session, though still not fully confirmed
+either way — recorded as the better-supported of the two readings, not as settled fact.
+
+**The smaller three** (`status_poll_task_200095d8`, `periodic_poll_task_20014384`,
+`queue_driven_task_2001745c`) — all confirmed real, none deeply chased for *purpose* this session:
+- `periodic_poll_task_20014384` matches last session's `objdump` prediction exactly: a trivial
+  `itron-trampoline-delay(5) → sample → store` loop.
+- `status_poll_task_200095d8` polls a status byte and dispatches to a handful of small helper calls —
+  purpose not identified.
+- `queue_driven_task_2001745c` (largest stack in the catalog, `0x2000`/8 KB) is genuinely queue-driven
+  (same `FUN_20186de4` primitive again) with a two-state message-type dispatch and a flag-toggle side
+  effect (`FUN_200c6374`) — purpose not identified, but the large stack is a hint worth remembering if this
+  gets picked up again.
+
+**Every task in the catalog is now either fully examined or has a real, disassembly-confirmed body** —
+this closes out the "have we looked at all tasks" thread from the 23rd/24th sessions structurally (all
+bodies are real code now, nothing left showing garbage), even though a few purposes remain open questions
+rather than disassembly problems. The two still-genuinely-unresolved *identities* are `kernel_start`'s own
+mystery task (`0x203907C4`) and the fully-dynamic `thunk_FUN_2007ea68` case — both need live/JTAG
+visibility, not more static reading, per the reasoning already laid out earlier in this file.
