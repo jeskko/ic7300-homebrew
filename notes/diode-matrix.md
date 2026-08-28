@@ -32,13 +32,13 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D408 | middle, col6 | 10 | ❓ unknown | **Exhaustively searched, 7th session** — no feature-gate consumer found anywhere in the full firmware (see "D408 exhaustive search" section below). Only touched by the already-documented mechanical bit-reversal echo. Genuinely populated on every shipping version (unlike the confirmed-N/A pads), so its lack of any software consumer is a real open question, not just "not found yet" |
 | D409 | top, col6 | 18 | ✅ confirmed (4th session) | Input to `FUN_2003c530`'s post-scan classification (see below) — present (and D406 absent) → classification byte = 2 |
 | D410 | bottom, col5 | 3 | ✅ confirmed | Region-code bit, weight 2 |
-| D411 | middle, col5 | 11 | ❓ unknown | No consumer found yet |
+| D411 | middle, col5 | 11 | ❓ unknown | **Exhaustively searched, 8th session, across all 10 known firmware versions** — no consumer found. See "cross-version exhaustive search" section below |
 | D413 | bottom, col4 | 4 | ✅ confirmed | Region-code bit, weight 1 |
-| D414 | middle, col4 | 12 | ❓ unknown | No consumer found yet |
+| D414 | middle, col4 | 12 | ❓ unknown | **Exhaustively searched, 8th session, across all 10 known firmware versions** — no consumer found. See "cross-version exhaustive search" section below |
 | D416 | bottom, col3 | 5 | ✅ confirmed | Gates the general-coverage RX unlock (0.030–74.8 MHz, 13-segment table), combined with region code 5 or 6. Also gates a separate 2-entry lookup (values 2/3, purpose TBD) |
-| D417 | middle, col3 | 13 | ❓ unknown | No consumer found yet. Populated only on EUR/ITR/KOR (`[#03][#05][#06]`) per parts list (2026-08-28 correction — was previously misread as D416's data) |
+| D417 | middle, col3 | 13 | ❓ unknown | **Exhaustively searched, 8th session, across all 10 known firmware versions** — no consumer found. Populated only on EUR/ITR/KOR (`[#03][#05][#06]`) per parts list (2026-08-28 correction — was previously misread as D416's data) |
 | D419 | bottom, col2 | 6 | ✅ confirmed (5th session) | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D422** — see "D419/D422 resolved" section below. Present (D422 absent) → continuous TX 0.1–74.8 MHz, exactly the mod-guide's "open TX" figure. Populated on all versions per parts list (2026-08-28 correction — the earlier "Japan-only" population read was wrong) |
-| D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. No consumer found yet. **Confirmed Japan-only (`Only [#01]`) per parts list (2026-08-28 correction)** — matches D423, restores the user's original "D420/D423 both JP-only" domain-knowledge lead |
+| D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. **Exhaustively searched, 8th session, across all 10 known firmware versions** — no consumer found (see "cross-version exhaustive search" section below). **Confirmed Japan-only (`Only [#01]`) per parts list (2026-08-28 correction)** — matches D423, restores the user's original "D420/D423 both JP-only" domain-knowledge lead |
 | D422 | bottom, col1 | 7 | ✅ confirmed (5th session) | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D419** — see "D419/D422 resolved" section below. Present (D419 absent) → continuous TX 1.6–54 MHz (fills the HF/6m gap only, not the full 0.1–74.8 MHz range the user's external claim attributed to D422 alone) |
 | D423 | middle, col1 | 15 | ✅ confirmed (4th session) | Real, direct input (bit 15) to `FUN_2003df34`/`FUN_2003dcc0`, the master feature-gatekeeper — gates item-code overrides including at least `0x22/0x32/0x4b/0x71/0x73/0x79` and the `0x8f-0x93/0x94/0xe5` range. Strong support for the Emergency Mode hypothesis (sits directly in the same gatekeeper as all other regulatory feature checks); exact feature name per item code not yet resolved |
 
@@ -290,6 +290,60 @@ candidate for live verification once JTAG access exists (toggle the position, wa
 than further static searching — the same conclusion the 2nd/3rd sessions reached for D422 before it
 turned out to have a real (if surprising) consumer, so this isn't necessarily final, just exhausted for
 now.
+
+## Cross-version exhaustive search — D408/D411/D414/D417/D420 checked against all 10 known firmware versions (8th session)
+
+User asked whether the `objdump`/raw-binary-grep technique could reach firmware content Ghidra hasn't
+disassembled — a good prompt, since every search up to this point (this file's 5th-7th sessions) only
+ever covered **one** firmware version. Worth recording precisely what "not currently disassembled in
+Ghidra" turns out to mean here:
+
+- **The live Ghidra project (`icom1`) already has more loaded than just `body.bin`** — checked via
+  `memory.list_blocks`: it also has `base.dat` (66000 B boot loader, at `0x17ffffd4`) and both update
+  slots' `chunk1.ttf`/`chunk2.ttf`/`chunk3.dat` (at `0x18210000`/`0x18600000` and neighbors) loaded as
+  memory blocks. Not checked for diode consumers this session (implausible location — boot loader and
+  what look like font/resource blobs, not application settings logic — but not literally verified).
+- **`chunk5_tail.bin` (~1.6-1.7 MB per version) is not loaded in Ghidra at all**, and was never covered
+  by the `objdump` sweeps either — it's LZSS-compressed raw tail data, not a flat binary, and
+  `notes/bitmaps.md`/`container-format.md` flag it as the leading candidate for a **second processor's**
+  firmware image (a different architecture entirely, most likely) — decompressing and correctly
+  identifying it is its own undertaking, not attempted here.
+- **`body.bin`'s loaded size (3,738,392 bytes) matches firmware version `142` exactly** — the newest of
+  10 versions sitting unpacked in `scratch/unpacked/` (`111`/`112`/`113`/`114`/`120`/`121`/`130`/`140`/
+  `141`/`142`). Every `objdump`-based search in this file through the 7th session, and every Ghidra
+  query, only ever checked this one version. **This is the part of the question actually worth chasing.**
+
+**Method note — raw byte-diffing across versions is a trap, don't reach for it first.** Tried a direct
+`sha256`/byte diff of the diode-cluster region across all 10 versions first: every single version differs
+(different hash), and a full-file diff between adjacent versions of *identical size* (e.g. 111 vs 112)
+shows **millions of differing bytes** starting almost immediately (offset `0x4a`). This looks alarming
+but is a known false signal for ARM binaries: a single unrelated size change anywhere upstream shifts the
+PC-relative encoding of every `bl`/literal-pool load downstream, even when the actual logic is completely
+unchanged — so raw-byte diffs are dominated by address-encoding noise, not real edits. **The fix**:
+`objdump` each version and diff the disassembly text with the address column and raw opcode bytes
+stripped, comparing only mnemonics + operands.
+
+**Result, using the correct method**: ran the same bit-mask/`ubfx` sweep from the 7th session (masks
+`#0x400`/`#0x800`/`#0x1000`/`#0x2000`/`#0x4000` for bits 10-14, plus every `ubfx` at start-bits 10-14)
+against all 10 versions' `body.bin`. Every version returns exactly the same 20 hits, and — after
+stripping addresses — **19 of the 20 are textually identical across all 10 versions, start to finish**;
+the one exception is an unrelated 7-bit field (`ubfx r0,r0,#13or14,#7` on a value loaded via `ldr r0,[r4,#4]`,
+nothing to do with the diode scan) that shifts by one bit position between versions — clearly an unrelated
+struct-layout change, not width-1 so never a diode candidate regardless. Checked the previously-unexamined
+single-bit hits for bits 11/13/14 too (`0x200b3578`, `0x200b4f24`, `0x200b4f34` in v142): all three load
+their value from a literal pool address resolving to **`0xFCFE3200`** — a different GPIO port's data
+register entirely (P5, the diode-scan port, is `0xFCFE3014`) — confirming they're unrelated hardware
+inputs, not diode tests. The remaining multi-bit-width candidates (`ubfx` widths 4/5/8 at these start
+bits) were spot-checked and are the same RGB555 color-unpack and jump-table dispatch-code patterns
+already ruled out for D408.
+
+**Conclusion**: D408, D411, D414, D417, and D420 all have **zero** consumers, checked identically across
+every firmware version from the earliest available (`111`) to the newest (`142`) — this isn't a gap that
+got fixed or introduced at some point in the update history; the code testing these bits (or rather, not
+testing them) has been stable across the entire known version range. `chunk5_tail.bin` and `base.dat`
+remain the only genuinely unchecked firmware content, and both are low-probability locations for
+application-level region/settings logic. Live JTAG verification remains the most promising next step for
+any of these five diodes.
 
 ## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
 
