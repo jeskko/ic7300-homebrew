@@ -23,7 +23,7 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | Diode | Position | Bit | Status | Function |
 |---|---|---|---|---|
 | D401 | bottom, col8 | 0 | ✅ confirmed | Enables the region-restriction check itself (gate for D404/407/410/413's region code taking effect) |
-| D402 | middle, col8 | 8 | 🟡 partial | Input to `FUN_2003bd80`'s range-merge algorithm (inverted) — gates a boundary-snapping/clamping behavior (replaces range edges with alternate values from `DAT_2003c820`/`DAT_2003c824` near a threshold). Real, confirmed as an input; exact end-user effect not fully traced |
+| D402 | middle, col8 | 8 | ✅ confirmed (6th session) | **Forces the region 5/6 (export/general-coverage) variant's 40m upper band edge to the full 7.300 MHz.** Their raw stored tables have a narrower 40m allocation (region 5: 7.000-7.100 MHz; region 6: 7.000-7.200 MHz) — any edge strictly between 7.000000 and 7.300000 MHz gets snapped to 7.000/7.300 MHz by `FUN_2003bd80`/`FUN_2003be94`'s shared clamp logic. D402 **absent** (its state on every currently-documented shipping variant) → clamp active → both regions get the full 7.0-7.3 MHz 40m allocation on real hardware. D402 present (never seen on real hardware) would disable the clamp, restricting 40m to the narrower stored value instead |
 | D403 | top, col8 | 16 | ✅ confirmed | Selects Type 1 (present) vs Type 2 (absent) market designation; also gates a 51st, non-standard CTCSS tone (150.0 Hz). **Ruled out** for 60m/5MHz via the one consumer traced (`get_type1_type2_designation`) — that path is CTCSS, not band access |
 | D404 | bottom, col7 | 1 | ✅ confirmed | Region-code bit, weight 8 (see region table below) |
 | D405 | middle, col7 | 9 | ✅ confirmed | **Gates a specific ~5.255 MHz (60m-area) frequency in `FUN_2003bd80`'s range table — D405 present excludes it, D405 absent includes it.** Resolves the D403-vs-D405 conflict from external sources in favor of D405 |
@@ -210,6 +210,46 @@ D401 either way.
 fully unresolved: D408, D411, D414, D417, D420 (D420 now has confirmed Japan-only population data but
 still no code consumer found).
 
+## D402 fully resolved — the practical effect, precisely (6th session)
+
+Follow-up to the 3rd session's partial finding (real input, effect untraced) and the 5th session's D401
+work, which required re-reading `FUN_2003bd80`'s clamp logic closely enough to nail this down. Verified
+by direct computation (brute-forced the C unsigned-arithmetic semantics, not hand arithmetic — worth
+noting since a first pass at this by hand got the window wrong before checking it programmatically) rather
+than asserted.
+
+**The clamp window, precisely**: `DAT_2003c80c` (signed) = -7,000,001; `DAT_2003c810` = 299,999. The
+guarded condition `(uVar6 + DAT_2003c80c) < DAT_2003c810`, evaluated with C's unsigned-arithmetic
+promotion rules (both are cast to `uint` before the add), is true exactly when
+**7,000,000 < uVar6 < 7,300,000** — i.e. any range edge that falls *strictly inside* the 7.000-7.300 MHz
+window (not "anywhere below 7.3 MHz", which is what a naive signed-subtraction reading suggests). When
+true, a min-edge gets replaced with `DAT_2003c820` = 7,000,000 Hz exactly, a max-edge with
+`DAT_2003c824` = 7,300,000 Hz exactly. This clamp is shared, byte-identical, between `FUN_2003bd80` (RX)
+and `FUN_2003be94` (TX) — same constants, same effect on both.
+
+**What actually falls in that window, in the real per-region tables**: pulled the raw bytes for the
+region 5 and region 6 tables (`0x20198cb4`/`0x20198d20`, the two per-region tables that differ from the
+plain default — see the "Official per-version population data" / region-code sections above). Both
+store an unusually **narrow 40m allocation**: region 5 = `7.000-7.100 MHz`, region 6 = `7.000-7.200 MHz`
+(everything else in both tables — 160m/80m/60m/30m/20m/17m — is outside the clamp window and unaffected).
+Both max edges (7.1 MHz, 7.2 MHz) sit inside the (7.0, 7.3) window and so get snapped up to 7.300000 MHz
+exactly by the clamp; the min edges (both exactly 7.000000 MHz) sit right at the window's excluded lower
+bound and are never touched.
+
+**The answer**: **D402 gates whether the region 5/6 (export/general-coverage) variant's 40m band gets the
+full 7.0-7.3 MHz allocation or a narrower stored one.** D402 **absent** → clamp active → both regions'
+40m upper edge forced to 7.300 MHz (full standard allocation) for both RX and TX. D402 **present** →
+clamp disabled → the narrower raw value (7.1 MHz for region 5, 7.2 MHz for region 6) applies instead,
+restricting 40m TX/RX to that slice.
+
+Per the parts list, **D402 is never populated on any of the 8 documented shipping variants** (same
+never-populated status D406/D409 had before those were resolved in the 4th session) — meaning on every
+real radio that lands on region-code 5 or 6, this clamp is always active and 40m always gets the full
+7.0-7.3 MHz allocation via this mechanism. The narrower stored values, and D402's "populated" state that
+would enforce them, are apparently unused by any currently-documented market — plausibly a service/factory
+option for some narrower-40m-allocation market not covered by the 8 named variants, or a vestigial
+fallback value.
+
 ## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
 
 **Methodology note, worth recording**: this session's `ghidra` MCP server connection failed at startup (confirmed the Ghidra process itself was alive and answering HTTP on `127.0.0.1:8080` — `curl` got a normal MCP protocol response — but the session's tool registration was stale/refused and could not be revived without a session restart). Rather than block, did this entire round of digging via **raw disassembly of the extracted `body.bin` with `arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000`**, no Ghidra involved at all. Cross-checked the technique against already-documented functions first (`FUN_2003c530`'s call chain matched the existing notes exactly) before trusting new reads. This worked well for straight-line ARM decoding but has none of Ghidra's xref database — "does anything else reference this address" had to be answered by grepping a full linear disassembly for literal pc-relative loads of the address in question, which only finds direct/simple references, not computed ones. Once Ghidra access is back, these new leads (especially the bit-reversal export function below) are exactly the kind of thing its xref search would finish off in minutes.
@@ -265,12 +305,14 @@ range is excluded from the allowed list; D405 absent → included. This
 directly confirms the "D405, not D403" external claim for 60m/5MHz band
 access — first hard evidence resolving that specific conflict.
 
-**D402 resolved (partially)**: also a real input to the same function
-(inverted), gating a boundary-snap/clamp behavior — when a range edge is
-within a threshold distance of some boundary (`DAT_2003c814`/`DAT_2003c818`),
-D402 controls whether that edge gets replaced with an alternate value
-from `DAT_2003c820`/`DAT_2003c824`. Confirmed real; the practical
-end-user effect (what those alternate values represent) not yet traced.
+**D402 resolved (partially this session, fully in the 6th — see that section above for the concrete
+effect)**: also a real input to the same function (inverted), gating a boundary-snap/clamp behavior — when
+a range edge is within a threshold distance of some boundary, D402 controls whether that edge gets
+replaced with an alternate value from `DAT_2003c820`/`DAT_2003c824`. Confirmed real; the practical
+end-user effect (what those alternate values represent) not yet traced. **Correction, 6th session**: the
+threshold constants are `DAT_2003c80c`/`DAT_2003c810` (not `DAT_2003c814`/`DAT_2003c818` as first
+written here — those are a *different* pair, used by the unrelated D401 absent-fallback check found in
+the 6th session).
 
 **D419 (bit 6) still not found** — checked `FUN_2003c530`'s full call
 chain (`scan_diode_matrix_p5`, `sync_diode_matrix_to_eeprom`,
