@@ -415,3 +415,74 @@ vs. something else.
    or a companion-chip analysis** — the `0x18212c8`/`0x187f000` note pair's
    target file remains unidentified. Worth just asking the user directly
    next time, same as `snip`.
+
+## `chunk4`/`chunk5-tail` actually consumed at runtime — traced with Ghidra live (9th session)
+
+User asked whether the parts of the container beyond what's decompressed to RAM (i.e. `chunk4`/
+`chunk5-tail`, per [[container-format]]'s model) have been checked for *code that references them*.
+Answer going in: no, only their raw entropy/shape had been examined. With Ghidra back up, traced this
+properly rather than continuing to guess from entropy alone.
+
+**Direct address search — negative, but expected.** Computed the flash addresses `chunk4`/`chunk5-tail`
+would occupy in both update slots (using `tools/icom_fw`'s own parser against the real `7300_142.dat`:
+`chunk4` at file offset `0x25302c`/49,270 compressed bytes, `chunk5-tail` at `0x25e7d2`/1,468,695
+compressed bytes → slot A: `0x18252c1c`/`0x1825ec92`, slot B: `0x18642c1c`/`0x1864ec92`). Searched all
+four as raw hex literals across the whole of `body.bin`'s RAM (`0x20005000`-`0x20395b17`): **zero
+matches**. Not surprising in hindsight — [[firmware-update]] already established the updater computes
+every offset dynamically from the `size1..size7` header fields at runtime rather than embedding fixed
+absolute addresses, the same reason a literal-address search never found D419/D422's consumer either
+(see [[diode-matrix]]).
+
+**Chunk1/chunk2/chunk3 — checked directly via Ghidra's own xref database**, since these three (unlike
+chunk4/5) are already loaded as memory blocks in the live project (`0x18210000`/`0x18240000`/`0x18250000`
+in slot A, mirrored at `0x18600000`/`0x18630000`/`0x18640000` in slot B — confirms `README.md`'s note that
+these were imported alongside `body.bin` in an earlier session). `references_to` on each:
+- `chunk1`/`chunk2` (the two fonts): exactly one reference each, both inside `select_active_slot_resources`
+  (`0x20062c64`, named in a prior session) — a **runtime** resource-locator (checks the `"SX3765
+  V1.00-003"` marker, same repurposed tag used elsewhere, to pick slot A vs B) that hands back
+  `{size, data pointer}` for both fonts. Not part of the update-write path at all — this runs whenever the
+  running firmware needs a font, any time after boot.
+- `chunk3`: **zero references anywhere.** Genuinely unread by any code Ghidra has resolved, in this
+  version.
+
+**The real find: `firmware_update_main`'s "3 more chunks" step doesn't touch chunk1/2/3 at all — its
+offsets land inside chunk4+chunk5's byte range instead.** Decompiled `firmware_update_main`
+(`0x20025ae4`) in full. `size1` (2,436,080 for v142) bounds the main "everything up to and including
+chunk3" bulk flash write (`size1 - 0x10000` bytes) — chunk1/2/3 are flashed as part of *that* single write,
+confirmed by the arithmetic (`size1` lands almost exactly at chunk3's real end, off by the same small
+header-alignment constant seen elsewhere). The subsequent "3 more optional chunks" step reads `size2`
+through `size7` (the six header fields *after* `size1`) to build **three separate sub-components**,
+chained as `offset[n+1] = offset[n] + size[2n+1] + 0x10`:
+
+| # | computed file offset | length used for MD5-verify read | length passed to the writer |
+|---|---|---|---|
+| 0 | `size1+0x3c` = 2,436,140 (16 B into `chunk4`) | `size2` = 97,862 | `size3` = 163,592 |
+| 1 | 2,534,018 (inside `chunk5-tail`) | `size4` = 721,836 | `size5` = 720,648 |
+| 2 | 3,255,870 (inside `chunk5-tail`) | `size6` = 698,201 | `size7` = 859,412 |
+
+These three spans run from 2,436,140 to ~3,954,071 — essentially **all** of what `container.py` currently
+models as one `chunk4` LZSS stream plus one `chunk5-tail` LZSS-to-EOF stream, just split differently (not
+aligned to either chunk's LZSS boundaries at all). **This means `chunk4`/`chunk5-tail` are not inert data
+— the real firmware's own updater explicitly reads, per-component MD5-verifies, and processes all three
+sub-components, every update.** `container.py`'s byte-accounting is still correct (0 unaccounted bytes)
+but its `chunk4`/`chunk5` split doesn't reflect how the real code understands this region — worth revising
+once this is fully mapped.
+
+**Where the data actually goes — traced 4 levels deep, stops short of a firm answer.** Each verified
+component's destination (`DAT_200264b4[0..2]` = `0x2018d224`/`0x203bb260`/`0x203bcea0`) is a **RAM**
+address, not a flash address — two of the three (`0x203bb260`/`0x203bcea0`) sit *past* `body.bin`'s own
+file-backed image end (`0x20395b17`), meaning they're BSS/scratch buffers, not persistent flashed data.
+The per-component writer, `FUN_20025044`, threads through `FUN_200b2fc8`/`FUN_200b3040` — which pack each
+data byte into a tagged 32-bit word (`0xb0000000`/`0xe2000000` in the top byte) and push it via
+`FUN_200b10a0` into a **generic ring-buffer queue** (87 slots × 16 bytes) — then `FUN_200b0f68` (the
+queue's drain/consumer side) sets an RTOS event-flag bit (`FUN_200b8308(0xa1)`) to wake whatever task
+actually processes the queue. **That consumer task hasn't been identified** — `FUN_200b0f68` only handles
+queue mechanics (advance indices, signal the event), it doesn't itself interpret the `0xb0`/`0xe2` tag
+bytes. Whether this is a companion-chip command/data link (which would make this the second-processor
+delivery mechanism this file has been chasing) or a same-CPU inter-task work queue for something mundane
+is **not yet determined** — don't over-read the tag bytes as confirmation of either. 
+
+**Concrete next step, if this thread is picked back up**: find the task that waits on the event-flag group
+at `DAT_200b86a0+0x114` bit 1 and consumes this specific ring buffer — that task's own interpretation of
+the `0xb0`/`0xe2`-tagged words is what would finally settle whether `chunk4`/`chunk5-tail` feed a
+companion processor or something else entirely.
