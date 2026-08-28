@@ -486,3 +486,29 @@ is **not yet determined** — don't over-read the tag bytes as confirmation of e
 at `DAT_200b86a0+0x114` bit 1 and consumes this specific ring buffer — that task's own interpretation of
 the `0xb0`/`0xe2`-tagged words is what would finally settle whether `chunk4`/`chunk5-tail` feed a
 companion processor or something else entirely.
+
+## `chunk4.bin` imported into Ghidra directly — confirmed NOT plain ARM code (10th session)
+
+User imported `chunk4.bin` (decompressed, `scratch/unpacked/142/chunk4.bin`) as its own Ghidra program,
+base `0x0`, ARM (forced by the import dialog, matching `body.bin`'s architecture). Ran auto-analysis:
+**zero functions, zero disassembled instructions anywhere in the file** — not an entropy inference this
+time, an empirical result from Ghidra's own ARM analyzer failing to find a single valid instruction
+sequence. Rules out plain ARM code at this base address; doesn't rule out a different base (unlikely to
+matter — see below) or a different architecture.
+
+**Byte-level shape, checked directly**: entropy climbs smoothly from ~0.5 bits/byte at offset `0x0` to a
+~6.7-6.9 bits/byte plateau by offset `0x1200`, then stays there for the rest of the file (measured in
+512-byte blocks). No sharp header/payload boundary — a gradual ramp, not a jump. Scanned for common
+format magic bytes (gzip, zlib, PNG, BMP, RIFF) at the start of the file: no genuine match (the two
+apparent hits are deep inside the high-entropy region, coincidental, not header-position). This shape —
+smooth statistical ramp rather than a sharp structural boundary — argues against this being a nested
+compressed container *or* executable code for any architecture (a real vector table or reset handler
+would show sharp structure immediately at offset 0, not a gradual entropy climb); more consistent with a
+**data table whose values grow in magnitude/density** — a coefficient/calibration table is the most
+plausible read, though nothing confirms which one specifically.
+
+**Recommendation if this is picked up again**: given the shape argues against executable code generally
+(not just ARM specifically), guessing further architectures (RL78, TMS320C6x) is unlikely to be
+productive by itself — would want an actual reason to expect a specific format first. `chunk5-tail`
+(the larger, originally-flagged candidate) hasn't had this same direct empirical check yet — worth doing
+before drawing conclusions about the whole "second processor" hypothesis from `chunk4` alone.
