@@ -138,13 +138,11 @@ noting here since it turned up in the same search pass.
 2. ~~Whether the Renesas RZ/A1 BSP/FIT package reveals the bundled
    RTOS~~ — resolved, see above: FreeRTOS, confirmed by direct source
    comparison.
-3. No static task list recoverable — task control blocks are
-   runtime-populated (confirmed blank/`0xff` in the static image at the
-   one candidate pointer checked, `0x203907c4`). With FreeRTOS confirmed,
-   `xTaskCreate` call sites (real signature now known from
-   `scratch/r01an5093ej0170-rza1-swpkg/.../freertos/tasks.c`) are a much
-   more promising way to enumerate tasks than the table-search approach
-   tried earlier.
+3. ~~No static task list recoverable~~ — **partially resolved, 23rd session**: a static list of task
+   *activation call sites* (not TCBs) IS recoverable, via `itron_act_tsk`'s 11 direct call sites (see the
+   "Full boot-time task catalog" section below) — this is a different, more useful list than the
+   originally-envisioned TCB search, though the *TCBs themselves* remain runtime-populated as originally
+   found (`0x203907c4` still blank/`0xff` in the static image).
 4. New: confirm `PTR_DAT_20005954`'s exact role/layout against
    `pxCurrentTCB`'s real usage in `tasks.c` before renaming further
    kernel globals — see "RTOS identity" section above.
@@ -530,3 +528,54 @@ JTAG visibility into the one dynamic call site.
 This closes the "boot-chain completeness audit" section's one open gap for practical purposes: the full
 path from power-on through the scheduler starting, into the system monitor task, into `DRESD` being
 driven low, is now traced end-to-end.
+
+## Full boot-time task catalog (23rd session) — answering "have we looked at all tasks?"
+
+Answer going in: **no** — only 3 of at least 11 statically-locatable tasks had been examined
+(`first_task_entry`, the UI/display task, `sys_monitor_task_entry`). Enumerated the rest properly.
+
+**Every `itron_act_tsk` call site found (11 total, exhaustively confirmed in the 21st session via 3
+independent methods — see above)**, each with its task descriptor read directly from RAM
+(`{entry_point, priority, flags, stack_size}`, same 16-byte shape throughout):
+
+| Caller | Descriptor | Entry point | Priority | Stack | Status this session |
+|---|---|---|---|---|---|
+| `kernel_start` (`0x200052a4`) | `0x203907c4`→`0x2033605c` (indirect, runtime-populated) | `0x201871f0` | 2 | 0x320 | ✅ examined (14th/19th sessions) — `first_task_entry`, generic message-dispatch loop |
+| `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `0x200095d8` | **-2** | 0x400 | 🟡 new — Ghidra decompile silently **wrong** (no error flagged, but `objdump` shows a completely different real body: loop calling `blx 0x20186d0c`-style trampolines) |
+| `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `0x20014384` | 0 | 0x800 | 🟡 new — **same silent-wrong-decode problem**: `objdump` shows a real periodic loop (`blx 0x20186d0c` with `r0=5`, `bl 0x20015628`, store, loop) that Ghidra's decompile completely misses, showing an unrelated one-shot body instead |
+| `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `0x2001745c` | 1 | 0x2000 (largest stack seen) | 🟡 new — explicit "Bad Instruction"-style garbage (`in_ZR`/`halt_baddata`) |
+| `FUN_20027740` (`0x200277f0`) | `0x2002784c` | `0x20027528` | 0 | 0x1800 | 🟡 new — decompiles without an explicit error, but shows uninitialized-register use (`unaff_r5`) — almost certainly also wrong, not yet cross-checked against `objdump` |
+| `FUN_2002afc0` (`0x2002b02c`) | `0x2019889c` | `0x2007ef5c` | — | — | ✅ examined (20th session) — the UI/display task (allocates screen objects, message loop) |
+| `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `0x2006bb58` | 0 | 0x800 | 🟡 new — explicit garbage decompile (many `unaff_rX`) |
+| `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `0x2006c2c4` | 0 | 0x800 | 🟡 new — explicit garbage decompile |
+| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | ❌ still unresolved — no static caller of the thunk found either (see 21st session) |
+| `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `0x200aa580` | **-1** | 0x1000 | 🟡 new — explicit garbage decompile, `halt_baddata` immediately |
+| `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `0x200b9c00` | 1 (highest seen) | 0x1800 | 🟡 new — **mixed**: garbage at entry, but real-looking code visible further in (calls `FUN_200cb5dc`/`FUN_200cb72c`/`FUN_200cb278`/`FUN_200cbcf0`/`FUN_200b9fc8` — a plausible read/parse/retry protocol handler) |
+| *(no direct call site found)* | `0x20361318` | `0x200b94e8` | 3 | 0x800 | ✅ examined (20th/21st sessions) — `sys_monitor_task_entry` |
+
+**Bottom line: 8 previously-unexamined tasks found, and every single one hits some form of disassembly
+trouble** — either Ghidra's own explicit "Bad Instruction"/garbage-decompile pattern (6 of 8), or (more
+concerning) a **silent wrong decode with no error at all**, caught only by cross-checking against
+`objdump` (confirmed for 2 of 8 — `0x200095d8` and `0x20014384` — not yet checked for the rest). This is a
+substantially bigger batch than the earlier "1 genuinely broken spot out of 139 bookmarks" sweep found —
+because, like `first_task_entry` and `sys_monitor_task_entry` before them, **these addresses were never
+touched by Ghidra's auto-analysis at all** (no direct caller in the static call graph → no bookmark ever
+created → invisible to the bookmark-based sweep method used in the 17th session). Left all 8 as
+placeholder-named (`task_probe_<address>`), un-renamed `Function` objects with this status — **don't trust
+any of their current decompiled bodies**.
+
+**Two priorities for next time**:
+1. **Force ARM disassembly via the GUI** over all 8 new addresses (same fix pattern used successfully for
+   `sys_monitor_task_entry`/`sys_monitor_task_loop` in the 20th session) before re-examining any of them —
+   given the silent-wrong-decode risk demonstrated here, don't trust a "clean" decompile without an
+   `objdump` cross-check either.
+2. **`FUN_2006c4a8` is the most interesting lead**: it's the only caller spawning *two* tasks together
+   (`0x2006bb58`/`0x2006c2c4`), and its own setup work (clearing a 220-byte buffer, a distinct 8-entry ×
+   24-byte table, calls to `FUN_2006c45c`/`FUN_2006c410`) has the shape of a real paired
+   producer/consumer or client/server subsystem — worth checking first once the disassembly is fixed.
+
+Also worth remembering: the descriptor's `priority` field takes small **negative** values in three cases
+(`-2`, `-1`, and (indirectly, `first_task_entry`'s own activation path uses a runtime-populated slot, not
+checked for sign) — `FUN_201888f4` (`itron_act_tsk`'s real inner function) explicitly allows priority in
+`-3..3`, confirmed already in this file's very first section — so negative priorities are a real, valid,
+used range in this firmware, not a sign of a misread field.
