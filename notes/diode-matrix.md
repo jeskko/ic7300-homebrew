@@ -29,7 +29,7 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D405 | middle, col7 | 9 | ✅ confirmed | **Gates a specific ~5.255 MHz (60m-area) frequency in `FUN_2003bd80`'s range table — D405 present excludes it, D405 absent includes it.** Resolves the D403-vs-D405 conflict from external sources in favor of D405 |
 | D406 | top, col7 | 17 | ✅ confirmed (4th session) | Input to `FUN_2003c530`'s post-scan classification (see below) — present → classification byte = 1, takes priority over D409 |
 | D407 | bottom, col6 | 2 | ✅ confirmed | Region-code bit, weight 4 |
-| D408 | middle, col6 | 10 | ❓ unknown | No consumer found yet |
+| D408 | middle, col6 | 10 | ❓ unknown | **Exhaustively searched, 7th session** — no feature-gate consumer found anywhere in the full firmware (see "D408 exhaustive search" section below). Only touched by the already-documented mechanical bit-reversal echo. Genuinely populated on every shipping version (unlike the confirmed-N/A pads), so its lack of any software consumer is a real open question, not just "not found yet" |
 | D409 | top, col6 | 18 | ✅ confirmed (4th session) | Input to `FUN_2003c530`'s post-scan classification (see below) — present (and D406 absent) → classification byte = 2 |
 | D410 | bottom, col5 | 3 | ✅ confirmed | Region-code bit, weight 2 |
 | D411 | middle, col5 | 11 | ❓ unknown | No consumer found yet |
@@ -249,6 +249,47 @@ real radio that lands on region-code 5 or 6, this clamp is always active and 40m
 would enforce them, are apparently unused by any currently-documented market — plausibly a service/factory
 option for some narrower-40m-allocation market not covered by the 8 named variants, or a vestigial
 fallback value.
+
+## D408 exhaustive search — genuinely no consumer found anywhere (7th session)
+
+Requested follow-up chase. D408 = bit 10 (middle row, col6). Searched the complete ~902K-line firmware
+disassembly from multiple angles, not just the diode cluster (learned from the 5th session that a real
+consumer, D419/D422's, turned out to live entirely outside the cluster):
+
+1. **Direct immediate mask** (`tst`/`and`/`bic`/`orr`/`eor`/`cmp` with `#0x400`) — zero hits anywhere in
+   the firmware.
+2. **Single-bit `ubfx` at start-bit 10** — 5 hits total. One (`0x2003c778`) is inside the already-known
+   `FUN_2003c70c` bit-reversal/repack function (same mechanical echo that touches the N/A bits 19-23,
+   confirmed by its position — the instruction immediately before the already-documented top-row-byte
+   block). The other 4 (`0x200f59d8`, `0x20109660`, `0x2013745c`, plus a byte-level check) all operate on
+   registers loaded from completely unrelated struct fields (a `ldrh` from an unrelated offset, and two
+   near-identical UI/menu-building routines with large stack frames) — none trace back to any of the four
+   known scan-value alias pointers (`DAT_2003c7f8`/`DAT_2003c800`/`DAT_2003ea4c`/`DAT_2003c858`).
+3. **Wider `ubfx` fields starting at bit 10** (`#10,#21` and `#10,#5`) — both ruled out: the width-21 one
+   is on a value computed as `n*5` right after a `-19` offset (reads as a date/calendar/BCD calculation),
+   and the width-5 one is a textbook RGB555/565 colour-channel unpack (paired with a second `#5,#5`
+   extract and an `and #31`, classic R/G/B split). Neither is diode-related.
+4. **Register-mediated mask** (load `#1024` into a register, then `and`/`tst` against it) — 1024 is an
+   extremely common generic constant in this firmware (buffer sizes, offsets: 42+ hits, almost all
+   `cmp`/`add`/`rsb` against buffer-length-shaped values). Not checked instance-by-instance because every
+   confirmed diode consumer found across this whole project uses a **direct** immediate mask or `ubfx` in
+   the same instruction — never a register preloaded elsewhere — so a register-mediated bit test would be
+   inconsistent with this codebase's established compiler pattern for these checks.
+5. **EEPROM-persisted path** (`notes/eeprom-catalogue.md`) — already checked in the 3rd session: the
+   diode value's EEPROM-persisted copy (parameter `0x3e44`, landing at struct offset `+0x1a7c` /
+   `0x203b4c5c` in `FUN_2006cb84`'s loaded struct) has **no reader at all**, for any bit — dead end, not
+   specific to D408.
+
+**Conclusion**: unlike the confirmed-N/A top-row pads, **D408 is populated on every shipping version**
+per the parts list — a real, soldered component on every radio anyone will ever see — yet no code
+anywhere branches on its value. Only genuinely new information: it's touched (mechanically, not
+meaningfully) by the same bit-reversal repack that echoes all 24 scan bits into the likely clone/
+settings-export blob (see the 4th-session section below), so its raw state does end up *somewhere* in
+whatever consumes that blob's output — just not tested by any conditional logic found so far. Good
+candidate for live verification once JTAG access exists (toggle the position, watch what changes) rather
+than further static searching — the same conclusion the 2nd/3rd sessions reached for D422 before it
+turned out to have a real (if surprising) consumer, so this isn't necessarily final, just exhausted for
+now.
 
 ## D406/D409/D423 found via raw ARM disassembly, three of twelve unresolved diodes resolved (4th session)
 
