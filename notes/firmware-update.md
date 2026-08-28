@@ -329,17 +329,31 @@ if ((*(ushort *)(DAT_2005314c + 4) & 0x40) == 0) {   // DAT_2005314c = 0xFCFE320
 }
 ```
 So the trigger condition is **a live read of pin `P1_6`'s actual level** (via `PPR1`), checked every
-iteration of the main loop — when that bit reads `0`, the radio watchdog-resets itself. **Honestly
-unresolved**: this session did not find the specific path connecting "`firmware_update_main` just
-succeeded" to "`P1_6` reads low" — no direct write to `P1`'s data register (which would explain a
-software-driven change to this pin) was traced back to the update-completion flag
-(`*(DAT_2002649c+0x50) = 0xff`, which turned out to be a generic, heavily-reused "current SD-operation
-status" byte shared across ~20 unrelated menu functions, not a dedicated update-complete signal). Two
-readings, both plausible, neither confirmed: (a) a genuinely separate mechanism drives `P1_6` low
-specifically after a successful update (not yet located), or (b) `P1_6` is a general "restart requested"
-condition serving several different callers/situations, of which firmware-update completion is only one.
-**Concrete next step if this is picked up again**: find what writes `P1`'s direct data register (`0xFCFE3004`,
-bit 6) and trace backward from there, rather than forward from `firmware_update_main`.
+iteration of the main loop — when that bit reads `0`, the radio watchdog-resets itself.
+
+**Resolved (user identified the schematic net, same session): `P1_6` is `PDV`, wired to the `VOUT` pin of
+`IC361`, a New Japan Radio `NJU7704F3`** — a CMOS supply-voltage detector IC (the "F3" suffix sets its
+fixed threshold voltage). Its output goes low when the monitored supply rail drops below that threshold.
+**This reframes the whole mechanism: `main_idle_loop`'s watchdog-reset call is a power-fail/brownout safety
+trip, not a firmware-update-completion trigger at all.** The firmware is continuously watching a real
+external voltage supervisor and forcing an immediate, clean watchdog reset the instant supply voltage sags
+below `IC361`'s threshold — a sensible, deliberate design (better to reset cleanly on a browning-out rail
+than run into undefined behavior from a marginal supply) — and has nothing to do with `firmware_update_main`
+specifically. This also means the earlier "two readings" framing was answering the wrong question: `P1_6`
+isn't a semi-generic "restart requested" condition serving multiple callers including the updater — it's
+a dedicated hardware safety input, full stop.
+
+**Consequently, how the radio actually restarts after a successful firmware update is still genuinely
+open** — this session's find rules out `main_idle_loop`/`watchdog_force_reset`/`P1_6` as the mechanism
+rather than confirming it. Worth considering, not yet checked: the update-completion trigger
+(`chunk_transport_send_reload_cmd`, sent only when Front CPU or DSP Data changed) reloads the *front panel*
+and/or *DSP*, not necessarily the main CPU — the user-facing "...restart. NEVER turn OFF..." warning could
+plausibly describe a **front-panel/DSP-side reboot cycle** (visible as the display going blank and the
+frequency screen reappearing) rather than a full main-CPU watchdog reset at all. If a main-CPU reset does
+also happen, its trigger is a genuinely different, not-yet-found call — **concrete next step: look for
+where the front-panel reload actually happens (a real SCIF3 command, given the confirmed UART driver in
+this file's front-panel section) and treat that, not `P1_6`, as the lead for "what actually restarts after
+an update."**
 
 **Side finding, same session — the JTAG-disable question**: searched both `body.bin` and `base.dat` for any
 reference to the RZ/A1H's CPU debug-enable control register (`ICEREGJTTRCSEL`, `0xFC00F004` — holds
