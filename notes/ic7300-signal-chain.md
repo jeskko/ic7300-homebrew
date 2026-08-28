@@ -131,7 +131,7 @@ drive" question.
 | `DCSX` | P8_12 | — | (was: SPI Multi I/O ch.1) | 163, `AFSX1`/`EPWMSYNCI`/`EPWMSYNC0`/`GP4[10]` (McASP1 frame sync X) | — | ❌ no reference found |
 | `DCSR` | P8_13 | — | (was: SPI Multi I/O ch.1) | 166, `AFSR1`/`GP4[13]` (McASP1 frame sync R) | — | ❌ no reference found |
 | `HSK0` | P8_8 | — | (was: SPI Multi I/O ch.1) | 100, `EMB_A[3]`/`GP7[5]` (DSP **external memory bus address bit 3**) | — | ❌ no reference found |
-| `HSK1` | P8_9 | — | (was: SPI Multi I/O ch.1) | 98, `EMB_A[4]`/`GP7[6]` (EMIF address bit 4) | — | ❌ no reference found |
+| `HSK1` | P8_9 | — | (was: SPI Multi I/O ch.1) | 98, `EMB_A[4]`/`GP7[6]` (EMIF address bit 4) | — | ✅ **found, 27th session — see below** |
 | `FRWT` | P8_10 | — | (was: SPI Multi I/O ch.1) | 96, `EMB_A[6]`/`GP7[8]` (EMIF address bit 6) | — | ❌ no reference found |
 | `RTD` | P8_7 | — | (not in original 20-signal table; DSP-side companion of the `EMB_A` group) | 97, `EMB_A[5]`/`GP7[7]` (EMIF address bit 5) | — | ❌ no reference found |
 | `FPDX` | P8_11 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `W1`, `DIFFIO_L28n` | ❌ no reference found |
@@ -178,10 +178,17 @@ different sub-groups of these 8 pins:
   `DIFFIO_L29n`, `AA1`/`DIFFIO_L31n`), the same three-way sharing pattern as `BCLK_`/`FRM_` above.
 - `HSK0`/`HSK1`/`FRWT`/`RTD` (`P8_7/8/9/10`) land on DSP pins `EMB_A[3]`/`EMB_A[4]`/`EMB_A[6]`/`EMB_A[5]` —
   the DSP's **external memory bus address lines**, not a handshake/flow-control protocol as the CPU-side
-  alt-function names ("SPBIO"/handshake-style naming) had suggested. Genuinely unclear yet what the main
-  CPU does with 4 bits of the DSP's own EMIF address bus tied to its GPIOs — possibly a debug/bus-snoop tap,
-  possibly these are mis-transcribed and actually belong to a different sub-circuit; **zero CPU-side
-  references either way**, so this remains unused/unexplained on the firmware side regardless.
+  alt-function names ("SPBIO"/handshake-style naming) had suggested. ~~Genuinely unclear yet what the main
+  CPU does with 4 bits of the DSP's own EMIF address bus tied to its GPIOs~~ — **correction, 27th session**:
+  `HSK1` (`P8_9`) *is* referenced after all — the earlier "zero CPU-side references" search only checked the
+  port **data** register family (`Pn`, base `0xFCFE3000`); it's actually read via the port **pin-read**
+  register family instead (`PPRn`, base `0xFCFE3200` — a different literal the earlier sweep never covered).
+  Found in `notes/firmware-update.md`'s dissection of the "3 extra chunks" mechanism: `FUN_20025044` and
+  `chunk_transport_send_reload_cmd` (`FUN_20025288`) both poll `PPR8` bit `9` (= `P8_9` = `HSK1`) as a real
+  hardware ready/handshake signal while moving Front CPU/DSP Program/DSP Data update data — so `HSK1`
+  genuinely *is* used as a handshake line after all, just read rather than the CPU-alt-function names'
+  implied "SPBIO" framing, and only from this one specific mechanism. **`HSK0`/`FRWT`/`RTD` haven't been
+  re-checked against the `PPRn` family yet** — worth doing before re-asserting "no reference" for those too.
 - `FPDX`/`FPSX`/`FPSR` (`P8_11/14/15`) have **no DSP pin at all** — FPGA-only (`W1`/`DIFFIO_L28n`,
   `U1`/`DIFFIO_L24n`, `V1`/`DIFFIO_L25n`). Combined with `SCPCK`/`SCPSS`/`SCPX`/`SCPR` also landing on
   FPGA-only differential pins (`G1`/`DIFFCLK_0n`, `F1`/`DIFFIO_L9n`, `C1`/`DIFFIO_L4n`, `E1`/`DIFFIO_L8n`),

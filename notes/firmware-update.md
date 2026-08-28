@@ -249,3 +249,103 @@ unexplained by this investigation and is the one open thread left if the
 companion-chip question is still worth pursuing — otherwise this closes
 the updater investigation and firmware analysis proper can start from a
 known-good `body.bin` at the correct base.
+
+## Full dissection, start to restart (27th session)
+
+Picked the whole thing back up end-to-end: who calls `firmware_update_main`, what happens after it returns,
+and — the one piece never traced — how the radio actually restarts afterward.
+
+**Entry point, confirmed**: `firmware_update_main` is invoked as case `0xb` of `sd_menu_dispatch_task`
+(`0x20027528`, see [[kernel-rtos]]'s task catalog) — an ordinary command in that task's ~42-case SD-card
+menu dispatcher, alongside format/save-settings/load-settings/memory-keyer operations. Nothing special
+gates entry to it; it's reached the same way any other SD-menu action is.
+
+**The "3 extra chunks" decision step — the per-chunk gate finally identified.** `FUN_20021ff0(index)`
+(`index` 0-2) is a trivial 3-byte lookup into `DAT_2002217c` — this is exactly the per-chunk
+"does this component actually need updating" flag `firmware_update_main` consults twice (once to compute a
+progress estimate, once to decide which of the 3 chunks to actually read/write/push). **Not yet confirmed,
+but a strong, live hypothesis**: this looks like precisely the kind of decision [[multi-cpu-images]]'
+`FUN_200a94c8` (the 5-field Main/Front-CPU/DSP-Program/DSP-Data/FPGA version-compatibility check) would
+feed — no direct writer to `DAT_2002217c` was found via `references_to` this session (same "runtime-
+populated via indirect addressing" pattern seen elsewhere in this project), so the link is plausible, not
+proven. Worth confirming directly if this thread is picked up again.
+
+**Real hardware handshake found on the "3 extra chunks" transport — corrects an earlier negative
+result.** Read the literal-pool constants `FUN_20025044` (the per-chunk ring-buffer producer) and
+`FUN_20025288` (see below) actually use, rather than trusting the earlier "not a literal hardware peripheral
+base address" read of the `0xe2000000`-tagged value:
+- `DAT_20025610` = `0xFCFF0305` — a real hardware register, used with a bit-test/wait helper
+  (`FUN_20360b24`) — the wait loop for a transfer-ready condition.
+- `DAT_20025614` = a **RAM** flag byte (not a register) — `FUN_20025044` writes `'P'` (`0x50`) here per
+  chunk; `FUN_20025288` (below) writes `0x87` — different command/tag values over what looks like the same
+  low-level transport.
+- `DAT_20025618` = **`0xFCFE3200` = `PPR0`**, the RZ/A1H's **Port pin read register** block base (§54.3 of
+  the hardware manual — reads the *actual electrical level* of a pin, not the software output latch).
+  Both functions test `*(ushort*)(DAT_20025618+0x20)` bit `0x200` — offset `+0x20` from `PPR0` is **`PPR8`**
+  (Port 8's pin-read register), and bit `0x200` = bit 9 = **`P8_9`, i.e. `HSK1`** — one of the exact
+  DSP-adjacent pins from [[ic7300-signal-chain]]'s pin-mapping table.
+
+**This corrects [[ic7300-signal-chain]]'s "no reference found anywhere" verdict for `HSK1`/`HSK0`/`FRWT`/
+`RTD`** — that search only covered the *port data register* (`Pn`, base `0xFCFE3000`) literal family; this
+session's finding uses the **pin *read* register** (`PPRn`, base `0xFCFE3200`) instead, a completely
+different literal the earlier search never checked. `HSK1` (`P8_9`) does have a real, live CPU-side
+reference after all — read (not written) as a hardware ready/handshake signal by exactly the two functions
+that move the "3 extra chunks" payload and their post-update trigger. Worth re-checking `HSK0`/`FRWT`/`RTD`
+against the same `PPR8`/`PPRn` literal before re-asserting "no reference" for those too.
+
+**`FUN_20025288` — the post-update trigger, called only when Front CPU or DSP Data changed.**
+`firmware_update_main` calls it exactly when `local_a0[0] != 0 || local_a0[2] != 0` — i.e. when the
+**Front CPU** chunk (index 0) or the **DSP Data** chunk (index 2) was actually written (not when only DSP
+Program, index 1, changed — a real, specific asymmetry, not chased further). Its body is shaped exactly
+like `FUN_20025044`'s own low-level transfer primitive (same `DAT_20025610`/`14`/`18` triple, same
+`HSK1`-wait), but sends command byte `0x87` instead of `0x50`/`'P'` — the natural reading is "tell whatever
+is on the other end of this link to reload/reset now that its new firmware has arrived," though this is
+inference from shape, not a decoded protocol spec.
+
+**The system restart mechanism — a real, unambiguous watchdog-forced reset, but not yet tied to
+firmware-update completion specifically.** Found `FUN_20052bd0`: after a graceful-shutdown sequence
+(checks power/PTT/SWR-safe conditions, clears some Port 6 bits via `PSR6`), it writes the RZ/A1H's real
+watchdog registers in exactly the sequence the hardware manual documents for arming it (§12.3.2/12.3.3):
+```c
+disableIRQinterrupts();
+DAT_20053124[2] = 0x5a5f;   // WRCSR (0xFCFE0004), 0x5A unlock prefix + data 0x5F (enables reset-on-overflow)
+DAT_20053124[1] = 0x5afe;   // a second WRCSR-area write, same unlock convention
+*DAT_20053124   = 0xa57f;   // WTCSR (0xFCFE0000), 0xA5 unlock prefix + data 0x7F (counter near overflow)
+enableIRQinterrupts();
+do {} while (true);          // spin forever -- the watchdog fires and hard-resets the SoC from here
+```
+`DAT_20053124` reads back as `0xFCFE0000` exactly — confirmed, not inferred. This is **the** system restart
+primitive in this firmware: an intentional watchdog-timeout self-reset, not a dedicated software-reset
+register (the RZ/A1H, being Cortex-A9-based, has no Cortex-M-style `AIRCR.SYSRESETREQ`; this is the
+standard Renesas SH/RZ idiom for the same purpose).
+
+`FUN_20052bd0` has exactly one caller: `FUN_20052e30`, the main "normal running state" loop (reached as the
+default case of the top-level power-state dispatcher `FUN_2002b1c8` — i.e. this is what runs continuously
+whenever the radio isn't in some special boot/update/shutdown mode). Inside that loop, the call is gated:
+```c
+if ((*(ushort *)(DAT_2005314c + 4) & 0x40) == 0) {   // DAT_2005314c = 0xFCFE3200 (PPR0) again;
+    FUN_20052bd0();                                    // +4 = PPR1, bit 0x40 = bit 6 = P1_6
+    ...
+}
+```
+So the trigger condition is **a live read of pin `P1_6`'s actual level** (via `PPR1`), checked every
+iteration of the main loop — when that bit reads `0`, the radio watchdog-resets itself. **Honestly
+unresolved**: this session did not find the specific path connecting "`firmware_update_main` just
+succeeded" to "`P1_6` reads low" — no direct write to `P1`'s data register (which would explain a
+software-driven change to this pin) was traced back to the update-completion flag
+(`*(DAT_2002649c+0x50) = 0xff`, which turned out to be a generic, heavily-reused "current SD-operation
+status" byte shared across ~20 unrelated menu functions, not a dedicated update-complete signal). Two
+readings, both plausible, neither confirmed: (a) a genuinely separate mechanism drives `P1_6` low
+specifically after a successful update (not yet located), or (b) `P1_6` is a general "restart requested"
+condition serving several different callers/situations, of which firmware-update completion is only one.
+**Concrete next step if this is picked up again**: find what writes `P1`'s direct data register (`0xFCFE3004`,
+bit 6) and trace backward from there, rather than forward from `firmware_update_main`.
+
+**Side finding, same session — the JTAG-disable question**: searched both `body.bin` and `base.dat` for any
+reference to the RZ/A1H's CPU debug-enable control register (`ICEREGJTTRCSEL`, `0xFC00F004` — holds
+`DBGEN_CPU0`/`NIDEN_CPU0`, per the hardware manual §56.4.2) — **zero references in either image**. Neither
+firmware component ever programmatically touches CPU debug enable/disable. If JTAG access is restricted on
+production units, it isn't done by this SoC's own debug-enable register from software — would have to be an
+OTP/fuse setting, a board-level strap, or some other security mechanism not covered by this specific
+register (the manual also mentions `ICDISRn` "security status bits" and other debug-security registers not
+yet checked). Not chased further, but a clean, real negative result worth having on record.
