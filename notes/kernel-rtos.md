@@ -241,3 +241,53 @@ static/reserved buffer, not explained by finding this malloc. But this is still 
 check against** — read the candidate pointer, see if it falls in `0x20587b64`-`0x205dcb60`, and if so this
 whole call chain (`FUN_20186230`/`FUN_20186bc8`/`FUN_20184b5c`/`FUN_20187228`) is exactly what produced and
 manages it.
+
+## Systematic search for remaining ARM/Thumb disassembly-context bugs (17th session)
+
+User's idea: rather than stumbling on these one at a time, use Ghidra's own analysis-time error markers to
+enumerate every candidate at once, then check which are still actually broken before asking for any GUI
+fixes. Ghidra auto-creates a bookmark (`type: Error, category: Bad Instruction`) every time its analyzer
+hits a disassembly conflict — `annotate.list_bookmarks` surfaces these directly, no guessing needed.
+
+**Enumerated all of them**: 139 total `Bad Instruction` bookmarks across the whole program. 130 carry the
+exact phrase `"possibly due to inconsistent context"` — literally Ghidra's own diagnosis of the ARM/Thumb
+context-propagation bug already known from `reset_handler`/`swi_handler`/`base_dat_reset_vector_target`
+(see [[base-loader]]). Clustering these 130 by address proximity (gap > `0x800` = new cluster) collapses
+them to **23 distinct regions** — a single confused function generates many bookmarks, one per flow into
+it, not one bug per bookmark. The remaining 9 are 4×`"Unable to resolve constructor"`, 1×`"non-existing
+memory"`, 4×`"conflicting instruction/data"`.
+
+**Checked all 32 candidates (23 clusters + 9 others) against `objdump` ground truth, not just the bookmark
+list.** This mattered: a bookmark only records that a conflict happened *during* analysis, not that the
+*current* disassembly is still wrong — Ghidra can (and mostly did) self-resolve to the correct
+interpretation despite the historical conflict. **31 of 32 already match `objdump`'s ARM decode exactly** —
+these are stale markers, not live bugs, and not worth any further attention.
+
+**Found exactly one still-genuinely-broken spot**: `0x200054c8`-`0x200054e7` (32 bytes), the source of the
+`"non-existing memory"` bookmark at `0x200054d6`. Sits immediately after `reset_handler`'s own `bx lr`
+(`0x200054c4`) — a separate function, not `reset_handler` itself. Ghidra currently shows this span as
+undefined bytes followed by one badly-misdecoded instruction (`bl 0x20d074da` — a branch target far outside
+the entire 10 MB RAM window, an immediate tell). The real ARM decode (verified via `objdump`, both as
+straight ARM and cross-checked against forced-Thumb decoding of the same bytes to make sure ARM was
+genuinely the better fit) is a small, complete, sensible routine:
+```
+mrs  r1, CPSR
+cps  #0x1f          ; switch to System mode
+mov  sp, r0          ; set System-mode stack pointer (from param in r0)
+msr  CPSR_c, r1      ; restore original mode
+isb  sy
+bx   lr
+cps  #0x10          ; switch to User mode
+bx   lr
+```
+**A per-CPU-mode stack-pointer setter** — sets up the System-mode SP (and has a User-mode entry point
+too), classic early-boot stack initialization, called from somewhere near `reset_handler`/`mmu_init_body`.
+Disassembly correctly resynchronizes on its own right at `0x200054e8` (`cps #0x10`, matches `objdump`
+exactly), so the broken span is exactly these 32 bytes, nothing more. **Worth the user forcing ARM
+disassembly over `0x200054c8`-`0x200054e7` via the GUI** — small, cheap fix, and it's genuine boot-sequence
+detail (which mode gets its own stack, and from where) not yet in [[base-loader]] or here.
+
+**Honest bottom line**: this systematic sweep mostly closes out the "how many more ARM/Thumb bugs are
+lurking" question rather than opening up new mysteries — 138 of 139 flagged spots are already fine. One
+small, real fix remains, and it's a nice, self-contained boot-sequence detail rather than anything touching
+the open `chunk4`/`chunk5`/DSP mysteries elsewhere in this project.
