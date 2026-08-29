@@ -1042,14 +1042,19 @@ each driver (`iVarN` below is that driver's own literal-pool copy of the `PBDCn`
 - **`scif1_svc_driver_init`** (`0x20011df4`): two *separate* single-port-bit blocks, not one pair on the same
   port. Block 1 (port 6, bit 13 — `iVar & 0x18` offset pattern) sets `PBDC6`/`PFCAE6`/`PIPC6` bit 13 to 1,
   `PFC6`/`PFCE6` bit 13 to 0, and **`PMC6` bit 13 to 1** (function code 4, same code SCIF0 uses) — bit 12 of
-  the same registers gets touched too but `PMC6` bit 12 is explicitly left 0 (prepped, never enabled — not a
-  real pin here). Block 2 (port 7, bit 12 — offset `+0x1c`) sets **all six** of
+  the same registers gets touched too but `PMC6` bit 12 is explicitly left 0 at boot (see below — it's
+  enabled dynamically at runtime instead). Block 2 (port 7, bit 12 — offset `+0x1c`) sets **all six** of
   `PBDC7`/`PFC7`/`PFCE7`/`PFCAE7`/`PIPC7`/`PMC7` bit 12 to 1 — function code `(1,1,1)=7`. **Both blocks are
-  real** (`PMCn` enabled in both) — so **SCIF1's `RxD1`/`TxD1` = `P6_13` + `P7_12`**, split across two
-  different ports, which is exactly why the earlier same-port-pair candidate search above never found it.
-  This also resolves [[ic7300-signal-chain]]'s "`P7_12` (`UDRXD`/`UDBSY`) — same name as `P6_13`, likely an
-  alias/transcription duplicate" note from the port-pinout sweep: **it isn't a duplicate — both are real,
-  distinct pins, deliberately activated together by the same driver as the two halves of one UART.**
+  real** (`PMCn` enabled in both) — so **SCIF1 = `P6_13` + `P7_12` (both, the same signal — RX) + `P6_12`
+  (TX, enabled separately at runtime, see below)** — the RX half splits across two different ports, which
+  is exactly why the earlier same-port-pair candidate search above never found it. This also resolves
+  [[ic7300-signal-chain]]'s "`P7_12` (`UDRXD`/`UDBSY`) — same name as `P6_13`, likely an alias/transcription
+  duplicate" note from the port-pinout sweep: **it isn't a duplicate — both are real, distinct pins,
+  deliberately activated together by the same driver.** **User-confirmed 2026-08-29 (PCB layout check,
+  see "SCIF1 TX/RX pin turnaround" section below)**: `P6_13` and `P7_12` really are the *same net*, tied
+  together on the PCB — both are `SCIF1`'s RX line (`UDRXD`/`UDBSY`, into `IC641` `CP2102` pin 26/`TXD`),
+  not a TX+RX pair as first guessed here. `P6_12` (`UDTXD`, into `CP2102` pin 25/`RXD`) is the real TX line,
+  and is *not* enabled by this boot-time driver at all — see the dedicated section below for why.
 - **`scif5_dsp_link_driver_init`** (`0x200b2bb0`): one block, port 8, bits 0+1+2 (offset `+0x20`) *and* bit 11
   in the same instruction sequence. Bits 0/1/2: `PFC8`/`PFCE8`/`PMC8` set to 1, `PFCAE8` set to 0 — function
   code `(0,1,1)=3`, all three with `PMC8` enabled. Bit 11: `PFCAE8` set to 1, `PFC8`/`PFCE8`/`PMC8` left 0 —
@@ -1068,6 +1073,58 @@ being nominally McASP1-capable doesn't mean the DSP uses them that way — TI DS
 multiplexable between McASP and UART/GPIO, and this design apparently picked UART for boot/control traffic
 over `IC901`'s own boot-flash-adjacent link. See `notes/ic7300-signal-chain.md`'s pinout table update and
 `notes/multi-cpu-images.md`'s handoff section for the corresponding corrections.
+
+## SCIF1 TX/RX pin turnaround, and a real PCB-level ground truth from the user (2026-08-29, same session, continued)
+
+**User-supplied hardware ground truth** (direct schematic + PCB layout check, not a guess): `P6_13` (physical
+pin 12) and `P7_12` (physical pin 34) are schematic-labeled `UDRXD`/`UDBSY`, **and are confirmed tied together
+on the PCB** — genuinely the same net, not just a same-named coincidence. `P6_12` (pin 11) is `UDTXD`. Both
+nets connect to `IC641` (`CP2102GMR`, the USB-to-UART bridge already confirmed for CI-V) but on **different**
+pins from CI-V's own: `UDRXD`/`UDBSY` → `CP2102` pin 26 (`TXD`, bridge transmits → CPU receives — consistent
+with `P6_13`/`P7_12` being an *input*), `UDTXD` → `CP2102` pin 25 (`RXD`, CPU transmits → bridge receives —
+consistent with `P6_12` being an *output*). This is independent, direct confirmation that `SCIF1`'s
+calibration link really is reachable over USB (via this second CP2102 channel), not just the REMOTE jack.
+
+**This raised a real puzzle worth chasing**: `scif1_svc_driver_init` (see above) only enables `PMC6` bit 13
+and `PMC7` bit 12 at boot — `PMC6` bit **12** (`P6_12`/`UDTXD`) is left explicitly disabled (GPIO mode) by
+that function. If `P6_12` is really the TX line, why does the boot-time driver never turn its alt-function
+on?
+
+**Answer, found via a full `references_to` sweep on `PMC6`'s address**: two more functions touch it, both
+already reachable from `system_mode_request_dispatch`'s own tail (i.e. they run on **every** iteration of
+`sys_monitor_task`'s poll loop, not just at boot or on a mode transition):
+
+- **`scif1_pin_mode_toggle(int)`** (`0x20011bb8`) — gated on a state flag (`*(char*)(DAT_20012514+0x5d)`):
+  one branch clears `PMC6` bits 12+13 together (both alt-functions off), the other sets both together (both
+  on). Also masks/unmasks SCIF1's own IRQ IDs (`0xe1`/`0xe2`/`0xe3`) in the same branches, and touches `PSR6`
+  (port *set* register — a write-1-to-set sibling of the plain data register, not previously seen in this
+  project) and `PM6` bit 11. 13 call sites across the firmware — a generic reusable utility, not something
+  built only for this one link.
+- **`scif1_switch_to_tx_mode(void)`** (`0x200120a8`) — unconditional: sets `PMC6 = (PMC6 & ~0x3000) | 0x1000`
+  — **`P6_12` alt-function ON, `P6_13` alt-function OFF** (the exact opposite split from the boot-time
+  state) — and flips several bits (5 set, 4/6/3/7 cleared) of SCIF1's own hardware register at `0xE8007808`
+  (offset `+8` from `SCSMR_1`), plausibly `TE`/`RE` (transmit/receive enable) in `SCSCR_1`, not confirmed
+  against the exact RZ/A1H bit layout yet.
+
+**Both are called from the very end of `system_mode_request_dispatch`** (which runs every poll iteration
+regardless of mode, per the existing "Factory/service mode" section below), selected by one status byte:
+```c
+if (*(char *)(DAT_2002a0ec + 0x60) == 0) scif1_pin_mode_toggle(1);
+else                                     scif1_switch_to_tx_mode();
+```
+
+**Working hypothesis, not fully proven**: this is a **half-duplex TX/RX turnaround** for `SCIF1` — the
+firmware never leaves both `P6_12` (TX) and `P6_13`/`P7_12` (RX) alt-function-enabled at the same time,
+switching between "listening" and "transmitting" states on (very likely) every poll iteration. This gives a
+clean mechanical explanation for the user's PCB finding: the RX side needs only passive listening, so tying
+two candidate input pins to one net is harmless and maybe deliberate (board flexibility or signal integrity);
+the TX side needs exactly one active driver, so it's toggled on only when actually transmitting, which is
+also consistent with why the *boot-time* driver (`scif1_svc_driver_init`) leaves `P6_12` off — the link
+starts in "receive/idle" mode and only switches to TX when something is actually being sent. **Not yet
+traced**: who/what sets `DAT_2002a0ec+0x60` (the mode-select byte driving the turnaround itself), and the
+exact RZ/A1H bit meaning of the `0xE8007808` register writes in `scif1_switch_to_tx_mode`. Both are natural
+next steps if this specific thread continues; full detail in the Ghidra plate comments on
+`system_mode_request_dispatch`/`scif1_pin_mode_toggle`/`scif1_switch_to_tx_mode`.
 
 ## Factory/service mode — a real, external fact confirms the shape, third independent piece of evidence found (2026-08-29, 30th session, continued)
 
