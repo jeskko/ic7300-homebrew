@@ -95,3 +95,53 @@ unknown real-world quality, and zero bytes examined so far. The first session on
 to spend real effort just on "does the tool work at all" and "where does byte 0 of the file map to in the
 real address space" before any actual firmware logic gets read — don't expect the SCIF3 cross-reference
 payoff (step 4) on the very first pass.
+
+## 2026-08-29: tooling stood up, both paths work; file has a header, not raw code at offset 0
+
+Both toolability questions from the handoff are resolved, and better than expected on both counts.
+
+- **`xyzz/ghidra-rl78` installs and loads cleanly in this Ghidra (12.1.2).** No root needed — it's a
+  processor-module directory (`Module.manifest` + `data/languages/{rl78.ldefs,pspec,cspec,slaspec}`, no
+  compiled Java at all), so it drops straight into the per-user extensions dir
+  (`~/.config/ghidra/ghidra_12.1.2_DEV/Extensions/rl78/`), the same place `GhidraMCP` already lives. On
+  headless import (`analyzeHeadless ... -processor RL78:LE:16:default`), Ghidra auto-compiled the 224 KB
+  `.slaspec` with only a benign warning ("7 NOP constructors found") and import/analysis succeeded. Real
+  disassembly/decompilation testing not done yet — this only confirms the module *loads*, not that its
+  instruction semantics are trustworthy.
+- **Better find: RL78 needs no community tool at all for disassembly — mainline GNU binutils has had an
+  official `rl78-dis.c` in `opcodes/` for years.** No Renesas-specific toolchain, no packaging on this
+  machine either, but building it from plain upstream source was trivial: fetched `binutils-2.44` from
+  `ftp.gnu.org`, `configure --target=rl78-elf --disable-nls --disable-werror --disable-gdb --disable-sim
+  --disable-gprof`, then `make all-libiberty all-bfd all-opcodes all-binutils` — clean build, ~2 minutes,
+  no patches needed. Installed at `~/.local/rl78-binutils/bin/{rl78-objdump,rl78-readelf}` (outside the repo
+  — reproducible from the recipe above, not committed as a binary blob). Usage:
+  `rl78-objdump -m rl78 -b binary -D front_cpu.bin`. This is now the primary disassembly tool for this
+  thread — it's official upstream code, not a reverse-engineered guess, so its instruction decoding can be
+  trusted the way Ghidra's community module can't yet.
+- **Important correction to the handoff's assumption: `front_cpu.bin` is *not* a raw code-at-offset-0
+  image.** Linear disassembly from byte 0 with `rl78-objdump` decodes the `"TIPAcYSX"` region as nonsense
+  instructions (e.g. `mov e, #73` / `mov x, #65` off literal ASCII bytes) — confirming these are header
+  bytes, not code, consistent with the ASCII-fragment observation in the original handoff (step 5). The
+  first ~0x22 (34) bytes look like a small structured header: magic `"TIPAcYSX"` (8 bytes) followed by a
+  run of small integers and **three repeats of the 3-byte tag `"YSX"`** at offsets 0x05, 0x09, and 0x1d —
+  shape not understood yet (record/section markers? length-prefixed fields? too little data to tell).
+  **Not yet checked**: whether this header shape matches anything already seen elsewhere in this project
+  (the DSP chunks, `dsp_chunks.py`'s own container parsing) — worth a quick diff/grep before treating it as
+  front-panel-specific.
+- **Working hypothesis, not confirmed: real code starts around offset 0x22.** Byte 0x23 decodes as `subw
+  sp, #123` (reserving stack space) right after a single odd byte at 0x22 — a plausible function-prologue
+  shape — but the following stream isn't unambiguously clean (e.g. `or a, [hl+108]` recurring identically
+  at 0x2c and 0x42, which could be a real repeated field access or could mean the alignment is still off by
+  one or more bytes somewhere in between). **Do not treat 0x22 as confirmed** — this needs the real vector
+  table location and the RL78/G14 datasheet (step 3 of the original plan, still not done) before trusting
+  any specific offset as the code start.
+
+### Immediate next steps (supersedes old steps 1-2, which are now done)
+
+1. Read the `R5F104LC` datasheet section on flash memory layout/vector table (already found via web search
+   last session, not yet actually read) and use it to sanity-check the 0x22 hypothesis and figure out
+   whether the ~34-byte header has a recognizable Renesas or Icom-specific shape.
+2. Try `rl78-objdump` with a few different candidate start offsets/alignments around 0x20-0x24 and compare
+   against what a genuine RL78 vector table / reset handler should look like once the datasheet is read.
+3. Only then resume the original steps 4-6 (SCIF3 cross-reference, the two ASCII-fragment follow-ups, reset
+   handler / button-scan hunting) — those all still stand as written above.
