@@ -138,6 +138,46 @@ inside the DSP's own code; consider whether the `-EL` flag alone is enough or wh
 byte-swapping at a different granularity first (the file was correctly LZSS-decompressed and MD5-verified,
 so this is purely an endianness/disassembler-invocation question, not a data-integrity one).
 
+## Pointed the new DSP disassemblers at `front_cpu.bin` too — strong positive evidence it's real C674x code (2026-08-29, same day)
+
+Following up on the "chunk 0 = Front CPU label is now actively doubtful" section above: ran both
+`tic6x-objdump -EL` and Capstone's `CS_ARCH_TMS320C64X` against `front_cpu.bin` (skipping its ~34-byte
+header) the same way just used on `dsp_program.bin`. First tried an automated alignment×endianness sweep
+(undefined-instruction rate across 4 byte-phase shifts) — this turned out to be a **dead end as a
+methodology**: running the identical sweep against `dsp_program.bin` (already established as real code) as
+a calibration check showed the undefined rate is essentially *identical* across all 4 phase shifts there
+too (29.6% at every shift) — meaning this specific metric isn't sensitive to alignment at all for this
+decoder/data combination, and shouldn't be trusted as a discriminator. Recorded so a future session doesn't
+repeat it expecting a clean signal.
+
+**What actually is decisive: reading the decoded output qualitatively, the same way that convinced this
+session on `dsp_program.bin`.** Checked four widely separated offsets (`0x1000`, `0x4000`, `0x8000`,
+`0x10000`) and found consistent, specific, hard-to-fake structure at every one:
+- Real **floating-point instruction sequences** — `spdp`/`dpsp` (single↔double conversion), `absdp`,
+  `cmpltdp`/`cmpgtdp`, `mpydp`, `adddp`, `intspu` (int→single-precision) — used in coherent order (e.g.
+  convert→absolute-value→compare at `0x1048`-`0x1064`; int-to-float→add→convert-back at `0x80c8`-`0x80e8`).
+  These are C67x+/C674x-specific floating-point extension instructions, not generic fixed-point C64x ops —
+  a specific match to this exact DSP's core, not just "some C6x chip."
+- Repeated `mvk`/`mvkh` 32-bit-constant-building pairs (the standard TI C6x idiom for a 32-bit immediate),
+  correctly paired at every one of the four offsets checked.
+- A genuine local backward branch: `b .S1 0x100a4` at `0x100d0`, landing at a real, in-range, nearby address.
+- `addkpc .S2 0x100a8,b3,0` at address `0x100a4` — the encoded target is exactly `self+4`, the textbook
+  shape for a hardware call/return-address setup, not a coincidental value.
+
+**Cross-validated by two independent disassemblers, not just one reading its own decode charitably**:
+Capstone's separate `TMS320C64X` implementation agrees byte-for-byte with `tic6x-objdump` on decoded
+immediates at the same addresses (e.g. at `0x8000`: both read a `mvk`/`mvkh` pair producing `0xef0` then
+`0x11820000`). Two from-scratch implementations converging on the same interpretation across multiple
+regions is much stronger evidence than either tool's output alone.
+
+**This upgrades the "chunk 0 is probably not Front CPU firmware" conclusion above into a positive,
+specific one: `front_cpu.bin` looks like genuine TMS320C674x object code**, not just "some other DSP-side
+data blob" as a vague placeholder guess. Doesn't yet explain *what* this code does or why the update
+mechanism treats it as a separate, distinctly-versioned component from `dsp_program.bin` — that's the
+natural next question if this thread continues (is this a second overlay/segment of the same DSP program,
+loaded to a different memory region? a completely separate DSP-side subsystem?) — not resolved this
+session.
+
 ## Is `dsp_data.bin` (component2) actually the FPGA bitstream? Genuinely plausible, re-examined the evidence (2026-08-29, same session)
 
 User's question, prompted by re-reading this file's own `IC902` history: the *current* model has `IC901`

@@ -168,15 +168,25 @@ Two independent lines of evidence from the same day both point away from `front_
    CPU' label is now actively doubtful" section for the full trace — this is the same finding from the
    main-firmware side that independently corroborates the forensic finding above.
 
-**Working conclusion**: `front_cpu.bin` is very likely **not** `IC501`'s firmware. It's more plausibly a
-third piece of DSP-side data (perhaps a second partition of the DSP's own external SPI boot flash,
-`IC902`). The RL78 tooling stood up in the first half of this file (Ghidra `xyzz/ghidra-rl78` module,
-`rl78-objdump` from stock binutils) is still sound and reusable — but **don't keep pointing it at
-`front_cpu.bin` expecting front-panel firmware** until this is resolved. The plausible-looking RL78
-disassembly patterns found earlier in this file (call-target convergence, sane branch offsets) are real but
-weak evidence next to this — a sufficiently dense binary blob run through a permissive variable-length CISC
-decoder can produce locally-plausible-looking sequences by chance over an 8 KB sample; they don't outweigh
-two independent, code-level/datasheet-level findings.
+**Working conclusion, upgraded from "probably not" to "positively looks like" (2026-08-29, same day,
+continued)**: pointed the DSP thread's newly-built disassemblers (`tic6x-objdump -EL`, Capstone
+`CS_ARCH_TMS320C64X` — see [[multi-cpu-images]]'s DSP disassembly section) at `front_cpu.bin` and got a
+strong, cross-validated positive result: real C67x+/C674x floating-point instruction sequences
+(`spdp`/`dpsp`/`absdp`/`cmpltdp`/`mpydp`/`adddp`/`intspu`, used in coherent order), repeated correct
+`mvk`/`mvkh` 32-bit-constant-building pairs, a genuine local backward branch to an in-range address, and an
+`addkpc` whose encoded target is exactly `self+4` — the textbook call/return-address idiom. Two independent
+disassemblers (binutils and Capstone) agree byte-for-byte on decoded immediates at the same addresses.
+**`front_cpu.bin` now looks like genuine TMS320C674x object code**, not RL78 code, not graphics, and not
+just a vague "some other DSP blob" — a specific, positively-supported identity. Full detail in
+[[multi-cpu-images]]'s "Pointed the new DSP disassemblers at `front_cpu.bin`" section.
+
+The RL78 tooling stood up in the first half of this file (Ghidra `xyzz/ghidra-rl78` module, `rl78-objdump`
+from stock binutils) is still sound and reusable for whenever real front-panel firmware is located — but
+**this specific file is not that**, and shouldn't be pointed at with that expectation anymore. The
+plausible-looking RL78 disassembly patterns found earlier in this file (call-target convergence, sane
+branch offsets) were real but weak evidence next to this — a sufficiently dense binary blob run through a
+permissive variable-length CISC decoder can produce locally-plausible-looking sequences by chance over a
+small sample; they don't outweigh the specific, cross-validated C674x floating-point evidence found since.
 
 **Genuinely open, not resolved**: whether real `IC501` firmware exists anywhere in the update container
 under a different mechanism, or whether it's provisioned some other way entirely (factory-programmed once,
