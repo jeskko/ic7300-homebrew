@@ -222,6 +222,43 @@ The other ~40 smaller clusters (1-4 refs each) found by the raw scan are listed 
 working output, not individually reproduced here — mostly single incidental references, lower
 priority than the pockets above.
 
+## Characterizing the remaining pockets, round 2 (2026-08-29, same day, continued)
+
+Went through the remaining uncharacterized pockets from the previous section's priority table.
+
+- **`0x20403fec` resolved as a false lead, in a good way**: it's just another field of the
+  already-characterized settings-menu-item struct, not a new subsystem. Traced its one writer
+  (`FUN_2003b0a0`) to a literal-pool pointer (`DAT_2003a538` = `0x20403f66`) that sits only 6 bytes
+  from `g_settings_menu_active_flag`/`g_settings_menu_item_id` (`0x20403f6c`) — the same
+  neighborhood, evidently a few more bytes of the same struct.
+- **`0x2040466c` still unresolved** — checked whether it traces back to any of `FUN_200a94c8`'s own
+  literal-pool globals (`DAT_200a9bac` = `0x2018fe24`, unrelated); the 3 references Ghidra reports
+  most likely come from a data-dependent, computed table-index expression inside that function
+  (`DAT_200a9bac + runtime_value*0x18 + ...`) that Ghidra's analysis resolved for one specific code
+  path, not a fixed distinct struct worth naming. Lower priority.
+- **`0x203fc000`**: one writer found, `FUN_2005fac4` — clears 2 flag bytes (`+0x240`/`+0x241`) of a
+  struct based at `0x203fbdc0` (`DAT_20060700`'s value). Located but not deeply characterized;
+  no distinguishing strings or context found yet.
+- **`0x203fabec`/`0x203fab00` cluster**: traced to `FUN_20058c8c`, a small text-field-entry
+  validator indexed 0-4 into an array of `{ptr, len}` slots, copying a `NUL`-or-`\`-terminated
+  string into each. Reads as a **multi-field text-entry screen** (5 fields) — candidate guesses
+  (memory-channel naming, a callsign/station-ID field) not confirmed.
+- **`0x203fca1e`-`0x203fcb6a` / `0x203fccbc`-`0x203fcd8e` cluster — the most interesting new find
+  this round**: both ranges turn out to be the same shared literal pool, serving `FUN_2006a400`.
+  That function parses an input value, **byte-swaps it (full 32-bit reversal)**, then runs a
+  **binary search** over a sorted table (`DAT_2006a560`, 8-byte stride) for a match. Parse → 
+  byte-reverse → binary-search-a-sorted-table is a classic shape for a **prefix/lookup-table
+  feature** — a plausible (not confirmed) candidate given this is a ham radio is a **DXCC/callsign
+  country-prefix lookup**. Worth a closer look if this thread continues; `FUN_20047754`/
+  `FUN_20016ae0`/`FUN_20006728` (the input-parsing helpers it calls) are the natural next stop.
+
+**Updated status**: of the 7 pockets flagged after the last sweep, 2 are now reasonably well
+characterized (`0x203fc000`'s general shape, `0x20403fec` resolved as a non-issue), 2 have strong
+working hypotheses (text-entry screen, DXCC-shaped lookup), and 1 remains genuinely unclear
+(`0x2040466c`, likely not worth more time). The 87-ref pointer-table cluster and the ~40 smaller
+1-4-ref clusters from the original sweep are still unexamined, lowest priority given the pattern so
+far (most turn out to be more instances of the same generic per-screen buffer architecture).
+
 ## Methodological note
 
 This is the **second** substantial finding in one session that was invisible until Ghidra's
