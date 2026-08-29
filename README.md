@@ -214,9 +214,23 @@ by but not built on top of the prior work there.
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is
   **not cracked** after a thorough negative sweep (LZSS-family
-  parameters, buffer-seeding, XOR-whitening all tried and ruled out) —
-  see `notes/ic9700-container-format.md`. Genuine cold-start effort, no
-  prior art existed for this radio going in.
+  parameters, buffer-seeding, XOR-whitening, and — new, 2026-08-30 —
+  zlib/raw-DEFLATE all tried and ruled out). **Real structural progress
+  the same session, though**: found two previously-unnoticed header
+  fields that track the container's already-known build-family grouping,
+  and — the bigger find — the container has **at least 5 major
+  component-boundary regions, not the 2 previously known**, two of which
+  share an *identical* byte sequence right after their headers — solid
+  evidence of a repeating per-component header template, very plausibly
+  one segment per physically-separate chip (mirroring the IC-7300's own
+  already-solved multi-component container). See
+  `notes/ic9700-container-format.md`. Also probed the user's live IC-9700
+  over the network as an intermission (2 TCP ports open, 1111 and 60000 —
+  the latter is D-STAR data/picture-transfer per a user-supplied source
+  quote; a full port scan briefly took the radio off the network, worth
+  remembering to scan embedded devices much more conservatively next
+  time) — see chat history, not yet written up as a note. Genuine
+  cold-start effort, no prior art existed for this radio going in.
 
 ## Layout
 

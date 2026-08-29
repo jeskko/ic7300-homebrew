@@ -232,3 +232,103 @@ Realistic paths forward, roughly in order of promise:
 This was a "quick tangent" that turned out to need a genuine cold-start
 RE effort, not a quick adaptation of the existing IC-7300 tooling — flag
 that honestly if resuming, rather than treating it as a small follow-up.
+
+## Another go at the compression, 2026-08-30: zlib ruled out, but a real structural breakthrough instead
+
+User's ask, after an intermission probing the live IC-9700 over the network: pick this thread back up,
+we have both EN and JP versions of many releases to work with (all 37 already on disk, unchanged from the
+earlier cross-version sweep).
+
+### zlib/raw-DEFLATE: a well-motivated new hypothesis, thoroughly checked, negative
+
+New reason to suspect zlib specifically that didn't exist during the original 216-combination LZSS-family
+sweep: a completely separate investigation this same day found **real, genuine zlib deflate/inflate code
+embedded in the IC-7300's own firmware** (see [[kernel-rtos-history]]'s SLV5/graphics-stack thread — a
+higher-level wrapper's error strings like "unexpected zlib return code" plus zlib's own verbatim internal
+algorithm error strings, both found in `body.bin`). Since Icom's toolchain evidently uses zlib somewhere in
+this era, and the IC-9700 postdates the IC-7300, it's a reasonable guess IC-9700's update container might
+use it too — especially since "no standard compression magic bytes" was already established (a **raw**
+DEFLATE stream, without the 2-byte zlib wrapper header, has no magic bytes at all, so that earlier check
+wouldn't have ruled this out).
+
+Checked properly with Python's `zlib` module against `9700J150.dat`:
+- A clean 64KB-wide offset sweep (`0x10000`-`0x20000`, every byte offset) for plain raw-DEFLATE, requiring
+  >4KB of clean decoded output: **zero candidates**.
+- XOR-whitening the compressed stream against the constant blob (`0x4038`-`0x48c8`) across all 2192 byte
+  rotations, at the confirmed real body-start offset (`0x10038`): **zero candidates** producing more than a
+  trivial/degenerate decode. (One single-rotation hit at a different offset turned out to be a classic false
+  positive — `eof=True` after only 64 bytes of a highly repetitive 5-byte pattern, exactly the kind of
+  degenerate result this file's own earlier notes already warned about.)
+
+**Real, thorough negative.** Not worth retrying without new evidence — recorded so a future session doesn't
+redo this exact test.
+
+### The actual breakthrough: real header fields never noticed before, and many more component boundaries than known
+
+While double-checking the zlib test's target offset by eye, did a plain hex dump of the file header
+(`0x0`-`0x40`) that the original cold-start session never happened to render this way. Found two 4-byte
+fields at `0x30`/`0x34` sitting in what had previously been assumed to be inert space between the
+already-known `0x14` version string and the `0x1c` `0x800000` constant — nobody had looked at `0x30`-`0x3f`
+as structured numeric fields before.
+
+**Checked across all 37 releases, not just eyeballed on one file**:
+```
+9700E106.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6b2  @0x3c=0x569cdaee
+9700E110.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6b7  @0x3c=0x569cdaee
+9700E111.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6b1  @0x3c=0x569cdaee
+9700J106.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6b7  @0x3c=0x569cdaee
+9700J110.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6ac  @0x3c=0x569cdaee
+9700J111.dat  @0x30=7217626 (0x6e21da)  @0x34=9267776 (0x8d6a40)  @0x38=0x4a60d6b6  @0x3c=0x569cdaee
+```
+This exact six-file group is **the same build-family grouping already established from the footer's 6-byte
+build-ID stamp** in the original cold-start session — `@0x30`/`@0x34` track it perfectly, varying together
+release-to-release (roughly with overall file size) while `@0x38` varies even within an identical-build
+group (checksum-shaped: constant high 3 bytes `0x4a60d6`, only the low byte differs, narrow range) and
+`@0x3c` never varies at all across any of the 37 files (`0x569cdaee` everywhere — same "fixed constant"
+character as the already-known blob).
+
+**Tried using `@0x30`/`@0x34` as real candidate {compressed, decompressed} sizes for the IC-7300's own LZSS
+decoder** (`tools/icom_fw/lzss.py`, which supports a target `out_len` and reports bytes actually consumed):
+neither assignment (`out_len=@0x34`/expect consumed≈`@0x30`, or the reverse) produced a real decode — output
+starts with a long run of zero bytes (a classic degenerate-ring-buffer-echo signature, not real content) and
+consumed byte counts don't match either candidate. A cleaner, more targeted negative than the original
+216-combination blind sweep, but still negative — these fields probably describe something real, just not
+"feed directly into IC-7300's own LZSS with these as sizes."
+
+**The bigger find**: swept the *entire* file (not just the header) for the same flash-erase-style
+decrementing-byte-value ramp pattern already known from the header, using a proper run-detection scan rather
+than assuming it only exists near the start. Found large (thousands-of-bytes) ramp regions — real component
+boundaries, not noise — ending at:
+- `0x10038` (already known — this is where "the body" was always assumed to start)
+- `0x3f0038` (**new**)
+- `0x400038` (**new** — only `0x4000`/16KB past the previous one)
+- `0x7f0038` (**new**)
+- `0x7fc038` (**new**)
+- `0x800028` (already known as the J/E-convergence boundary, `0x800000`, but its own short ramp/header shape
+  hadn't been individually characterized before — see below)
+
+Every one of these breaks its ramp with the identical tail bytes `fb fa f9 f8 f7 f6 f5 f4` — matching the
+main header's own ramp-end exactly — then a short region of structured-looking bytes before real
+high-entropy content resumes, the same shape as the already-documented `0x800000` boundary. **This
+completely changes the picture from "one big compressed blob from `0x10038` to somewhere past `0x2a6000`,
+converging with the other region again at the already-known `0x800000` slot boundary" to "a container
+segmented into at least 5-6 pieces"**, most plausibly one per physically-separate chip needing its own
+firmware/bitstream image — directly analogous to the IC-7300's own already-solved multi-component update
+container ([[multi-cpu-images]]) and consistent with [[ic9700-hardware]]'s chip list (main CPU, Cyclone V
+FPGA, STM32 MCU, TMS320C55x DSP — four independently-programmable components, a very natural fit for
+~5 boundaries marking ~4-5 segments).
+
+**Strongest single piece of evidence this session**: dumped the bytes immediately following each ramp's end
+and found `0x400038` and `0x7f0038` share an **identical** 13-byte sequence
+(`11 13 14 14 15 04 28 19 19 1e 1f 3c`) despite being over 4MB apart in the file. This is not coincidental
+noise in two independent high-entropy regions — it's direct evidence of a **fixed, repeating per-component
+header/descriptor template** reused at multiple points in the file. `0x3f0038`'s and `0x7fc038`'s own
+post-ramp bytes look different from this pair and from each other — not yet characterized, a natural next
+step (do they also match some other template, or is each genuinely distinct?).
+
+**Where this leaves the thread**: compression is still not cracked, but the container's true shape is now
+understood to be meaningfully more complex than previously documented, with a concrete, well-evidenced lead
+(the repeating header template) that a future session could decode without needing to solve the compression
+first — knowing the real component boundaries and having a byte-identical template to compare against other
+occurrences is a solid, self-contained next step. See [[ic9700-container-format]] for the condensed current
+state.
