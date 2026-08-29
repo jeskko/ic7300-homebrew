@@ -337,6 +337,101 @@ point**, though "not compiled DSP code" alone doesn't fully distinguish it from 
 option — the periodic-marker finding is the first piece of evidence in this project specific enough to favor
 bitstream over generic non-code data, not just favor non-code over code.
 
+## Researched known Altera bitstream structure, found a striking preamble match (2026-08-29, same day, continued)
+
+Asked whether any documented Altera/Intel bitstream headers/structures exist to search `dsp_data.bin` for.
+Dispatched a research agent rather than answer from recollection — concrete findings, with sources, before
+applying them:
+
+- **`.rbf` (Raw Binary File) has no officially documented magic bytes** — confirmed two ways: an Altera
+  community thread where Altera's own staff say their `jrunner` reference tool does zero format validation
+  beyond "the obvious 44-byte header," and `openFPGALoader`'s real, working `RawParser::parse()` (its actual
+  production code for `.rbf`/`.rpd`) does nothing but copy bytes and optionally bit-reverse them — no magic
+  check at all.
+- **But a real, independent community reverse-engineering project has documented internal structure**:
+  [14sea/Cyclone_CRAM_Mapper](https://github.com/14sea/Cyclone_CRAM_Mapper), targeting `EP4CE6` (same
+  Cyclone III/IV/10LP family as our `EP4CE55`, much smaller die). Via differential fuzzing against a real
+  chip, they found: a **32-byte `0xFF` preamble**, then a 9-byte "device header," design-dependent data, a
+  checksum, then the actual configuration RAM body organized as **1752 frames of 210 bytes each (208 data +
+  2-byte little-endian CRC-16)**, using **CRC-16/ARC (poly 0x8005, reflected 0xA001), init 0xFE54**,
+  computed independently per frame. This is unofficial/undocumented-by-Altera and specific to a much smaller
+  die than ours, so it's a hypothesis to test, not a confirmed spec for `EP4CE55`.
+- **`.pof` has a real, confirmed magic**: literal ASCII `"POF\0"` at offset 0, verified directly in
+  `openFPGALoader`'s working parser. `.sof`/`.jic` have no reliable public signature (checked; a
+  widely-repeated "SOF magic" claim on file-extension-database sites has no corroboration from any real
+  tooling and should be treated as spurious).
+- **`EP4CE55`'s JTAG IDCODE is `0x020F50DD`** (from `openFPGALoader`'s device table), shared with `EP3C55`
+  and `10CL055` — same-density devices across three product lines sharing one JTAG ID, a known Altera
+  convention at every density step in that table.
+
+**Applied directly to `dsp_data.bin`**: checked the exact byte immediately after the file's own 8-byte
+ASCII tag (`"31601130"`, the same build-tag convention as its two sibling files) — there's a run of `0xFF`
+bytes there, and it is **exactly 32 bytes long**, matching the Cyclone_CRAM_Mapper preamble length exactly,
+at the exact analogous position (immediately preceding what would be the bitstream's own byte 0). A
+specific, non-round number matching a value independently reverse-engineered on a different die in the same
+family is a genuinely striking coincidence if this isn't real — the strongest single piece of evidence for
+the FPGA-bitstream reading found so far. Checked and ruled out as trivial: `"POF\0"` is absent, and neither
+IDCODE byte order appears anywhere in the file (checked both) — consistent with this being a raw/RBF-style
+payload, not a `.pof`, and consistent with IDCODE being a JTAG-scan-time value, not something a raw
+bitstream file would embed.
+
+**The per-frame CRC-16 test came back negative — but that's expected, not a contradiction.** Swept a wide
+range of start offsets (0-2048) and several CRC init values (`0xFE54`, `0xFFFF`, `0x0000`) against
+210-byte frames, both normal and bit-reversed byte order: no real signal anywhere (best hit rate ~1.7%,
+indistinguishable from chance). This doesn't argue against the hypothesis: `dsp_data.bin`'s size is already
+established (above) as consistent with Altera's own **compressed** bitstream format, whose internal
+frame/opcode scheme is confirmed by the same research to be proprietary and undocumented anywhere, even for
+the smaller `EP4CE6` case the CRC scheme itself came from — an uncompressed-frame CRC test was never going
+to succeed against compressed data regardless of whether the underlying hypothesis is right. The 32-byte
+preamble match survives this precisely because a preamble sits *before* the compressed payload begins in
+this kind of format.
+
+**Net effect**: the bet on FPGA bitstream is now on firmer footing than "circumstantial and byte-histogram
+based" — there's now one specific structural number (32 bytes) matching an independently-derived reference
+point from a different die in the same chip family, found in the exact position where it should be if this
+really is a wrapped Altera configuration payload preceded by Icom's own build-tag convention.
+
+## Chased whether the real firmware-version values are traceable via a fresh RAM address — same known dead end, different address (2026-08-29, same day)
+
+Prompted by the user reading real version numbers off a v1.42 radio (`Main CPU 1.42`, `Front CPU 1.01`,
+`DSP Program 1.07`, `DSP Data 1.00`, `FPGA 1.13`) — tried using these as a crib to finally crack the
+long-standing "which file offset populates the update-compatibility-check struct" question (flagged
+genuinely open in multiple earlier sessions, see the "exact 5-field-to-component mapping" section above).
+
+- **The label-string table (`DAT_200a9bb0`) checks out exactly as previously documented**: it's a
+  literal-pool pointer constant (not itself the array — a data word holding the array's address, sitting
+  right in a function's own code region, which is why a naive direct-address read looked like ARM
+  instructions at first). Its value (`0x2032c7f8`) really does point to 5×12-byte `{flag, string_ptr,
+  length}` records whose dereferenced strings and lengths match `"Main CPU:"`/`"Front CPU:"`/`"DSP
+  Program:"`/`"DSP Data:"`/`"FPGA:"` exactly.
+- **Searching `body.bin` for the literal decimal strings was a dead end with a real trap in it**: `"1.42"`
+  gets 3 hits, but all are false positives — one is a RIFF `ISFT`/`ICRD` WAV-metadata tag (`"IC-7300 Ver
+  1.42"`, from the audio-memo recording feature, completely unrelated to the update mechanism), the other
+  two sit next to unrelated abbreviated on-screen labels (`"DSP(P)"`, `"DSP(D)"`, `"FPGA"` — a *different*,
+  more compact label set than the full ones above, apparently for a different, smaller UI widget).
+  `"1.01"`/`"1.07"`/`"1.13"` have zero hits — the real version numbers are not stored as literal decimal
+  text anywhere in `body.bin`.
+- **The actual comparison-reference pointer (`DAT_200a9ba8`) resolves to real RAM (`0x20404654`) outside
+  the static image entirely** (`body.bin`'s only mapped block ends at `0x20395b17`) — confirmed
+  inaccessible via direct memory read, meaning these are genuinely runtime-populated values with no static
+  content to read, not something a smarter address lookup would fix.
+- **Checked its writer directly, per a good suggestion to verify rather than assume**: `references_to` on
+  `0x20404654` finds 18 references, all `READ`/`PARAM`, both `PARAM` sites resolving to the *same* function,
+  `FUN_2008cff8` — and this is the exact ~10KB generic "candidate vs. current settings" comparator this
+  project's own earlier session already identified and explicitly warned about (see the "exact
+  5-field-to-component mapping" section above: *"this codebase uses a `+0x9c`-relative-to-base convention
+  very generically across many unrelated per-screen 'candidate vs. current settings' structures"*).
+  `0x20404654` is just one of many buffer-pairs this single shared utility multiplexes across dozens of
+  unrelated menu screens — not a dedicated firmware-version store with a findable, specific writer.
+
+**Conclusion: this independently rediscovers the same wall a prior session already hit and documented,
+under a different address — not a new one.** The genuine version-comparison values remain populated by a
+mechanism this project's static-analysis techniques don't reach (most likely reached only through this same
+generic, heavily-multiplexed settings-comparison machinery, several layers removed from any single
+traceable literal write). Doesn't change anything about the confirmed-solid label-string-table structure or
+the `+0xa0`/`+0xa4`/`+0xa8`/`+0xac`/`+0xb0` field-to-component mapping — just confirms, again, that finding
+the update file's own byte offset for these fields needs live JTAG, as already recorded.
+
 ## Headline finding: `tunk3.py` silently drops ~1.46 MB of the container
 
 Built and ran a from-scratch decoder (`tools/icom_fw/`, see
