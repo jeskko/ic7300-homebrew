@@ -72,6 +72,27 @@ size-prefix fields (`container[0x21002c]`, `container[0x24002c]`,
 |---|---|---|---|
 | 1.11–1.14 | 174528 | 25636 | 11244 |
 | 1.20–1.30 | 175656 | 25636 | 11244 |
+
+## Cross-check against Icom's official published release list (2026-08-30)
+
+While chasing the IC-9700's per-component version history (see
+[[ic9700-container-format]]), also fetched Icom's official EN/`icomjapan.com`
+firmware-history page for the IC-7300. Two things worth recording:
+
+- **The official page lists only 9 IC-7300 firmware releases (v1.12 through
+  v1.42)** — it does not list v1.11 at all. This project's own local archive
+  (table above) has 10 files including v1.11, so either v1.11 was pulled from
+  the official download history at some point (plausible — Icom does this;
+  the IC-9700's own official list is similarly missing its earliest v1.02/
+  v1.03 releases despite those clearly having existed, per
+  [[ic9700-container-format]]) or v1.11 was never a public general-release
+  build. Not investigated further — doesn't change anything about the local
+  analysis above, which stands regardless of what Icom currently advertises.
+- **The same fetched page also lists several unrelated IC-PW2 (linear
+  amplifier, a completely different product) firmware entries** mixed in
+  after the IC-7300 rows — this is a page-layout quirk on Icom's side (both
+  products' histories share one page/table), not an IC-7300 data issue. No
+  IC-PW2 entries belong in this file.
 | 1.40–1.42 | 176700 | 25636 | 11244 |
 
 None of these match `size1..size7` either. But the **offsets themselves are

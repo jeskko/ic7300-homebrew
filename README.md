@@ -216,24 +216,36 @@ by but not built on top of the prior work there.
   **not cracked** after a thorough negative sweep (LZSS-family
   parameters, buffer-seeding, XOR-whitening, and — new, 2026-08-30 —
   zlib/raw-DEFLATE all tried and ruled out, against both real components
-  now, see below). **Real structural progress the same session,
-  though**: direct byte-level diffing across releases (not just the
-  header-adjacent ramp pattern, which turned out to be 100% fixed across
-  all 37 releases and doesn't mark per-release content — a same-day
-  correction to an initial misreading) found the container actually has
-  **exactly two real, per-release-varying regions** — a ~2.7MB one
-  (already-known start, `0x10038`) and a newly-found ~7.2MB one
-  (`0x800038`) — separated by large completely-fixed stretches. The
-  second region's size is a plausible match for the on-board Cyclone V
-  FPGA's configuration bitstream (`notes/ic9700-hardware.md`'s `IC7601`),
-  a real but not-yet-confirmed hypothesis. See
-  `notes/ic9700-container-format.md`. Also probed the user's live IC-9700
-  over the network as an intermission (2 TCP ports open, 1111 and 60000 —
-  the latter is D-STAR data/picture-transfer per a user-supplied source
-  quote; a full port scan briefly took the radio off the network, worth
-  remembering to scan embedded devices much more conservatively next
-  time) — see chat history, not yet written up as a note. Separately,
-  confirmed the IC-9700's JTAG connector is the exact same part as the
+  now, see below). **Major validation the same day**: read the user's own
+  live IC-9700's firmware-info screen (6 independently-versioned
+  components: Main CPU, Sub CPU, Front CPU, FPGA Program, FPGA Data, DV
+  DSP) as ground truth, then scraped Icom's own official EN + JP support
+  pages for the full per-component version history of **all 20 publicly
+  documented releases** (v1.02–v1.50, 2019–2025) — this **perfectly,
+  with zero discrepancies, validates** the byte-diffing-derived
+  "component 2 changes at only 7 of 18 consecutive-release transitions"
+  finding against Icom's own changelog data, and confirms the release
+  file-naming convention (`Jnnn`/`Ennn`) directly encodes the Main CPU
+  version. A follow-up attempt to isolate FPGA Program's exact byte range
+  from DV DSP's inside "component 2" (using releases where the official
+  data says only one of them changed) found a real complication: overall
+  file size shifts slightly release to release, so a component's size
+  change cascades into apparent byte-diffs across everything packed after
+  it — a concrete fix (account for the size delta before diffing) is
+  identified but not yet implemented. Earlier the same effort found the
+  container has **exactly two real, per-release-varying regions** — a
+  ~2.7MB one (`0x10038`) and a ~7.2MB one (`0x800038`) — separated by
+  large completely-fixed stretches; the second region's size is a
+  plausible match for the on-board Cyclone V FPGA's configuration
+  bitstream (`notes/ic9700-hardware.md`'s `IC7601`), a real but
+  not-yet-confirmed hypothesis. See `notes/ic9700-container-format.md`.
+  Also probed the user's live IC-9700 over the network as an intermission
+  (2 TCP ports open, 1111 and 60000 — the latter is D-STAR
+  data/picture-transfer per a user-supplied source quote; a full port
+  scan briefly took the radio off the network, worth remembering to scan
+  embedded devices much more conservatively next time) — see chat
+  history, not yet written up as a note. Separately, confirmed the
+  IC-9700's JTAG connector and full pinout are identical to the
   IC-7300's own (`10FLT-SM2-TB`) — see `notes/hardware-debug-access.md`.
   Genuine cold-start effort, no prior art existed for this radio going in.
 

@@ -382,3 +382,77 @@ hasn't been checked against the measured ~7.2MB).
 Recorded here as a visible correction rather than silently editing the earlier entry, per how this project
 tracks mistakes — the ramp-sweep technique itself was sound and did find something real (the fixed
 template), just not what it was first read as.
+
+## Ground truth arrives: live radio version readout, then Icom's own published history (2026-08-30)
+
+The user plugged their own IC-9700 into the network for an unrelated side-thread (network port probing —
+see [[icom-ic7300-re-project]]/README for that separate story) and, in the course of that, read off the
+radio's own firmware-info screen: **Main CPU 1.50, Sub CPU 1.00, Front CPU 1.00, FPGA Program 1.08, FPGA
+Data 1.00, DV DSP 1.10**. This was the single most valuable fact this thread had received since its cold
+start — up to this point, every "component" claim in this file was inferred purely from byte-diffing
+patterns and size arguments, with no independent confirmation that the container really carries 6 (not 2,
+not "5-6 boundaries") separately-versioned sub-images, or of what any of their real names are. The `1.50`
+Main CPU reading also immediately confirmed the naming-convention guess: `J150`/the newest file in this
+project's dataset is exactly this radio's currently-running version, so the file-naming scheme (`Jnnn`/
+`Ennn`) directly encodes Main CPU version — not a coincidence, a real 1:1 mapping.
+
+Given a real 6-component structure and a way to read one real version snapshot, the obvious next move was
+to get many snapshots across the product's release history rather than just one. The user provided three
+Icom support-page URLs to fetch (both the EN/EUR/USA `icomjapan.com` page and the JP `icom.co.jp` page for
+the IC-9700, plus later an equivalent IC-7300 page): each release's row on these pages expands to show the
+full post-update version of every component, not just the headline Main CPU version.
+
+**A tooling lesson surfaced immediately**: the first WebFetch attempt at pulling individual per-release
+detail-page URLs (to check whether *those* pages had even more granular data) had the underlying fetch
+model **fabricate a URL** — `https://www.icom.co.jp/support/firmware_driver/4424/` — following what looked
+like a plausible numbering pattern rather than reporting a real link it had seen; this returned a 404. Fixed
+by re-prompting explicitly: "reproduce the raw markdown link syntax exactly as it appears... do not
+construct, guess, or infer any URL... if no real hrefs are present, say so explicitly instead of guessing a
+pattern." That got real relative URLs back correctly. Worth remembering for any future scrape of this kind:
+**WebFetch must be explicitly told not to construct URLs**, or it will pattern-match a plausible-looking one
+that doesn't exist. (Also worth noting the two Icom domains are different real sites, not a typo: EN/global
+support lives on `icomjapan.com`, JP-market support on `icom.co.jp`.)
+
+With that fixed, both pages came back cleanly. Combined (the JP page additionally listing two very early
+2019 releases, v1.02 and v1.03, since removed from the EN page but still present as actual files in this
+project's local archive), this gave **all 20 publicly documented IC-9700 releases (v1.02 through v1.50)**,
+each with a full 6-component version breakdown and release date — now recorded as the version table in
+[[ic9700-container-format]].
+
+**Validation result**: cross-referencing this official data against the byte-diffing findings already in
+this file (the "component 2 changes at only 7 of 18 consecutive-release transitions" result, from the
+7-of-18 check earlier in this thread) produced a **perfect, zero-discrepancy match** — every one of the 7
+byte-diff-detected "changed" transitions corresponds to a real FPGA Program and/or DV DSP version bump in
+Icom's own changelog, and all 11 "unchanged" transitions correspond to both staying flat (checked
+specifically: `J140`-`J144`-`J150` all show FPGA `1.08`/DSP `1.10` on both sides, matching the found freeze;
+`J130`-`J132` all show FPGA `1.07`/DSP `1.06`, also matching). This is about as strong a confirmation as
+static byte-diffing methodology can get without device access — an entirely independent, officially-published
+dataset agreeing with a from-scratch reverse-engineered structural claim on every single checkable point
+across the product's full 2019-2025 public history.
+
+**Follow-up attempt: isolating FPGA Program's byte range from DV DSP's inside "component 2"**. With the
+official table in hand, two adjacent transitions were picked as isolation tests: `E121→E123` (DV DSP bumps
+`1.05→1.06`, FPGA Program unchanged) and `E123→E124` (FPGA Program bumps `1.06→1.07`, DV DSP unchanged) —
+the idea being that a diff localized to only one of these transitions should mark that one component's real
+byte range. This didn't cleanly work: checking actual file sizes for the three releases involved
+(`E121`=15,626,632 bytes, `E123`=15,626,956 bytes, `E124`=15,628,630 bytes) confirmed they're all slightly
+different sizes from each other. In a straightforwardly-concatenated container, a size change in one
+component shifts the byte offset of everything packed after it — so a diff against `E121→E123` came back
+spanning almost the entire component-2 bundle (`0x806038`-`0xedf038`), far too broad to be DV DSP's image
+alone, and is much more likely dominated by this shift artifact than by DV DSP's real footprint.
+`E123→E124`'s diff was more localized (a small 4KB stub, three small clusters totalling ~94KB around
+`0x8e0038`-`0x8fa038`, then a large tail `0x9ca038`-`0xedf038`) but its own large tail likely still includes
+shifted content rather than being purely FPGA Program's real range. **Net conclusion**: real, separable
+sub-component boundaries clearly exist inside "component 2" — the official data proves both components
+really do version independently — but a raw fixed-offset byte-diff can't cleanly isolate them while overall
+file sizes vary release to release. The fix isn't a different diff strategy so much as accounting for the
+size delta explicitly first (find where bytes were actually inserted/removed, re-align everything after that
+point, then diff) — not yet implemented, now the top item on [[ic9700-container-format]]'s "if picked up
+again" list.
+
+**Also fetched, on the user's request, the equivalent IC-7300 EN support page** (a check of the already
+long-settled IC-7300 side of the project against Icom's own public data, not a new investigation) — see
+[[firmware-versions]] for what that turned up: a minor discrepancy (the official page lists only 9 releases,
+v1.12-v1.42, missing v1.11 despite v1.11 being a real file in this project's own archive) and confirmation
+that the "other entries" the user had spotted at the end of that page are unrelated IC-PW2 (linear
+amplifier) firmware listings sharing the same page layout, not an IC-7300 data problem.

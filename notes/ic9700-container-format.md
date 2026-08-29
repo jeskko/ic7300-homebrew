@@ -8,6 +8,50 @@ unpacker, nothing in `/data/misc/icom/9700/` except raw `.dat`/`.zip` release fi
 confirmed as Renesas RZ/A1 series (R7S721001VCBG), same Cortex-A9 family as the IC-7300's
 R7S721000 — see [[ic9700-hardware]].
 
+**Ground truth, read directly off the user's own live IC-9700 (2026-08-30)** — the radio's own
+firmware-info screen lists **6 independently-versioned components**: Main CPU 1.50, Sub CPU 1.00,
+Front CPU 1.00, FPGA Program 1.08, FPGA Data 1.00, DV DSP 1.10. This is the single most important
+fact this thread has had since the cold start — it confirms the container really does bundle
+multiple independently-updated sub-images (not 2, not "5-6 boundaries" — see the corrections below),
+and that three of them (Sub CPU, Front CPU, FPGA Data) have **never been revised past their initial
+v1.00** as of this radio's current firmware.
+
+**Then independently confirmed and massively extended via Icom's own public support pages**
+(`icomjapan.com`/`icom.co.jp`, both the EN/EUR/USA page and the JP page — the JP page additionally
+listed 2 early-2019 releases, v1.02/v1.03, since removed from the EN page but still present in this
+project's local file archive): every one of the 20 publicly documented IC-9700 firmware releases
+(v1.02 through v1.50) has its own page listing the exact post-update version of **all 6 components**.
+This directly confirms the release-file naming convention (`J102`...`J150`, `E105`...`E150`) *is* the
+**Main CPU version number** (`J150` = Main CPU v1.50) — Main CPU is the only component that increments
+on every single release without exception, and the newest file in this project's dataset (`J150`)
+exactly matches the version currently running on the user's own radio. Full per-release table below.
+
+| Version | Date | FPGA Program | DV DSP |
+|---|---|---|---|
+| 1.02 | 2019/02/08 | 1.01 | 1.00 |
+| 1.03 | 2019/03/08 | 1.02 | 1.01 |
+| 1.05 | 2019/03/29 | 1.02 | 1.01 |
+| 1.06 | 2019/04/19 | 1.03 | 1.02 |
+| 1.10 | 2019/06/07 | 1.03 | 1.02 |
+| 1.11 | 2019/06/14 | 1.03 | 1.02 |
+| 1.13 | 2019/08/30 | 1.04 | 1.03 |
+| 1.20 | 2019/10/11 | 1.05 | 1.04 |
+| 1.21 | 2019/12/13 | 1.06 | 1.05 |
+| 1.23 | 2020/04/03 | 1.06 | 1.06 |
+| 1.24 | 2020/05/22 | 1.07 | 1.06 |
+| 1.30 | 2021/02/26 | 1.07 | 1.06 |
+| 1.31 | 2021/07/09 | 1.07 | 1.06 |
+| 1.32 | 2022/08/05 | 1.07 | 1.06 |
+| 1.40 | 2023/03/22 | 1.08 | 1.10 |
+| 1.41 | 2023/04/06 | 1.08 | 1.10 |
+| 1.42 | 2023/05/18 | 1.08 | 1.10 |
+| 1.43 | 2023/07/21 | 1.08 | 1.10 |
+| 1.44 | 2023/09/15 | 1.08 | 1.10 |
+| 1.50 | 2025/08/21 | 1.08 | 1.10 |
+
+(Sub CPU/Front CPU/FPGA Data omitted — confirmed `1.00` in every single one of these 20 releases,
+never once revised across the product's whole public history to date.)
+
 ## Confirmed structural facts (checked across all 37 known releases, J102–J150/E105–E150)
 
 - Header differs from the IC-7300's shape entirely (not just shifted) — embeds a literal ASCII
@@ -55,6 +99,35 @@ R7S721000 — see [[ic9700-hardware]].
   a size argument only, not yet independently confirmed. Tried compression against this fresh
   region too (both IC-7300's exact LZSS parameters and raw-DEFLATE, at the confirmed real start
   `0x800038`): both negative, same as component 1.
+- **"Component 2" is itself a bundle of multiple components, not one image** — directly explained by
+  the 6-component ground truth above (Sub CPU/Front CPU/FPGA Data never revised past v1.00 would
+  produce exactly this "large fixed region" signature). Checked by diffing **consecutive** release
+  pairs across the whole 19-release J sequence (not just oldest-vs-newest): component 2's body
+  changes at only **7 of 18** transitions (`J102→J103`, `J105→J106`, `J111→J113`, `J113→J120`,
+  `J120→J121`, `J121→J124`, `J132→J140`) and is **completely frozen** for the other 11, including
+  every transition from `J140` through `J150` (the current release).
+- **Validated against Icom's own published per-release data with a perfect, zero-discrepancy
+  match**: every one of those 7 "changed" transitions corresponds to a real FPGA Program and/or DV
+  DSP version bump in the table above, and every one of the 11 "unchanged" transitions corresponds to
+  *both* staying flat (e.g. `J140`-`J144`-`J150` are all FPGA `1.08`/DSP `1.10`, matching the found
+  freeze exactly; `J130`-`J132` are all FPGA `1.07`/DSP `1.06`, also matching). This is about as
+  strong a validation as static analysis gets — the byte-diffing methodology and Icom's own
+  changelog data agree on every single checkable transition across the product's full public history
+  (2019–2025), with no exceptions found.
+- **Attempted to isolate FPGA Program's byte range from DV DSP's using a transition where only one of
+  them changed** (`E121→E123`: DV DSP `1.05→1.06`, FPGA Program unchanged; `E123→E124`: FPGA Program
+  `1.06→1.07`, DV DSP unchanged) — partially informative, but complicated by a real methodological
+  wrinkle: **overall file size shifts slightly release to release** (confirmed: `E121`/`E123`/`E124`
+  are 15,626,632 / 15,626,956 / 15,628,630 bytes respectively), so a size change in an earlier
+  component cascades into an apparent byte-diff across *everything packed after it*, even where the
+  later component's own logical content didn't change. `E121→E123`'s diff span (`0x806038`-`0xedf038`,
+  nearly the whole bundle) is too broad to be DV DSP's image alone under this container's basic
+  concatenation layout — it's very plausibly this shift artifact, not DV DSP's real footprint.
+  `E123→E124`'s diff (a 4KB stub, three small clusters `0x8e0038`-`0x8fa038` totalling ~94KB, then a
+  large tail `0x9ca038`-`0xedf038`) is more localized but still likely includes shifted content in its
+  own large tail. **Net result: real sub-component boundaries exist inside the bundle, but a raw
+  byte-diff can't cleanly separate them while sizes vary — would need to account for the size delta
+  explicitly (e.g. find the exact insertion/growth point first) rather than just diffing block-by-block.**
 - Two small high-entropy islands break the *main header's own* filler ramp: `0x4038`–`0x48c8`
   (~2193 bytes) and `0x4f38`–`0x4f3f` (8 bytes). Both are **byte-for-byte identical across all 37
   releases** — rules out "per-release signature", more consistent with a fixed embedded
@@ -93,33 +166,43 @@ to installed firmware exists yet.
 
 ## If picked up again, roughly in order of promise
 
-1. **Pin down component 2's exact byte-level start/end** (currently known only to ~4KB granularity:
+1. **Isolate the exact size-shift per transition and re-diff accounting for it**, rather than raw
+   fixed-offset block diffing — for each of the 7 confirmed-changed transitions, compute the total
+   file-size delta, then look for the specific point where inserted/removed bytes would explain it
+   (a real component growing/shrinking), re-aligning everything *after* that point before diffing
+   further. This should cleanly separate genuinely-changed sub-images from shift-artifact "noise" in
+   a way the raw per-transition diffs (see above) couldn't — the single most promising concrete next
+   step, now that the per-release component version ground truth (above) tells us exactly which
+   transitions are "DV DSP only", "FPGA Program only", or "both" to test against.
+2. **Pin down component 2's exact byte-level start/end** (currently known only to ~4KB granularity:
    starts `0x800038`, ends somewhere near `0xee3038`) and check whether its size, once exact, matches
    a real Cyclone V bitstream size for the specific FPGA part on this board (`5CEFA9F23I7N` — check
    the real Intel/Altera `.rbf`/`.sof` size for that exact device) — would meaningfully strengthen or
    kill the "component 2 = FPGA bitstream" hypothesis beyond the current size-only argument.
-2. Decode the fixed 12-byte template shared by `0x400038`/`0x7f0038` (`11 13 14 14 15 04 28 19 19 1e
-   1f 3c`) and check whether it (or a variant) recurs anywhere else — since it's fixed and
-   non-version-specific, it won't reveal per-release content, but understanding what it *is* would
-   help characterize the large fixed regions it sits inside.
-3. Web search for other Icom-radio RE projects that might share this compression scheme or vendor
+3. ~~Get per-release component version ground truth to validate the byte-diffing~~ — **done,
+   2026-08-30, and better than hoped**: scraped Icom's own public support pages (EN and JP) for all
+   20 published releases' full 6-component version breakdown (see the table above) — a perfect,
+   zero-discrepancy match against every checkable byte-diff transition.
+4. Web search for other Icom-radio RE projects that might share this compression scheme or vendor
    library — this container idiom (version string + size table + fixed slots) may not be
    IC-7300-specific. Tried 2026-08-30, came back empty (no public prior art found for any Icom
    amateur-radio firmware format) — worth retrying periodically, not worth repeating right away.
-4. Wider LZSS-family parameter sweep (different min-match-length, control-byte read order, match
+5. Wider LZSS-family parameter sweep (different min-match-length, control-byte read order, match
    encoding bit widths) than the 216 combinations already tried, against **both** real components now
    — with real candidate sizes (`0x30` for component 2) to validate against instead of guessing blind.
-5. If the constant blob is a signature/certificate/key, identifying its format (RSA modulus size,
+6. If the constant blob is a signature/certificate/key, identifying its format (RSA modulus size,
    ECDSA, etc.) might narrow down the vendor toolchain/era — weakened as a *signature* specifically
    by its being identical across 37 releases, but the format-ID angle stands regardless of what it
    turns out to be.
-6. Actual IC-9700 JTAG hardware access, bypassing the update-container problem entirely — same
-   approach as [[hardware-debug-access]]'s IC-7300 plan, different radio. **Progressed, 2026-08-30**:
-   JTAG connector confirmed on the IC-9700's schematic, `10FLT-SM2-TB` — the exact same JST FLT-series
-   part as the IC-7300's own `J491`. Pin assignment not yet checked (same connector part doesn't
-   guarantee same pinout), but if it matches, the FT2232H adapter + FFC breakout already ordered for
-   the IC-7300 would very plausibly work here too. See [[hardware-debug-access]]'s own new section on
-   this.
+7. Decode the fixed 12-byte template shared by `0x400038`/`0x7f0038` (`11 13 14 14 15 04 28 19 19 1e
+   1f 3c`) and check whether it (or a variant) recurs anywhere else — since it's fixed and
+   non-version-specific, it won't reveal per-release content, but understanding what it *is* would
+   help characterize the large fixed regions it sits inside.
+8. Actual IC-9700 JTAG hardware access, bypassing the update-container problem entirely — same
+   approach as [[hardware-debug-access]]'s IC-7300 plan, different radio. **Resolved, 2026-08-30**:
+   JTAG connector *and* pinout confirmed identical to the IC-7300's own `J491` (`10FLT-SM2-TB`,
+   standard ARM JTAG) — the already-ordered adapter should work for both radios as-is. See
+   [[hardware-debug-access]] for the full pinout.
 
 Treat this as a genuine cold-start RE effort if resuming, not a quick adaptation of existing
 IC-7300 tooling.
