@@ -702,17 +702,17 @@ among many from this ordinary SD-card-menu task, not from any special/separate p
 anyone picking the `chunk4`/`chunk5` mystery back up, since it confirms the whole update flow starts from
 routine user-menu interaction on this one task, nothing more exotic.
 
-**`civ_command_dispatch_task`** (`0x200b9c00`, renamed from `task_probe_200b9c00`, provisional name — see
-caveat below) — a structured command-protocol handler: waits on a queue for a command ID (`FUN_20186de4`,
-the same queue-receive primitive `first_task_entry` uses), reads a framed byte sequence one byte at a time
-via a retry loop until the accumulated length matches the expected ID, then **invokes the command through
-a function-pointer table indexed by that ID** (`(**(code**)(DAT_200ba194 + id*4))(...)`), and waits for
-completion before looping. Byte-at-a-time framing + opcode-indexed dispatch table is exactly the shape of
-a structured remote-control protocol handler — **plausibly the CI-V command processor** (the IC-7300's
-documented remote-control protocol), but this is a hypothesis from shape alone, not confirmed by any
-CI-V-specific string, opcode value, or hardware link yet — treat the name as provisional, worth revisiting
-if the real protocol identity ever gets pinned down (e.g. by matching specific opcodes in the function-
-pointer table against published CI-V command references).
+**`sdcard_file_rpc_dispatch_task`** (`0x200b9c00`, renamed from `task_probe_200b9c00`, then from
+`civ_command_dispatch_task` — **see the 2026-08-29 "civ_command_dispatch_task retraction" section near the
+end of this file for the full story**) — a structured command-protocol handler: waits on a queue for a
+command ID (`FUN_20186de4`, the same queue-receive primitive `first_task_entry` uses), reads a framed byte
+sequence one byte at a time via a retry loop until the accumulated length matches the expected ID, then
+**invokes the command through a function-pointer table indexed by that ID**
+(`(**(code**)(g_file_rpc_handler_table_ptr + id*4))(...)`), and waits for completion before looping. This
+byte-framed, opcode-indexed shape originally looked like a plausible CI-V command processor (hence the old
+name), but turned out on full inspection to be a generic internal SD-card file-access RPC service
+(open/read/write/close/rename/list), unrelated to CI-V — not confirmed by any CI-V-specific evidence, and
+now positively disconfirmed by cross-checking its full handler table against the real thing.
 
 **The `FUN_2006c4a8` pair** (`audio_buffer_task_2006bb58`/`2006c2c4`) — confirmed real state machines
 sharing state at `0x2006c3d4`. Went one level deeper into their sub-handlers this session:
@@ -765,3 +765,157 @@ visibility, not more static reading, per the reasoning already laid out earlier 
   SSIF-audio/front-panel-UART were ruled out last session). So the honest answer is: **one task
   (`sd_menu_dispatch_task`) is the trigger point for the one mechanism suspected of reaching the DSP, but
   no task's own code — including that one — has been shown to touch DSP hardware directly.**
+
+## `civ_command_dispatch_task` retraction, full CI-V transport confirmation (2026-08-29, 29th session)
+
+User's explicit ask this session: dig into `civ_command_dispatch_task` (`0x200b9c00`) and see if it exposes
+any publicly undocumented CI-V commands, per the 4-step plan recorded at the end of the previous session's
+entry. Worked all 4 steps. **Bottom line: this task is not the CI-V command processor at all** — renamed to
+`sdcard_file_rpc_dispatch_task`. The real CI-V transport, separately, is now proven at the code level (not
+just pins). Both results below; the task's own Ghidra plate comment carries the same summary.
+
+### Step 1 — transport confirmed at the code level, not just pins
+
+Traced `sdcard_file_rpc_dispatch_task`'s own byte source: it drains a ring buffer (`DAT_200ba16c`) via
+`file_rpc_queue_pop_byte` (renamed from `FUN_200b972c`). The only function that ever *pushes* into that
+ring buffer is `file_rpc_queue_push_byte` (renamed from `FUN_200b96c4`), and — see Step 2 — that push path
+turned out to be purely internal/software, not hardware-driven.
+
+Separately, and this part is a real, solid confirmation: found SCIF0's real interrupt-driven receive path
+and it **does** implement genuine CI-V byte framing.
+- RZ/A1H manual (`REN_r01uh0403ej0600_rz_a1h_MAT_20210129-2931443.pdf`, port function tables) confirms
+  `P6_9`/`P6_10`'s alt-functions are `TxD0`/`RxD0` — **SCIF channel 0**, register base `0xE8007000`
+  (`SCSMR_0`..`SCEMR_0`, `SCFRDR_0` receive-data register at `+0x14`). This is the exact pin pair the user
+  transistor-level-traced to CI-V (`CTXD`/`CRXD`, see [[ic7300-signal-chain]]).
+- `scif0_civ_driver_init` (renamed from `FUN_20010c68`) configures SCIF0's registers and calls
+  `register_event_handler(0xdf, ...)` / `(0xdd, ...)` / `(0xde, ...)` — the ISR-registration primitive
+  documented earlier in this file (`FUN_200b9490`, 49+ call sites). The registered handler pointer
+  (`DAT_200115ec`) resolves through a 4-byte jump stub to `scif0_civ_rx_isr` (renamed from `FUN_20010b6c`),
+  confirmed by direct disassembly at `0x20010c64` (`b 0x20010b6c`).
+- `scif0_civ_rx_isr` reads `SCFRDR_0` (channel-base `+0x14`, i.e. literally `0xE8007014` for this
+  statically-bound channel-0 instance — confirmed the channel context global `DAT_200115dc` holds the raw
+  image value `0xE8007000`) and calls `civ_frame_rx_statemachine` (renamed from `FUN_2001099c`).
+- `civ_frame_rx_statemachine` is unambiguously a CI-V frame parser: `param_1==0xFE` sets frame-sync state;
+  at frame position 1 it compares the byte against `*(byte*)(DAT_200115d4+0x59)` (the radio's own CI-V
+  address, with a broadcast-mode flag at `+0x5a`) and aborts the frame on mismatch — genuine CI-V
+  destination-address filtering; `param_1==0xFD` (with length ≥4) copies the whole frame body into a
+  driver-owned buffer (`DAT_200115c8`) and sets a "frame ready" flag. The TX-side sibling (`FUN_200110a8`,
+  not renamed) explicitly writes two `0xFE` preamble bytes when building outgoing frames, matching CI-V's
+  two-byte preamble exactly.
+- **Exhaustively searched for who reads `DAT_200115c8`'s "frame ready" flag and forwards the parsed command
+  byte onward** (the natural next link, which would either confirm or refute that
+  `sdcard_file_rpc_dispatch_task` is fed by real wire traffic). All 4 direct readers of that address stay
+  inside the same low-level SCIF0 driver file (`0x20010xxx`-`0x20012xxx`); none reach
+  `sdcard_file_rpc_dispatch_task`'s queue or ring buffer, nor any other task-level dispatch found this
+  session. **Genuine open item, not resolved**: the real consumer of completed CI-V frames — i.e. the actual
+  frequency/mode/etc. command processor implementing the documented CI-V feature set — was not located.
+  Static analysis dead-ended the same way task-activation searches have before (see this file's earlier
+  sections); a live JTAG trace of `DAT_200115c8`'s flag byte would settle it quickly.
+
+**Verdict**: SCIF0 = CI-V is now proven by matching protocol behavior (address filtering, FE/FD framing),
+not just by pin tracing. What consumes its parsed frames is still unknown.
+
+### Step 2 — the "civ_command_dispatch_task" handler table dumped, and it isn't CI-V
+
+`g_file_rpc_handler_table_ptr` (renamed from `DAT_200ba194`) is itself a pointer variable; its held value
+(read directly from the image) is `0x20336090` — that address is the real table base, 27 populated 4-byte
+entries (command IDs `0x00`-`0x1a`), terminated by a null entry at `0x1b`:
+
+| ID | Address | What it calls | Read as |
+|----|---------|----------------|---------|
+| 0x00 | `0x200b9e4c` | — | `mov r0,#0; bx lr` — no-op/ping |
+| 0x01 | `0x200b9e54` | `vfs_open_ex` (mode 2/0x100 or 0x180 flags) | directory-entry read (find-first style) |
+| 0x02 | `0x200b9e90` | `vfs_open`, then loops `vfs_read_dir_entry` | list directory |
+| 0x03 | `0x200ba244` | shared helper `FUN_200b9fc8` (itself: `vfs_open_ex` + `vfs_read_record`/`vfs_write_record`) | open + read/write |
+| 0x04 | `0x200ba298` | tail-call `vfs_rename` (2 paths) | rename/move |
+| 0x05 | `0x200ba2ac` | `vfs_read_record` then `vfs_write_record` | read-modify-write a 0x34-byte record |
+| 0x06 | `0x200ba340` | `vfs_open_ex` (mode 0) | open/stat |
+| 0x07 | `0x200ba378` | tail-call `vfs_close` | close |
+| 0x08 | `0x200bb1cc` | large, not fully chased | — |
+| 0x09 | `0x200bb794` | `vfs_read_dir_entry` loop | find-next entry |
+| 0x0a | `0x200bb7c8` | tail-call `FUN_200cb04c` | — |
+| 0x0b | `0x200bb7dc` | same body as 0x01 | directory-entry read variant |
+| 0x0c | `0x200bb818` | tail-call `vfs_open` | open |
+| 0x0d | `0x200bb82c` | tail-call `vfs_rename` | **same target as 0x04** — duplicate alias |
+| 0x0e | `0x200bb840` | same body as 0x05 | **same as 0x05** — duplicate alias |
+| 0x0f | `0x200bb8d4` | `vfs_open_ex` (mode 0x180 hardcoded) | open in write/create mode |
+| 0x10 | `0x200bb90c` | tail-call `vfs_close` | **same target as 0x07** — duplicate alias |
+| 0x11 | `0x200bb958` | `FUN_200c9bec` | — |
+| 0x12 | `0x200bb98c` | `FUN_200c9d0c` | — |
+| 0x13 | `0x200bb9c0` | `FUN_200c9e9c` | — |
+| 0x14 | `0x200bb9f4` | large — `FUN_200c9634`/`FUN_200cc1ec`, string/format work | set-parameter-by-name (best guess) |
+| 0x15 | `0x200bbc68` | `FUN_200c9634`, `FUN_200ca02c`, sets a flag field | set persistent flag/state |
+| 0x16 | `0x200bbcc0` | reads back that same flag field, small state machine | query/clear counterpart of 0x15 |
+| 0x17 | `0x200bbd28` | `FUN_200cc148` | — |
+| 0x18 | `0x200bbd58` | large, wildcard-style path sanitization (`'*'` insertion) | path/glob helper |
+| 0x19 | `0x200bc00c` | tail-call `FUN_200cb8d8` | — |
+| 0x1a | `0x200bc020` | `FUN_200c5dd0` | — |
+
+The shared primitives (`vfs_open`/`vfs_open_ex`/`vfs_read_record`/`vfs_write_record`/`vfs_close`/
+`vfs_rename`/`vfs_read_dir_entry`, all `0x200caxxx`-`0x200ccxxx`, renamed this session) all resolve a
+path string through `FUN_200ca70c` to a device object with its own operations vtable at `obj+0x10`
+(slots at `+0x24`/`+0x28`/`+0x2c`/`+0x30`/`+0x34` for rename/read/write/lock/readdir-style operations) —
+a textbook small VFS layer, not a ham-radio command set.
+
+**Cross-checked against the real, published CI-V command table** (`IC-7300_ENG_FM_12b.pdf`, pages 19-3
+through 19-10, commands `0x00` through `0x28`, the user's freshly-supplied manual copy): the documented
+set is frequency/mode read-send, VFO/memory operations, scan, split, tuning step, attenuator, levels,
+meters, CW message send, power on/off, transceiver ID, memory/band-stacking/keyer contents, a huge `0x1A
+0x05` sub-table of settings, tone/RTTY/scope settings, etc. — **nothing resembling open/read/write/close/
+rename/list-directory anywhere in the full documented range**. If `sdcard_file_rpc_dispatch_task`'s IDs
+were literally the raw CI-V wire command byte, sending real command `0x03` ("read operating frequency")
+would instead open-and-read-or-write a file — contradicted by the radio's well-known, working CI-V
+behavior. So this table's ID space is not the CI-V wire command byte.
+
+### Step 2b — confirmed as a generic, CI-V-unrelated internal file-RPC service (this settled it)
+
+Found the real callers. Every one of the 27 handlers is *also* directly reachable — no UART involved at
+all — through 26 tiny per-ID wrapper functions at `0x200bc0fc`-`0x200bca08` (each is a fixed 0x58-byte
+stub hardcoding one ID 1-26 and calling `file_rpc_post_command`, renamed from `FUN_200bc048`, which stages
+the packed args into the task's own ring buffer via `file_rpc_queue_push_byte` and posts to its queue —
+this is the *entire* path that ever feeds that ring buffer; no hardware ISR reaches it). Traced
+`references_to` on the "open" wrapper (ID 6, `FUN_200bc2b4`): **14 call sites scattered across completely
+unrelated subsystems** — `0x20017xxx`, the `0x2002xxxx` SD-menu cluster, `0x2006xxxx`. One of them
+(`FUN_20017000`) opens the literal path **`"C:\IC-7300\Voice\..."`** (string literal at `0x20016fec`,
+read directly from the image) — the SD-card voice-memory-message feature — and drives it through open
+(id 6) → read (id 5, via a sibling wrapper `FUN_200bc3e4`) → close (id 7) exactly per this table.
+
+This is conclusive: `sdcard_file_rpc_dispatch_task` and its 27-entry table are the firmware's **generic,
+shared, single-threaded SD-card file-access RPC service** — used by ordinary unrelated features (voice
+memory playback confirmed; SD-menu and other `0x2006xxxx`/`0x2002xxxx` subsystems likely too, not
+individually chased) that need serialized file open/read/write/rename/list access, going through one task
+so file-system state stays consistent. It has no established connection to CI-V beyond a superficial
+shape resemblance (byte-framed queue receive + ID-indexed function-pointer table) that misled the naming
+in an earlier session. Retracted the name; renamed the task and its main supporting functions in Ghidra
+(`sdcard_file_rpc_dispatch_task`, `g_file_rpc_handler_table_ptr`, `file_rpc_post_command`,
+`file_rpc_queue_push_byte`/`pop_byte`, `vfs_open`/`vfs_open_ex`/`vfs_read_record`/`vfs_write_record`/
+`vfs_close`/`vfs_rename`/`vfs_read_dir_entry`, `scif0_civ_driver_init`/`scif0_civ_rx_isr`/
+`civ_frame_rx_statemachine`); full plate comment on the old `civ_command_dispatch_task` address records
+this retraction for anyone who lands there from an old note or an old Ghidra bookmark.
+
+### Steps 3/4 — moot given the above, but worth stating explicitly
+
+Step 3 (cross-reference against the published CI-V table) is done above, as the evidence that disconfirmed
+the hypothesis rather than confirming an undocumented-command list. Step 4 (decompile any undocumented-
+looking candidates before calling them "hidden") — there are no candidates to decompile *as CI-V commands*,
+since the table isn't CI-V's. Reframed as an ordinary internal-API question instead, the file-RPC service's
+own handlers (0x08, 0x11-0x14, 0x17-0x1a in the table above) are still only partially characterized —
+listed as open items below, not urgent.
+
+### Open items for next time, no priority order
+
+1. **The real CI-V command dispatcher is still unfound.** `civ_frame_rx_statemachine` proves SCIF0 parses
+   genuine CI-V frames and stores them at `DAT_200115c8`, but nothing that reads that flag was found to
+   forward the parsed command byte to a frequency/mode/etc. handler. This is now the concrete next step if
+   "undocumented CI-V commands" is still the goal — needs either a deeper static sweep of the 4 known
+   readers' callers (all inside `0x20010xxx`-`0x20012xxx`, not yet each individually decompiled) or live
+   JTAG (watch `DAT_200115c8`'s flag byte, or the SCFRDR_0 register directly, while sending a real CI-V
+   command from a PC).
+2. A handful of the 27 file-RPC handlers (`0x08`, `0x11`-`0x14`, `0x17`-`0x1a`) weren't individually
+   decompiled to full clarity this session (only their immediate call targets were identified from raw
+   ARM ground-truth disassembly, all hitting the known ARM/Thumb Ghidra disassembly-context bug — see this
+   file's "Known Ghidra project quirk" section — since this whole table region had never been examined
+   before). Low priority unless the file-RPC service itself becomes independently interesting.
+3. Two exact-duplicate table entries found (`0x0d`≡`0x04` both `vfs_rename`; `0x0e`≡`0x05` the
+   read-modify-write pair; `0x10`≡`0x07` both `vfs_close`) — plausibly just compiler/linker artifacts from
+   two source call sites sharing a common small wrapper, not investigated further.
