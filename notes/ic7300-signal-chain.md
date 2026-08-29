@@ -464,3 +464,87 @@ receive.
   monitoring/protection — this is the physical sensor path behind
   whatever SWR-protection logic exists in the main firmware, worth
   knowing if that code is ever traced.
+
+## Complete main-CPU port pinout, user's full schematic sweep (28th session)
+
+User did a full pass over the general wiring/block-diagram sheets and supplied a near-complete `Pn_m` →
+signal-name table for every CPU port (`P0`-`P9`), filling in some purposes directly and asking for the rest
+to be cross-checked against the block diagrams. Read the **MAIN UNIT block diagram** (sheet 4,
+"BLOCK DIAGRAM-2") and the **PA/Tuner/RF UNIT block diagram** (sheet 3, "BLOCK DIAGRAM-1") in full to fill
+in the gaps. One new hardware fact up front, confirmed directly from the block diagram's own labels (the
+main CPU's part number, `IC301`/`R7S721000VCFP`, was already on record in [[ic7300-hardware]] — this block
+diagram just independently re-confirms it, not a new find):
+- **Two separate `NJU7704F3` voltage detectors**, not one: `IC373` drives a net simply labeled `RESET`
+  (plausibly a wider system reset, not yet traced to a specific pin), and `IC361` drives `VDET`/`PDV` into
+  the main CPU's `P1_6` — the one already confirmed as the power-fail/brownout input in
+  [[firmware-update]]'s restart-mechanism section. Added to [[ic7300-hardware]]'s BOM table.
+
+### Port-by-port table
+
+| Port pin | Signal | What it's confirmed to be (this session unless noted) |
+|---|---|---|
+| `P0_4` | `TCON` | Tuner control — one of 3 signals (with `EKEY`/`ESTA`) going to the external `[TUNER]` jack, confirmed on the PA/Tuner block diagram |
+| `P0_5` | `USSPD` | Goes toward the USB subsystem cluster (see below) — likely a USB suspend indicator, not individually traced further |
+| `P1_0` | `FRES` | Front-panel MCU reset (user's own label; matches the already-confirmed front-panel connector finding) |
+| `P1_1` | `RTC_IRQ` | RTC (`IC381`, `RX-8803LC`) interrupt line — confirms the RTC connects via 3 dedicated CPU pins (`P1_1/2/3`), not just the I2C pair previously assumed |
+| `P1_2` | `RTC_SCL` | RTC I2C clock — direct line into the main CPU per the block diagram, alongside `RTC_SDA` |
+| `P1_3` | `RTC_SDA` | RTC I2C data |
+| `P1_4` | `ECK` | EEPROM (`IC351`, `GT24C128B`) I2C clock — **matches [[base-loader]]'s already-confirmed `RIIC2` register-level finding exactly** (EEPROM on `P1_4`/`P1_5`) |
+| `P1_5` | `EDT` | EEPROM I2C data |
+| `P1_6` | `PDV` | Confirmed last session: `VOUT` of `IC361` (`NJU7704F3`) — power-fail/brownout detector input, see [[firmware-update]] |
+| `P1_7` | `PWRK` | Front-panel power key (user's own label; matches earlier finding) |
+| `P1_8` | `VDL` | PA voltage sense |
+| `P1_9` | `IDL` | PA idle-current sense |
+| `P1_10` | `THML` | PA heatsink temperature sense |
+| `P1_11` | `FORL` | Forward power sense |
+| `P1_12` | `REFL` | Reflected power sense |
+| `P1_13` | `ALCL` | ALC level sense |
+| `P1_14` | `TPWRL` | Transmit power level sense |
+| `P1_15` | `SWRL` | SWR sense |
+| `P2_0` | `MDAT` | Shift-register serial data — see "relay/filter band-switching" below |
+| `P2_1` | `MCLK` | Shift-register serial clock — same bus as `MDAT` |
+| `P2_2` | `MSTB1` | Shift-register latch strobe 1 — PA unit's own relay register (`IC751`, per the PA/Tuner block diagram) |
+| `P2_3` | `MSTB2` | Shift-register latch strobe 2 — a second register on the same `MDAT`/`MCLK` bus (RF unit's own filter-bank register, `IC1101`-`IC1103` on the block diagram, uses the identical `MDAT`/`MCK`/`MSTB1`-labeled bus — `MSTB2` most likely selects this one instead) |
+| `P2_4` | `DSTB` | A third shift-register/latch strobe on the same style of bus (exact register not pinned down individually) |
+| `P2_5` | `PSTB` | A fourth shift-register/latch strobe (ditto) |
+| `P2_6` | `DRESD` | DSP reset, confirmed prior sessions |
+| `P2_7` | `DRESH` | Not yet traced individually — name suggests a second, related DSP reset/halt-style line, distinct from `DRESD` |
+| `P2_8`-`P2_11` | `BCLK_`/`FRM_`/`DX_REC`/`DR_AF` | SSIF0 audio link to the DSP, confirmed prior sessions |
+| `P3_0`-`P3_3` | `LCD_CLK`/`LCD_VS`/`LCD_HS`/`LCD_DE` | LCD panel timing signals — **the block diagram shows these entering the FPGA (`IC1351`), not going to the front panel directly, with a "To The Front" label leading onward from the FPGA** — i.e. **the FPGA sits between the main CPU and the LCD panel**, a genuine new architectural fact (not just an SDR/audio component) |
+| `P3_4`/`P3_5` | `BCLK_`/`FRM_` | Same signal *names* as `P2_8`/`P2_9` — almost certainly SSIF1's own bit-clock/frame-sync inputs (SSIF1 shares SSIF0's timing in this pairing mode, per the already-confirmed audio-link finding — this is the CPU-side pin pair that carries that shared clock to SSIF1 specifically, completing the 8-signal SSIF0+SSIF1 link across `P2_8`-`P2_11` and `P3_4`-`P3_7`) |
+| `P3_6`/`P3_7` | `DX_FMT`/`DR_RSV` | SSIF1 data, confirmed prior sessions |
+| `P3_8`-`P3_15`, `P4_0`-`P4_7` | LCD data lines | Per the FPGA-mediated LCD path above |
+| `P4_8`-`P4_14` | `SD_CMD`(×2)/`SD_CLK`/`SD_D0`-`SD_D3`/`SD_WP` | **The SD-card interface, mapped for the first time** — a standard 4-bit SDIO/SD bus (command, clock, 4 data lines) plus a write-protect sense line. Directly relevant to [[firmware-update]]'s SD-card-based update mechanism. |
+| `P5_8`-`P5_10` | `IMR0`/`IMR1`/`IMR2` | The diode-matrix scan's row-read pins — [[diode-matrix]] already fully mapped these three as the scan's row-bottom/middle/top inputs; this session adds their real schematic net names (`IMR0`/`1`/`2`, almost certainly "Input Matrix Row") and confirms they go to a 47 kΩ resistor network (a pull network for the scan), nothing about the row/column mapping itself changes. |
+| `P6_0`/`P6_1` | `LRXD`/`LTXD` | Front-panel UART, confirmed prior sessions (SCIF3) |
+| `P6_2`/`P6_3` | `EKEY`/`ESTA` | Tuner jack signals, confirmed on the PA/Tuner block diagram (`[TUNER]` connector `J20012`, pins `EKEY`/`ESTA`/`14V`) |
+| `P6_4`-`P6_6`, `P6_8`, `P6_11`-`P6_13`, `P6_15` | `USSENI`/`USKI`/`SDPWS`/`VBUS`/`UCLKS`/`UDTXD`/`UDRXD`(`/UDBSY`)/`UPWS` | **The USB subsystem** — the block diagram shows a `USB HUB` + `USB BRIDGE` + `USB CODEC` cluster fed by exactly this group of `U`-prefixed signals (plus `VBUS`, literally USB bus power sense). Reads as: USB audio (via the CODEC) and a USB-to-serial bridge (very plausibly CI-V-over-USB) combined behind one hub, presented as the single external USB-B port. |
+| `P6_7` | `LCD_ON` | LCD panel power/enable |
+| `P6_9`/`P6_10`, `P7_11` | `CTXD`/`CRXD`(`/CBSY`) | A serial link distinct from the USB cluster and from the front-panel `LRXD`/`LTXD` — **best current guess: the CI-V interface** (the block diagram shows a separate `CI-V I/F` block, fed by a `CIV` net routed to the `[REMOTE]` jack `J611`, independent of the USB cluster) — not proven by a direct label match, worth confirming if this thread is picked up again. |
+| `P6_14` | `PWRS` | Not yet traced individually |
+| `P7_1`-`P7_6`, `P7_8`/`P7_9` | `TSTB1`-`TSTB4`/`TCLK`/`TDAT`/`PHASEI`/`IMPI` | **Tuner interface** — matches the PA/Tuner block diagram's own `TDAT`/`TCLK`/`TCON`/`TSTB1`-`4`/`IMPI`/`PHASEI` cluster feeding the antenna tuner control logic, alongside `P0_4`'s `TCON` and `P6_2`/`P6_3`'s `EKEY`/`ESTA` |
+| `P7_12` | `UDRXD`(`/UDBSY`) | Same signal name as `P6_13` — likely a second reference/alias to the same USB-bridge receive line on a different pin, or a transcription duplicate; not resolved further |
+| `P8_0`-`P8_15` | `DSPCK`/`DSPR`/`DSPX`/`SCPCK`/`SCPSS`/`CSPR`/`SCPX`/`RTD`/`HSK0`/`HSK1`/`FRWT`/`FPDX`/`DCSX`/`DCSR`/`FPSX`/`FPSR` | All confirmed prior sessions (McASP1 DSP link, RSPI2/FPGA differential I/O, `HSK1` handshake) — `CSPR` here is almost certainly the same signal previously called `SCPR` (`P8_5`), a transcription variant, not a new pin |
+| `P9_0`/`P9_1` | `TXS`/`RXS` | Not yet traced individually — plausibly TX/RX band-state strobes given the naming pattern, unconfirmed |
+| `P9_2`-`P9_7` | `SFLCK`/`SFLSS`/`SFLD0`/`SFLD1`/`SFLD2`/`SFLD0`(likely `SFLD3`, repeated label) | **The main CPU's own boot/program flash** (`IC391`, `EN25Q64`) — the block diagram shows this exact `SFLSS`/`SFLCK`/`SFLD0`-`SFLD3` naming for `IC391`'s quad-SPI bus, confirming Port 9 carries the CPU's own XIP flash interface (separate from the boot-mode-3 SPI Multi I/O controller signals already documented in [[base-loader]] — worth reconciling which is the real XIP path vs. a secondary/parallel access route if this matters later) |
+
+### Relay/filter band-switching signal chain (new)
+
+The PA/Tuner/RF-unit block diagram shows **two separate shift-register chains sharing one `MDAT`/`MCLK`
+bus**, each latched by its own strobe: `IC751` (`SN74AHC595PW`, single 8-bit) in the **PA unit**, driving
+`L1S`-`L7S` (the PA's own low-pass filter bank relay selects), and `IC1101`-`IC1103` (`SN74AHC595PW`×3, 24
+bits) in the **RF unit**, driving `B0S`-`B12`/`TX` (the 15-filter RX/TX bandpass bank already documented in
+this file's "Precise filter-bank cutoffs" section). This is the concrete hardware mechanism behind the
+band-segmented filter selection this file already described from the service-manual text alone — now with
+real CPU pins (`MDAT`/`MCLK`/`MSTB1`/`MSTB2`, plus `DSTB`/`PSTB` for additional latches not individually
+resolved) attached to it. Worth a `body.bin` reference search on `MSTB1`/`MSTB2`'s literal port bits if the
+band-switching logic itself is ever traced.
+
+### Notable non-finding
+
+`P1_8`-`P1_15` (`VDL`/`IDL`/`THML`/`FORL`/`REFL`/`ALCL`/`TPWRL`/`SWRL`) read, from their names, like direct
+analog PA-protection measurements — but the MAIN UNIT block diagram shows the *actual* analog readings
+(`AGCV`, `REFL`, etc.) going through dedicated A/D converter chips elsewhere on the board, not raw into
+`Port 1`. **These are more likely fast digital threshold/fault flags** (e.g. "SWR over limit" as a single
+bit) supplementing the slower, precise ADC path, rather than raw analog values read directly by a GPIO
+port — a plausible dual-path protection design, not confirmed by any firmware reference yet.
