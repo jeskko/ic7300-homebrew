@@ -91,6 +91,61 @@ statically without a disassembler — pattern/constant hunting (like the `0x5a82
 up real information without full instruction decoding; (d) live JTAG on the DSP itself, if that's ever
 brought up as a target (not currently planned — the project's JTAG hardware targets the main CPU).
 
+## Is `dsp_data.bin` (component2) actually the FPGA bitstream? Genuinely plausible, re-examined the evidence (2026-08-29, same session)
+
+User's question, prompted by re-reading this file's own `IC902` history: the *current* model has `IC901`
+(DSP) self-booting from its own flash (`IC902`) and then "likely driv[ing] the FPGA's config pins itself as
+part of its own firmware" (see the `IC902` identity section below) — meaning there's no *other* traced path
+anywhere in `body.bin` for how `IC1351` (the FPGA, `EP4CE55F23I7N`, Altera/Intel Cyclone IV E) ever gets
+configured. If the DSP is really the one pushing bits into the FPGA, the natural question is whether
+`component2` ("DSP Data," so far just an ordering guess) is actually that bitstream, relayed through the DSP
+rather than reaching the FPGA any other way.
+
+**Re-examined the whole-file byte histogram (not just the leading 64 bytes, which is what the original
+"looks like small signed calibration constants" read was based on) — and it changes the picture:**
+
+| File | dominant byte | next few (by count) | bytes in `0xf0-0xff` |
+|---|---|---|---|
+| `dsp_program.bin` | `0xff` (8.4%) | `0x00`/`0x08`/`0x80`/`0x11`/`0x01`/`0x99`/`0x10`/`0x22`/`0x89`/`0x12`/`0x9a`, all 1.4-2.2% — flat, no dominant value | 9.5% |
+| `dsp_data.bin` | **`0x00` (20.1%)** | `0x22`/`0x44`/`0x11`/`0x42`/`0x14`/`0x21`/`0x84`/`0x40`/`0x88`/`0x24`/`0x20`, 2-3% each | 1.4% |
+
+**`dsp_data.bin`'s whole-file distribution is dominated by `0x00` plus a specific, striking set of
+follow-up bytes that are *all* 1-or-2-bits-set values** (`0x11`,`0x22`,`0x44`,`0x88`,`0x14`,`0x21`,`0x42`,
+`0x84`,`0x24`,`0x40`,`0x20` — every single one). That's not what small-signed-calibration-constant data
+would look like (which clusters around specific *numeric* values, not specifically low-bit-count byte
+patterns); it's a well-known signature of **raw SRAM-FPGA configuration data for a design that doesn't use
+anywhere near the full fabric** — LUT and routing-switch bits default to 0/single-bit-set for the (typically
+large majority of) unused fabric, so real bitstreams for modest designs on a mid-size FPGA are often
+dominated by zero and near-zero-Hamming-weight bytes exactly like this. `dsp_program.bin`, by contrast, has
+a genuinely flat, spread-out distribution (no single byte value above ~2%) — much more consistent with real
+VLIW instruction words (varied opcode/register fields) than with FPGA config data. This reverses the
+original 64-byte-only read and is a real, checkable point in favor of the user's hypothesis, not against it.
+
+**Size check against the real, published number for this exact FPGA**: Intel's Cyclone IV Device Handbook
+(`cyiv-51008.pdf`) lists the EP4CE55's **uncompressed** raw binary file (`.rbf`) configuration size as
+**14,889,560 bits = 1,861,195 bytes**. `dsp_data.bin` decompresses to 859,412 bytes — **46.2%** of that
+figure. Not a match to the raw size, but Altera/Intel's own configuration flow supports an optional,
+proprietary **bitstream compression** feature for exactly this FPGA family, commonly quoted as roughly
+35-65% of the raw size depending on the design — 46% sits squarely inside that range. So the size is
+consistent with "compressed Altera bitstream," not with "raw bitstream" or with a small calibration table.
+
+**Net read, not proven but meaningfully re-weighted**: `component2` being (Altera-compressed) FPGA
+configuration data, relayed to the FPGA by the DSP rather than delivered any other way, is now a genuinely
+live, arguably *better*-supported hypothesis than the original "DSP Data" naming guess — which rested only
+on matching the version-info screen's field *order*, a weaker form of evidence than either point above.
+**What would still need checking to move this from "plausible" to "confirmed"**: no Altera-specific sync
+pattern/preamble was searched for (RBF format has no universal fixed magic bytes the way Xilinx bitstreams
+do, so this may not be conclusively findable this way); Altera's proprietary compression scheme itself
+hasn't been identified or decoded (a separate, real task if pursued — likely documented in Altera's own
+configuration handbook, not the LZSS scheme already solved for the container); and the base "component0/1/2
+= Front CPU/DSP Program/DSP Data" ordering was itself never independently confirmed field-by-field, so even
+"is component2 really *the* thing labeled DSP Data" carries some prior uncertainty on top of this. Also
+worth keeping in mind: this doesn't fully explain the version screen still tracking "FPGA" as its own
+labeled field distinct from "DSP Data," which the update-compatibility checker (`FUN_200a94c8`) also
+separately memcmps — if `component2` really is the FPGA image, that comparison's `+0xb0` field (currently
+attributed to "FPGA") and whatever feeds `component2`'s own version tag would need to reconcile, not yet
+checked.
+
 ## Headline finding: `tunk3.py` silently drops ~1.46 MB of the container
 
 Built and ran a from-scratch decoder (`tools/icom_fw/`, see
