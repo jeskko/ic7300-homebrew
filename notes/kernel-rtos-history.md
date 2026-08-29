@@ -1974,3 +1974,46 @@ cache/MMU transition, and the already-documented forever-loop — is now complet
 activation trigger remains open, and that's accepted as a permanent static-analysis limit of the same kind
 already standing for `kernel_start`'s task, not an unfinished thread. This closes out the task-catalog
 triage entirely except for `status_poll_task_200095d8`'s real-world purpose.
+
+## `status_poll_task_200095d8` fully resolved: the band-scope's real-time FFT engine (2026-08-30)
+
+User's ask, closing out the task-catalog triage: look at the last remaining "purpose not identified" task.
+
+**Renamed `spectrum_scope_fft_task`.** Decompiled the task entry and its two "small helper" dispatches from
+the 26th session's plate comment. The identity came from actually reading `FUN_20008358` (one of the two
+"status==0" branch calls, renamed `spectrum_scope_fft_and_dbscale`) in full — unambiguous, not inferred from
+shape alone:
+
+1. A bit-reversal permutation over 512 elements — the standard FFT input-reordering step.
+2. A textbook radix-2 Cooley-Tukey butterfly loop (stage size doubling each pass, twiddle factors read from
+   a nearby cos/sin table) over a 512-element interleaved real/imaginary float array.
+3. Post-FFT: per-bin magnitude-squared (`real²+imag²`, using the real-FFT conjugate-symmetry pairing
+   `bin[i]`/`bin[512-i]`), a sqrt/log-shaped scale (`FUN_20185810`) times 10 (classic `x·log10(power)`-style
+   dB conversion), then clamped/mapped into a byte `0`-`255` against a **per-mode min/max threshold pair**
+   (indexed by a mode byte) — 256 output bytes total.
+
+**This is a real-time spectrum analyzer computation, full stop** — the actual FFT magnitude data behind the
+IC-7300's band-scope display. The task's own loop (renamed function `spectrum_scope_fft_and_dbscale`'s
+caller) turned out to be a clean **double-buffered producer/consumer pipeline**: waits on an event flag,
+checks two status bytes gating "not ready" vs. "ready" paths, and when ready, picks one of two alternating
+512-float (`0x800`-byte) sample buffers based on a flag the producer sets (avoiding a read/write race with
+whatever fills the buffers — plausibly an ADC/DMA sample-capture ISR, not traced this session), runs the FFT
+on it, and releases what looks like a lock afterward. A companion function
+(renamed **`spectrum_scope_buffers_reset`**) clears all the related buffers — the 256-byte dB output array,
+both `0x800`-byte sample buffers, and a couple of smaller ones — consistent with a scope on/off or
+mode-change reset.
+
+**Relationship to [[band-scope-state]], not yet nailed down but a natural fit**: that file documents the
+scope's *frequency-axis* state (`g_scope_state_mode`/`g_scope_freq_low`/`g_scope_freq_high`, live in
+`g_radio_ui_state_base` at `0x2040376c`) and the frequency→screen-position mapping
+(`scope_freq_to_position`). This task's per-mode dB threshold table lives at a different base
+(`0x203de174`, checked directly — not the same address as `g_radio_ui_state_base`), so the two structures
+are confirmed *not* identical, but thematically these read as the two halves of the same on-screen feature:
+this task computes each bar's *height* (dB-scaled magnitude), `band-scope-state.md`'s functions compute each
+bar's *x-position* (frequency mapping) and the mode/span selection both evidently key off. Worth a future
+session tracing whether they share a producer/trigger, but not asserted as the same struct.
+
+**Bottom line**: this closes out the task-catalog triage in its entirety. Every task in the 12-entry catalog
+now has both a fully-characterized body and a resolved real-world purpose, except the two genuine,
+independently-reconfirmed static-analysis dead ends (`kernel_start`'s own descriptor,
+`thunk_FUN_2007ea68`'s peripheral identity) that need live JTAG, not more static reading.

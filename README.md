@@ -182,8 +182,14 @@ by but not built on top of the prior work there.
   handlers turned out to be **full FreeRTOS context-switches**, a second, hardware-IRQ-triggered
   entry point into the exact same scheduler logic already documented under `swi_handler`, and its
   one-time `SWI(1)` call turned out to be the boot-to-running cache/MMU transition (invalidate
-  TLB/I-cache/D-cache/branch-predictor, then enable all three via `SCTLR`). This closes out the
-  task-catalog triage entirely except for `status_poll_task_200095d8`. See `notes/kernel-rtos.md`.
+  TLB/I-cache/D-cache/branch-predictor, then enable all three via `SCTLR`). **Follow-up
+  (2026-08-30, same day) — closes out the task-catalog triage entirely**: `status_poll_task_200095d8`
+  (renamed `spectrum_scope_fft_task`) turned out to be a genuine **512-point FFT spectrum analyzer**
+  — double-buffered against a sample producer, computing dB-scaled per-bin magnitude bytes that are
+  very likely the band-scope display's actual "bar height" data, complementing
+  `notes/band-scope-state.md`'s already-documented frequency-axis/"bar position" state. Every task
+  in the 12-entry catalog now has a fully resolved body and purpose except the two confirmed,
+  JTAG-only dead ends. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

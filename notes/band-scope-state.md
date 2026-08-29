@@ -72,6 +72,15 @@ everything else in this firmware's UI, not a bespoke one-off.
   plausible guesses (span-width categories) given the `50000`-threshold check, not confirmed
   against the real on-screen span options.
 
+**Related finding, different thread (2026-08-30)**: [[kernel-rtos]]'s `spectrum_scope_fft_task`
+(renamed from `status_poll_task_200095d8`) is a real, confirmed 512-point FFT computing dB-scaled
+per-bin magnitude bytes — very likely the scope's actual "bar height" data, complementing this
+file's frequency-axis/"bar position" state. Its own per-mode threshold table lives at a different
+base (`0x203de174`) than `g_radio_ui_state_base` (`0x2040376c`) — confirmed not the same struct —
+so the two subsystems' exact relationship (shared producer/trigger?) is still open. See
+`notes/kernel-rtos-history.md`'s "the band-scope's real-time FFT engine" section for the full
+derivation.
+
 ## Swept the rest of `g_radio_ui_state_base` for other hotspots — found a much bigger subsystem (2026-08-29, same day)
 
 Sampled xref density at regular offsets across `g_radio_ui_state_base`'s span (every ~0x40-0x100

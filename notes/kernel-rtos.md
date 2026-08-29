@@ -154,7 +154,7 @@ retraction, etc.) — see the history file for the full derivation and narrative
 |---|---|---|---|---|---|
 | `FUN_20188574` (kernel bootstrap, direct inner-function call, **not** a trampoline call — see history's 24th-session correction) | `0x2033605c` | `first_task_entry` (`0x201871f0`) | 2 | 0x320 | ✅ generic ITRON/RTOS message-dispatch loop |
 | `kernel_start` (`0x200052a4`) | `0x203907c4` — **still genuinely unidentified**, still blank/`0xFF` in the static image | ? | ? | ? | ❌ open — real task, unknown identity, needs live JTAG |
-| `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `status_poll_task_200095d8` | **-2** | 0x400 | ✅ real body confirmed (26th session, GUI ARM-disasm fix) — polls a status byte, dispatches to small helpers; purpose not identified |
+| `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `spectrum_scope_fft_task` (renamed from `status_poll_task_200095d8`) | **-2** | 0x400 | ✅ **fully resolved** (2026-08-30) — the real-time band-scope/spectrum-scope FFT computation task: double-buffered against a sample producer, runs a genuine 512-point FFT (`spectrum_scope_fft_and_dbscale`) then converts per-bin magnitude to a dB-scaled byte (0-255) against a per-mode threshold pair — the actual "bar height" data behind the scope display, complementing [[band-scope-state]]'s already-documented frequency-axis/mapping logic |
 | `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `periodic_poll_task_20014384` | 0 | 0x800 | ✅ confirmed — trivial `itron-trampoline-delay(5) → sample → store` loop |
 | `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `voice_recording_file_task` (renamed from `queue_driven_task_2001745c`) | 1 | 0x2000 (largest stack in the catalog, now explained) | ✅ **fully resolved** — manages recording audio to the SD card's `C:\IC-7300\Voice` folder: builds an RTC-date-stamped filename, runs a 4-state open/process/close file-I/O state machine over a 4-slot ring buffer, and is a confirmed real client of the already-known SD-card file-RPC service (`file_rpc_post_command`, commands `6`/`9`) also used by `sdcard_file_rpc_dispatch_task`. **Correction**: originally guessed here to be the file-I/O half of the `audio_buffer_task` (now `voice_tx_memory_*`) pair below — that pair turned out to read from a *different* folder (`C:\IC-7300\VoiceTx`, TX voice-message playback, vs. this task's own `C:\IC-7300\Voice`) — sibling features sharing the same file-RPC plumbing, not two halves of one feature |
 | `FUN_20027740` (`0x200277f0`) | `0x2002784c` | `sd_menu_dispatch_task` | 0 | 0x1800 | ✅ **fully resolved** — the SD-card operations menu's central 42-case dispatcher; case `0xb` calls `firmware_update_main` directly, confirming the update flow starts from routine SD-menu interaction, nothing more exotic |
@@ -177,5 +177,7 @@ model — IC-7610 — reportedly having a DVI output via a separate sub-CPU, was
 supported: the actual "connect" gate traced to a plain software resource-allocation check, not a hardware/
 GPIO detect, so this is more likely the shared graphics middleware's generic resource-acquire terminology
 running identically on every product that uses it, not evidence of an IC-7300-specific external connector;
-see history for the full trace). One task's real-world *purpose* remains only partially pinned down:
-`status_poll_task_200095d8` — see history for what's been tried on it.
+see history for the full trace). Every task in the catalog now has both a fully-characterized body
+*and* a resolved real-world purpose, except the two genuine static-analysis dead ends noted above
+(`kernel_start`'s own descriptor and `thunk_FUN_2007ea68`'s peripheral identity) — this closes out the
+task-catalog triage entirely.
