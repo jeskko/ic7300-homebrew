@@ -568,22 +568,25 @@ Answer going in: **no** — only 3 of at least 11 statically-locatable tasks had
 independent methods — see above)**, each with its task descriptor read directly from RAM
 (`{entry_point, priority, flags, stack_size}`, same 16-byte shape throughout):
 
-| Caller | Descriptor | Entry point | Priority | Stack | Status this session |
+**Table last brought current 2026-08-29 (much later session)** — the version below reflects every
+rename/retraction from the 25th/26th/29th sessions (see the sections following it); if you're
+reading an old copy of this file, the version that follows is the one to trust.
+
+| Caller | Descriptor | Entry point (current name) | Priority | Stack | Status |
 |---|---|---|---|---|---|
-`FUN_20188574` (kernel bootstrap, direct inner-function call — see the 24th-session correction below the
-task list; **not** a trampoline call, found by checking `FUN_201888f4`'s callers directly) | `0x2033605c` | `0x201871f0` | 2 | 0x320 | ✅ examined (14th/19th sessions) — `first_task_entry`, generic message-dispatch loop |
-| `kernel_start` (`0x200052a4`) | `0x203907c4` (runtime-populated, genuinely unidentified — **corrected 24th session, was previously miscredited as `first_task_entry`'s activator**) | ? | ? | ? | ❌ open — real task, unknown identity |
-| `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `0x200095d8` | **-2** | 0x400 | 🟡 new — Ghidra decompile silently **wrong** (no error flagged, but `objdump` shows a completely different real body: loop calling `blx 0x20186d0c`-style trampolines) |
-| `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `0x20014384` | 0 | 0x800 | 🟡 new — **same silent-wrong-decode problem**: `objdump` shows a real periodic loop (`blx 0x20186d0c` with `r0=5`, `bl 0x20015628`, store, loop) that Ghidra's decompile completely misses, showing an unrelated one-shot body instead |
-| `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `0x2001745c` | 1 | 0x2000 (largest stack seen) | 🟡 new — explicit "Bad Instruction"-style garbage (`in_ZR`/`halt_baddata`) |
-| `FUN_20027740` (`0x200277f0`) | `0x2002784c` | `0x20027528` | 0 | 0x1800 | 🟡 new — decompiles without an explicit error, but shows uninitialized-register use (`unaff_r5`) — almost certainly also wrong, not yet cross-checked against `objdump` |
-| `FUN_2002afc0` (`0x2002b02c`) | `0x2019889c` | `0x2007ef5c` | — | — | ✅ examined (20th session) — the UI/display task (allocates screen objects, message loop) |
-| `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `0x2006bb58` | 0 | 0x800 | 🟡 new — explicit garbage decompile (many `unaff_rX`) |
-| `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `0x2006c2c4` | 0 | 0x800 | 🟡 new — explicit garbage decompile |
-| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | ❌ still unresolved — no static caller of the thunk found either (see 21st session) |
-| `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `0x200aa580` (`bmp_capture_task`) | **-1** | 0x1000 | ✅ **resolved, 25th session — the BMP screen-capture-to-SD-card task**, see below (no disassembly issue at all here, decompiles cleanly) |
-| `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `0x200b9c00` | 1 (highest seen) | 0x1800 | 🟡 new — **mixed**: garbage at entry, but real-looking code visible further in (calls `FUN_200cb5dc`/`FUN_200cb72c`/`FUN_200cb278`/`FUN_200cbcf0`/`FUN_200b9fc8` — a plausible read/parse/retry protocol handler) |
-| *(no direct call site found)* | `0x20361318` | `0x200b94e8` | 3 | 0x800 | ✅ examined (20th/21st sessions) — `sys_monitor_task_entry` |
+| `FUN_20188574` (kernel bootstrap, direct inner-function call, **not** a trampoline call — see the 24th-session correction below) | `0x2033605c` | `first_task_entry` (`0x201871f0`) | 2 | 0x320 | ✅ generic ITRON/RTOS message-dispatch loop |
+| `kernel_start` (`0x200052a4`) | `0x203907c4` — **still genuinely unidentified**, still blank/`0xFF` in the static image | ? | ? | ? | ❌ open — real task, unknown identity, needs live JTAG |
+| `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `status_poll_task_200095d8` | **-2** | 0x400 | ✅ real body confirmed (26th session, GUI ARM-disasm fix) — polls a status byte, dispatches to small helpers; purpose not identified |
+| `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `periodic_poll_task_20014384` | 0 | 0x800 | ✅ confirmed — trivial `itron-trampoline-delay(5) → sample → store` loop |
+| `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `queue_driven_task_2001745c` | 1 | 0x2000 (largest stack in the catalog) | ✅ confirmed — queue-driven (`FUN_20186de4`), two-state message dispatch + a flag-toggle side effect (`FUN_200c6374`); purpose not identified |
+| `FUN_20027740` (`0x200277f0`) | `0x2002784c` | `sd_menu_dispatch_task` | 0 | 0x1800 | ✅ **fully resolved** — the SD-card operations menu's central 42-case dispatcher; case `0xb` calls `firmware_update_main` directly, confirming the update flow starts from routine SD-menu interaction, nothing more exotic |
+| `cold_boot_hw_init` (`0x2002b02c`, renamed from `FUN_2002afc0`) | `0x2019889c` | `FUN_2007ef5c` (the UI/display task — entry point itself never renamed) | — | — | ✅ examined — allocates screen objects, runs a message loop |
+| `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `audio_buffer_task_2006bb58` | 0 | 0x800 | ✅ confirmed real state machine — ring-buffer wraparound arithmetic found; leaning circular audio buffer manager (plausibly SD-card WAV record/playback), not fully confirmed |
+| `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `audio_buffer_task_2006c2c4` | 0 | 0x800 | ✅ confirmed real state machine — same subsystem as above, shares state at `0x2006c3d4` |
+| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | ❌ still unresolved — no static caller of the thunk found either |
+| `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `bmp_capture_task` | **-1** | 0x1000 | ✅ **fully resolved** — the BMP screen-capture-to-SD-card feature (real `BITMAPFILEHEADER`/`BITMAPINFOHEADER` construction) |
+| `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `sdcard_file_rpc_dispatch_task` (renamed **twice**: `task_probe_200b9c00` → `civ_command_dispatch_task` (wrong guess) → `sdcard_file_rpc_dispatch_task`, see the 2026-08-29 "civ_command_dispatch_task retraction" section) | 1 (highest priority in the catalog) | 0x1800 | ✅ **fully resolved, then corrected** — **not** CI-V; a generic internal SD-card file-access RPC service (open/read/write/close/rename/list), dispatched through a function-pointer table by command ID |
+| *(no direct call site found — genuine static-analysis dead end, not yet fixed)* | `0x20361318` | `sys_monitor_task_entry` (`0x200b94e8`) | 3 | 0x800 | ✅ examined — runs the `cold_boot_hw_init` chain (`DRESD`/GPIO init); its own **caller**, `sys_monitor_task_loop` (`0x2003bb70`), *is* known — called unconditionally every iteration by `FUN_2002b29c` — but what activates `sys_monitor_task_entry` itself remains unresolved |
 
 **Bottom line: 8 previously-unexamined tasks found, and every single one hits some form of disassembly
 trouble** — either Ghidra's own explicit "Bad Instruction"/garbage-decompile pattern (6 of 8), or (more
@@ -595,6 +598,12 @@ touched by Ghidra's auto-analysis at all** (no direct caller in the static call 
 created → invisible to the bookmark-based sweep method used in the 17th session). Left all 8 as
 placeholder-named (`task_probe_<address>`), un-renamed `Function` objects with this status — **don't trust
 any of their current decompiled bodies**.
+
+**Superseded, 26th session (see below): all 8 were subsequently GUI-fixed and now decompile cleanly** —
+this "don't trust the decompile" warning and the `task_probe_<address>` placeholder names are historical,
+not current. The table above already reflects the final, correct state; read the "All 8 remaining tasks
+resolved cleanly" section below for the full resolution before assuming anything in this paragraph still
+applies.
 
 ## Going through the new tasks via `objdump` ground truth, no GUI fix yet available (25th session)
 
