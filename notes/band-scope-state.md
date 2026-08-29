@@ -167,6 +167,61 @@ a few hundred samples) of just the ~80 KB hot window (`0x203f0000`-`0x20404770`)
 be the highest-value remaining broad-sweep work — narrower and much more likely to pay off than
 continuing to sample the confirmed-empty regions on either side.
 
+## Exhaustive sweep of the "hot window", done properly — resolved a years-old mystery (2026-08-29, same day, continued)
+
+Ran the fine sweep of the ~80 KB hot window as planned, but switched technique partway through
+after realizing it's far more efficient: instead of querying Ghidra's `references_to` one address
+at a time (hundreds of round-trips, most returning nothing), **scanned `body.bin`'s raw bytes
+directly for every 4-byte little-endian value that falls inside the hot window** — this is exactly
+what a literal-pool load instruction looks like on disk, so it finds the same thing `references_to`
+would, in one pass instead of hundreds. Found **134 distinct target addresses, 403 total literal
+references, 53 clusters** in the `0x203f0000`-`0x20404770` window. (Methodology note for later:
+this technique is reusable any time a broad address-range sweep is needed again — much cheaper than
+one-address-at-a-time queries, at the cost of not distinguishing READ/WRITE/PARAM, which still
+needs a follow-up `references_to` call on any specific address worth decompiling.)
+
+**Headline result: resolved `0x203ff76c`**, the exact address this project flagged as a genuine
+dead end across multiple much earlier sessions (`notes/multi-cpu-images.md`'s "What's still open"
+section under the 5-field version-mapping work — "didn't manage to trace `iVar2` ... hit a real
+wall"). It was unreachable in Ghidra at all until this session's memory-map extension. Once mapped,
+`references_to` immediately found **52 distinct referencing addresses, including 15 real writes** —
+all invisible before. But they don't belong to one struct: one writer (`FUN_2007f394`) contains the
+literal string `"2 Scope Out of Range"` (a band-scope edge/memory feature), a different one
+(`FUN_2003a540`) looks like a keypad/menu-entry handler with hardcoded preset digits. **`0x203ff76c`
+is the same kind of generic, massively-shared "settings candidate" scratch buffer as
+`0x20404654`** (see above) — reused by whichever settings screen currently owns it. `FUN_200a94c8`'s
+use of it for the firmware-update-compatibility check is just one of many temporary checkouts, not
+a dedicated struct. This is a genuine, if slightly deflating, resolution: there was never a single
+findable "writer" because the question itself didn't quite make sense once you know the buffer is
+shared. Full retraction/update written into `notes/multi-cpu-images.md` at the original claim.
+
+**Biggest raw cluster (`0x203fc57a`-`0x203fc692`, 87 refs) turned out to be a red herring of sorts**:
+checking its actual source addresses found raw, undefined data words sitting in what looks like a
+generic pointer table (neighbors like `0x20188EC8`/`0x203DCAB6`/`0x203902D7` in the same table),
+not 87 places in code each meaningfully referencing one struct — more likely several independent
+small per-screen buffers happening to sit close together, following the same "many independent
+generic settings buffers packed into one BSS-like region" pattern as everything else found this
+session. Not individually characterized further.
+
+**Updated cluster map** (supersedes the table in the previous section):
+
+| Address / range | Refs | Status |
+|---|---|---|
+| `0x20403f6c`-ish (settings-menu flags) | 44 | Characterized — `settings_menu_item_data_builder` |
+| `0x20404570`-ish (scope state) | 20 | Characterized — band-scope frequency-axis state |
+| `0x203ff76c` | 52 (once mapped) | **Resolved**: generic shared settings-candidate buffer, same class as `0x20404654` |
+| `0x203fc57a`-`0x203fc692` | 87 (raw scan) | Likely several unrelated small buffers in a pointer table, not one struct — not characterized |
+| `0x203fa170`/`0x203fa130`-`0x203fa1a0` | 6-16 | Characterized — scope's live-state source struct |
+| `0x203fabec`-`0x203fac9c`, `0x203fab00`-`0x203fab88` | 19, 14 | Not yet characterized |
+| `0x203fc000` | 6 | Not yet characterized |
+| `0x203fca1e`-`0x203fcb6a`, `0x203fccbc`-`0x203fcd8e` | 13, 9 | Not yet characterized |
+| `0x20403fec` | 3 | Not yet characterized |
+| `0x2040466c` | 3 | Not yet characterized |
+
+The other ~40 smaller clusters (1-4 refs each) found by the raw scan are listed in this session's
+working output, not individually reproduced here — mostly single incidental references, lower
+priority than the pockets above.
+
 ## Methodological note
 
 This is the **second** substantial finding in one session that was invisible until Ghidra's

@@ -1141,6 +1141,27 @@ solid and new; the **byte-offset** confirmation the hypothesis ultimately needs 
 rather than asserted. Live JTAG (watch what gets written to `0x203ff76c` while browsing the version-check
 screen with a real update SD card inserted) would resolve this quickly and directly.
 
+**RESOLVED, 2026-08-29 (much later session) — reframed, not literally "found a writer".** The reason no
+dedicated writer was ever findable is now understood: `0x203ff76c` was unreachable in Ghidra at all until a
+much later session extended Ghidra's memory map to the RZ/A1H's real 10 MB on-chip RAM extent (see
+[[band-scope-state]] for the full methodology). Once mapped, `references_to` on `0x203ff76c` immediately
+surfaced **52 distinct referencing addresses** (15 real writes, previously invisible) — but they don't
+belong to one coherent "update file info" struct at all. `FUN_2007f394`, one of the writers, contains the
+literal string `"2 Scope Out of Range"` — a **band-scope edge/memory feature**, completely unrelated to
+firmware updates. Another writer (`FUN_2003a540`) looks like a generic keypad/menu-entry handler with
+hardcoded preset digits. **`0x203ff76c` is not a dedicated struct — it's a generic, massively-shared
+"settings candidate" scratch buffer, reused by whichever settings-menu screen is currently active**,
+exactly the same architectural pattern as `DAT_200a9ba8`'s target (`0x20404654`, see [[band-scope-state]]),
+just for a different, even more heavily-multiplexed slice of the UI. `FUN_200a94c8`'s use of it (as the
+firmware-update-compatibility comparison struct) is just one of many temporary "checkouts" of this same
+physical RAM by whichever screen currently owns it — there was never a single writer to find, because the
+question "who writes the update-check fields" only makes sense while that specific screen is displayed,
+using the same generic per-screen populate machinery already characterized elsewhere in this project
+(`FUN_2008cff8` and siblings). This retracts the "computed/indirect destination, several layers removed"
+guess above — the real explanation is architectural reuse, not a hard-to-trace single write. **Practical
+upshot**: don't expect to find "the" writer for either shared buffer; the productive question is always
+"which screen currently owns this buffer," not "what populates struct X."
+
 ## `SCIF5` identified: the real physical DSP link, both for firmware update and live control (2026-08-29)
 
 New target picked up: DSP interaction/firmware-update timing, specifically hoping to find where `DRESD`
