@@ -1091,3 +1091,61 @@ status struct, not fixed independent slots). This is almost certainly where keyp
 **the exact type→offset→field mapping, and which bit is MENU vs. FUNCTION, was not decoded this session** —
 a real, scoped-out next step (comparable in size to the diode-matrix or `DRESD` traces), not a quick lookup.
 Both functions renamed and commented in Ghidra.
+
+**Same session, continued — found the real boot-time button-combo mechanism.** Pushed into
+`cold_boot_hw_init` (renamed from `FUN_2002afc0`, already known for `port_bulk_gpio_init_pass2`/`DRESD`)
+and found, right near its end, exactly the kind of check being looked for: three functions, each testing
+the front-panel status buffer (`DAT_2002b4d8`, populated from real received SCIF3 packets via
+`scif3_frame_dispatch_by_type`) for a specific held-button/reported condition, each setting a different
+outcome:
+- **`boot_check_mode1_combo`** (renamed from `FUN_2002ae18`): bits 3+4 (`0x18`) of buffer offset `0xd` both
+  set, plus a separate status word's bit clear → sets `DAT_2002a4a4 = 1`.
+- **`boot_check_mode5_combo`** (renamed from `FUN_2002add0`): bit 3 of offset `0xd` AND bit 4 of offset
+  `0xe` (a *different* byte) both set → sets `DAT_2002a4a4 = 5`.
+- **`boot_check_challenge_response`** (renamed from `FUN_2002ad18`): an exact 3-byte match (`0x04`, `0x01`,
+  `0x21`) at offsets `0xd`/`0xe`/`0xf`, **then a 10-byte checksum verification** against a stored reference
+  (`*(byte*)(DAT_2002a0ec+i+0x70) + (i+1)*3`, compared byte-for-byte against `DAT_2002b4dc+i`) — this reads
+  as a real challenge/password check, not a simple button-hold, and sets a different flag entirely
+  (`DAT_2002a130` bit `0x40`, not `DAT_2002a4a4`).
+
+All three share one extra gating condition, `*DAT_2002b4d4 == 1` — traced this and it looks like an
+ordinary "hardware already brought up once" flag (read-only everywhere found, consistent with a natural
+`.bss` zero → set-once pattern across the boot sequence), not a REMOTE-jack-short indicator specifically;
+no explicit SCIF0/CI-V/REMOTE state check was found feeding into any of the three conditions above. Whether
+the physical REMOTE-jack short is required by hardware design (e.g. it changes what the front panel itself
+reports) or is checked completely separately wasn't resolved.
+
+`cold_boot_mode_dispatch` (renamed from `FUN_2002b1c8`) is the caller: runs `cold_boot_hw_init` once, then
+reads `DAT_2002a4a4` to pick which idle-loop variant to enter (`0`=`main_idle_loop`, `1`=`svc_mode1_idle_loop`,
+`5`=`svc_mode5_idle_loop`) — **this is a separate mechanism from `DAT_2002a158`'s mode 4** (previous
+section's `system_mode_request_dispatch`/`svc_mode_idle_loop`), reached only at cold boot via these
+button-combo checks, not via the runtime mode-request byte.
+
+**Strong supporting evidence `svc_mode1_idle_loop` (mode 1) is the real service mode**: unlike
+`main_idle_loop`'s ~90 peripheral-service calls, it services almost nothing *except* SCIF0
+(`civ_frame_rx_statemachine`'s driver) **and** SCIF1 (`scif1_svc_rx_service`) — a genuine reduced-
+functionality state keeping both CI-V and the SCIF1 calibration-shaped link alive while dropping nearly
+everything else. This is a coherent, well-supported picture, not proven: a real factory/service mode would
+plausibly look exactly like this (minimal peripheral set + both special-purpose serial links live).
+
+**Working, unconfirmed identification of which bit is MENU**: front-panel CPU (`IC501`) pin data the user
+supplied this session shows 8 buttons wired as **direct, individual GPIO inputs** (not matrixed) on
+consecutive pins `P70`-`P77`: `P70`=`TRSK` (transmit), `P71`=`TUNK` (tuner), `P72`=`AMPK` (p.amp/att),
+`P73`=`MENUK` (**MENU**), `P74`=`SCPEK` (scope), `P75`=`MPADK` (mpad), `P76`=`QMENUK` (quick menu),
+`P77`=`XFCK` (xfc) — plus a 4×4 resistor-multiplexed matrix on `KI10`-`KI13` (`P20`-`P23`, 16 more buttons:
+clear/notch/nr/nb, set/speech/auto-tune/ts, m-ch-dn/m-ch-up/a-b/v-m, split/rit/dTX/clear) and two "twin"
+dial-encoder pairs. **No button in this list is literally named FUNCTION** — which physical key the
+user's "hold MENU and FUNCTION" refers to is not resolved from this pinout alone. Under the natural
+"bit index = pin number − `P70`" convention, buffer offset `0xd` bit 3 (`0x8`) would be `MENUK` — consistent
+with it appearing in *both* `boot_check_mode1_combo` and `boot_check_mode5_combo`'s conditions — but this
+bit-ordering is an assumption, not confirmed. Genuinely can't go further without the front-panel MCU's own
+firmware (not dumped/analyzed — a completely separate RL78 binary this project doesn't have), which is why
+the user flagged this pinout as "more of a curiosity" for now rather than a direct decode key.
+
+**Resume point**: `boot_check_mode5_combo` and `boot_check_challenge_response`'s own target
+behaviors/consumers (`svc_mode5_idle_loop`'s reduced peripheral set, and whatever reads `DAT_2002a130` bit
+`0x40`) aren't characterized as thoroughly as mode 1's; the challenge-response check's 10-byte reference
+data (`DAT_2002a0ec+0x70`) is worth reading directly (could be a real per-unit constant, e.g. serial-number-
+derived, if this is a genuine service-technician unlock code); and confirming the bit-to-button mapping
+would need either the front-panel firmware or live JTAG (watch `DAT_2002b4d8` while pressing each physical
+button individually).
