@@ -1128,24 +1128,40 @@ functionality state keeping both CI-V and the SCIF1 calibration-shaped link aliv
 everything else. This is a coherent, well-supported picture, not proven: a real factory/service mode would
 plausibly look exactly like this (minimal peripheral set + both special-purpose serial links live).
 
-**Working, unconfirmed identification of which bit is MENU**: front-panel CPU (`IC501`) pin data the user
-supplied this session shows 8 buttons wired as **direct, individual GPIO inputs** (not matrixed) on
-consecutive pins `P70`-`P77`: `P70`=`TRSK` (transmit), `P71`=`TUNK` (tuner), `P72`=`AMPK` (p.amp/att),
-`P73`=`MENUK` (**MENU**), `P74`=`SCPEK` (scope), `P75`=`MPADK` (mpad), `P76`=`QMENUK` (quick menu),
-`P77`=`XFCK` (xfc) — plus a 4×4 resistor-multiplexed matrix on `KI10`-`KI13` (`P20`-`P23`, 16 more buttons:
-clear/notch/nr/nb, set/speech/auto-tune/ts, m-ch-dn/m-ch-up/a-b/v-m, split/rit/dTX/clear) and two "twin"
-dial-encoder pairs. **No button in this list is literally named FUNCTION** — which physical key the
-user's "hold MENU and FUNCTION" refers to is not resolved from this pinout alone. Under the natural
-"bit index = pin number − `P70`" convention, buffer offset `0xd` bit 3 (`0x8`) would be `MENUK` — consistent
-with it appearing in *both* `boot_check_mode1_combo` and `boot_check_mode5_combo`'s conditions — but this
-bit-ordering is an assumption, not confirmed. Genuinely can't go further without the front-panel MCU's own
-firmware (not dumped/analyzed — a completely separate RL78 binary this project doesn't have), which is why
-the user flagged this pinout as "more of a curiosity" for now rather than a direct decode key.
+**MENU+FUNCTION identification — CONFIRMED, same session.** Front-panel CPU (`IC501`, `R5F104LCAFB` RL78 —
+this project doesn't have its own firmware dumped/analyzed, main-CPU `body.bin` only) pin data the user
+supplied shows 8 buttons wired as **direct, individual GPIO inputs** (not matrixed) on consecutive pins
+`P70`-`P77`: `P70`=`TRSK` (transmit), `P71`=`TUNK` (tuner), `P72`=`AMPK` (p.amp/att), `P73`=`MENUK`
+(**MENU**), `P74`=`SCPEK` (labeled "scope" on the schematic — see correction below), `P75`=`MPADK`
+(labeled "mpad" on the schematic — same correction), `P76`=`QMENUK` (quick menu), `P77`=`XFCK` (xfc) —
+plus a 4×4 resistor-multiplexed matrix on `KI10`-`KI13` (`P20`-`P23`, 16 more buttons: clear/notch/nr/nb,
+set/speech/auto-tune/ts, m-ch-dn/m-ch-up/a-b/v-m, split/rit/dTX/clear) and two "twin" dial-encoder pairs.
+
+Under the natural "bit index = pin number − `P70`" convention, buffer offset `0xd` bit 3 (`0x8`) = `P73` =
+MENU, and bit 4 (`0x10`) = `P74`. No button in the schematic-derived pin list above is literally named
+FUNCTION, so this looked unresolved — **until the user found the schematic itself is wrong**: physical PCB
+silkscreen has switch `S10` = FUNCTION and `S11` = M.SCOPE, but the schematic mislabels them as `S10` =
+SCOPE and `S11` = MPAD (a real schematic authoring error — "made by a summer trainee" per the user, not a
+firmware or reasoning error on this project's part). `P74`'s `SCPEK` net goes to `S10`, which is really
+**FUNCTION**, not scope — so buffer bit 4 = FUNCTION. **`boot_check_mode1_combo`'s condition (bits 3+4 of
+offset `0xd` both set) is therefore literally "MENU + FUNCTION held together"** — an exact match to the
+user's real, external service-mode entry procedure. (Corollary, not independently confirmed: `P75`/`MPADK`,
+wired to `S11`, would by the same correction be the real M.SCOPE key rather than MPAD — the schematic's
+`S10`/`S11` labels read as swapped as a pair, not each independently wrong.)
+
+This closes the main thread of the investigation that started with the `civ_command_dispatch_task`
+retraction: **the real service-mode trigger is `boot_check_mode1_combo`'s MENU+FUNCTION check, reached from
+`cold_boot_hw_init` at cold boot, selecting `svc_mode1_idle_loop`** — a genuine reduced-functionality state
+servicing only CI-V (SCIF0) and the calibration-shaped SCIF1 link. What's still not found: where (or
+whether) the REMOTE-jack-short half of the user's described procedure factors in — the check's other
+condition (`*(ushort*)(DAT_2002a0d0+0x18) & 0x400` clear) is an unidentified status bit that's the leading
+untested candidate for it, not confirmed.
 
 **Resume point**: `boot_check_mode5_combo` and `boot_check_challenge_response`'s own target
 behaviors/consumers (`svc_mode5_idle_loop`'s reduced peripheral set, and whatever reads `DAT_2002a130` bit
-`0x40`) aren't characterized as thoroughly as mode 1's; the challenge-response check's 10-byte reference
-data (`DAT_2002a0ec+0x70`) is worth reading directly (could be a real per-unit constant, e.g. serial-number-
+`0x40`) aren't characterized as thoroughly as mode 1's; identify what `DAT_2002a0d0+0x18` bit `0x400`
+represents (leading candidate for the REMOTE-jack-short condition); the challenge-response check's 10-byte
+reference data (`DAT_2002a0ec+0x70`) is worth reading directly (could be a real per-unit constant, e.g. serial-number-
 derived, if this is a genuine service-technician unlock code); and confirming the bit-to-button mapping
 would need either the front-panel firmware or live JTAG (watch `DAT_2002b4d8` while pressing each physical
 button individually).
