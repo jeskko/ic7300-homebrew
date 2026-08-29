@@ -1149,19 +1149,38 @@ user's real, external service-mode entry procedure. (Corollary, not independentl
 wired to `S11`, would by the same correction be the real M.SCOPE key rather than MPAD — the schematic's
 `S10`/`S11` labels read as swapped as a pair, not each independently wrong.)
 
-This closes the main thread of the investigation that started with the `civ_command_dispatch_task`
-retraction: **the real service-mode trigger is `boot_check_mode1_combo`'s MENU+FUNCTION check, reached from
-`cold_boot_hw_init` at cold boot, selecting `svc_mode1_idle_loop`** — a genuine reduced-functionality state
-servicing only CI-V (SCIF0) and the calibration-shaped SCIF1 link. What's still not found: where (or
-whether) the REMOTE-jack-short half of the user's described procedure factors in — the check's other
-condition (`*(ushort*)(DAT_2002a0d0+0x18) & 0x400` clear) is an unidentified status bit that's the leading
-untested candidate for it, not confirmed.
+**REMOTE-jack-short condition — also CONFIRMED, same session.** `boot_check_mode1_combo`'s *second*
+condition (`*(ushort*)(DAT_2002a0d0+0x18) & 0x400) == 0`) resolves cleanly: `DAT_2002a0d0` holds the literal
+value `0xFCFE3200` — the RZ/A1H's `PPRn` (port pin-**read**) register family base (already established in
+[[ic7300-signal-chain]]'s `HSK1` finding). `+0x18` = `+6×4` = `PPR6`, Port 6's raw pin-read register; bit
+`0x400` = bit 10 = **`P6_10`, the main CPU's own `CRXD`** (CI-V receive) pin. The condition requires this
+bit **clear**, i.e. `CRXD` reads **low**. CI-V idles high on an unshorted bus, so `CRXD` reading low means
+the REMOTE jack's contacts are shorted — exactly the user's described hardware condition. Renamed
+`DAT_2002a0d0` → `g_ppr_register_base` in Ghidra. Confirms (closer to) the user's own hunch from earlier in
+this thread: the short *is* detected at the hardware level through the pins SCIF0 already uses for
+CI-V — just via the GPIO block's own pin-read capability (which reflects the real electrical level
+regardless of the pin's peripheral-mode configuration) rather than through SCIF0's UART status registers
+directly. This is also why an exact-address literal search for this earlier came up empty: the code
+computes the offset from one stored base pointer at runtime rather than using a separate hardcoded literal
+per register — the same pattern seen elsewhere in this firmware's driver code.
 
-**Resume point**: `boot_check_mode5_combo` and `boot_check_challenge_response`'s own target
-behaviors/consumers (`svc_mode5_idle_loop`'s reduced peripheral set, and whatever reads `DAT_2002a130` bit
-`0x40`) aren't characterized as thoroughly as mode 1's; identify what `DAT_2002a0d0+0x18` bit `0x400`
-represents (leading candidate for the REMOTE-jack-short condition); the challenge-response check's 10-byte
-reference data (`DAT_2002a0ec+0x70`) is worth reading directly (could be a real per-unit constant, e.g. serial-number-
-derived, if this is a genuine service-technician unlock code); and confirming the bit-to-button mapping
-would need either the front-panel firmware or live JTAG (watch `DAT_2002b4d8` while pressing each physical
-button individually).
+**This closes the main thread of the investigation that started with the `civ_command_dispatch_task`
+retraction two sessions ago, completely**: `boot_check_mode1_combo` requires **MENU + FUNCTION held on the
+front panel, AND the REMOTE/CI-V jack's contacts shorted (`CRXD` pulled low)** — both halves of the user's
+real, external service-mode entry procedure, now both identified and matching exactly. Reached from
+`cold_boot_hw_init` at cold boot, selecting `svc_mode1_idle_loop` (services almost nothing except CI-V/SCIF0
+and the calibration-shaped SCIF1 link — independently consistent with a real factory/service mode). Also
+independently reachable at *runtime* (not just cold boot) via `DAT_2002a158` == `1` or `10`, handled the
+same way inside `system_mode_request_dispatch` — a cross-link between the two mode-selection mechanisms
+documented separately in the previous two sections, not previously connected.
+
+**Genuinely open, lower priority, not investigated further this session**: `boot_check_mode5_combo` and
+`boot_check_challenge_response`'s own exact roles beyond their trigger conditions; `boot_check_challenge_response`'s
+result flag (`DAT_2002a130` bit `0x40`) has **no reader found anywhere** (checked its containing byte's
+full `references_to` — 4 total hits, all either the write itself or unrelated bits of the same byte) —
+possibly vestigial/leftover from development, possibly missed; what runtime-requesting mode 1/10 via
+`DAT_2002a158` is actually for (vs. the boot-time path); and `boot_check_challenge_response`'s 10-byte
+reference data (`DAT_2002a0ec+0x70`) isn't readable statically — it's plain uninitialized RAM in the image
+(confirmed: a direct read attempt at that computed address failed as inaccessible), consistent with it
+being populated at runtime (EEPROM or similar) rather than a firmware-embedded constant, but not confirmed
+further.
