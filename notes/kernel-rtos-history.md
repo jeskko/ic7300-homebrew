@@ -1570,3 +1570,46 @@ individually decode the `0x4004`/`0x4010`/etc. register offsets against common 2
 conventions (framebuffer address, stride, format, control/status); check whether the zlib code found nearby
 is actually reachable from this graphics stack (e.g. for compressed vector-asset decoding) or is genuinely
 unrelated linker-adjacent code.
+
+## Theory tested, same day: is the "connect/disconnect" event an external monitor (DVI on sibling models)?
+
+User's theory: other radio models sharing parts of this codebase reportedly have DVI display connectors —
+could the connect/disconnect event this whole subsystem responds to be an external monitor being plugged in,
+rather than something internal (which wouldn't need connect/disconnect semantics at all)?
+
+**Supporting circumstantial evidence found**:
+- The RZ/A1H genuinely has two independent display-timing channels, `VDC50`/`VDC51` (confirmed via the SVD
+  import), and this firmware's own code treats them as a real, generic multi-channel capability, not
+  single-channel with dead placeholder fields: found a literal-pool table at `0x2019eeb0`+ holding parallel
+  per-channel register-offset arrays for both `VDC50` (base `0xFCFF7400`) and `VDC51` (base `0xFCFF9400`),
+  and a channel-configure function (`FUN_20074a4c`) explicitly parameterized by channel index
+  (`DAT_200753b8 + channel*0x20`) that indexes into that shared table — written to support N channels
+  generically, not hardcoded to one. This is exactly the shape you'd expect if a shared codebase serves both
+  single-screen and dual-output sibling models.
+- A "connect/disconnect"-triggered bring-up genuinely fits an external, hot-pluggable device better than
+  fixed internal hardware (the touchscreen is always physically present — it wouldn't need this framing).
+
+**Not confirmed, real gaps**:
+- Could not pin the actual runtime channel-index value(s) passed into `FUN_20074a4c` — its caller
+  (`FUN_200713fc`) itself has **zero static references anywhere in the image**, the same "reached only through
+  an indirect/dispatch-table call" dead end this project has hit repeatedly elsewhere (task activation,
+  `sys_monitor_task_entry`, etc.). Can't yet say from static analysis alone whether `VDC51` is ever actually
+  activated on real shipped IC-7300 units, or is dead capability on this specific model.
+- **`VDC50`/`VDC51` are a completely different piece of hardware from the `0xE8100000`/SLV5 peripheral** this
+  whole thread is actually about (different bus-matrix slave entirely) — even if `VDC51` turns out to be
+  live, that wouldn't by itself prove the SLV5/EGL-OpenVG subsystem is what drives it. The two threads are
+  thematically connected (both are display-adjacent) but not yet shown to be the same mechanism.
+- **A negative result worth recording**: swept `body.bin`'s full string table for any leftover external-
+  display/monitor-mode UI text (`DVI`, `HDMI`, `VGA`, `EDID`, `External Display`, `Second`/`Dual` display,
+  common external resolutions) — zero hits. Settings menus in this firmware almost always leave a visible
+  string even when gated off by a model check (see the diode-matrix regional-variant precedent), so this is
+  a real (if not conclusive) point against a user-facing "external monitor" *feature* specifically — doesn't
+  rule out a silent/fixed-purpose secondary output with no menu at all.
+- No schematic/BOM evidence found in `notes/ic7300-hardware.md`/`notes/ic7300-signal-chain.md` of an actual
+  DVI/HDMI/VGA connector or an LVDS-to-DVI/HDMI bridge chip on the IC-7300's own board (only the already-noted
+  `IC1212`/`IC1315` `SN65LVDS1DBVR` LVDS transceivers, role "not yet traced").
+
+**Verdict: plausible, genuinely worth keeping as the leading hypothesis, not confirmed.** Best concrete next
+step if pursued: get a schematic/BOM for one of the specific sibling models the user has in mind and check
+for an LVDS-to-DVI bridge IC — that would settle it far faster than continuing to chase indirect calls
+through static analysis alone.
