@@ -104,23 +104,39 @@ by but not built on top of the prior work there.
   CPU/DSP Program/DSP Data) decoded from `firmware_update_main` and confirmed
   byte-exact (LZSS consumption + MD5) against a real v1.42 container —
   supersedes the old `chunk4`/`chunk5-tail` model. New tool:
-  `tools/icom_fw/dsp_chunks.py`. The DSP Program image shows real internal
-  structure (low-entropy header, then a dense body) and a specific Q15
-  `√2⁄2` DSP constant. **Disassembly remains blocked**: the DSP is a
-  TMS320C6745 (TI C674x VLIW) — confirmed no Ghidra/binutils/Capstone/LLVM
-  support exists anywhere for this architecture; a custom disassembler or
-  Ghidra SLEIGH module would be a real, standalone project. See
-  `notes/multi-cpu-images.md`'s "DSP firmware precisely located and
-  unpacked" section. Re-examined `dsp_data.bin`'s whole-file byte histogram
-  and its size against the real FPGA (`EP4CE55`)'s published bitstream size —
-  both now favor "compressed FPGA bitstream, relayed by the DSP" over the
-  original "DSP Data" naming guess, not proven either way.
-- 🔜 **Next thread, not yet started**: front-panel MCU (`IC501`,
-  `R5F104LCAFB`, Renesas RL78/G14) firmware — now extracted
-  (`front_cpu.bin`) alongside the DSP images above. Unlike the DSP, real
-  (if unofficial) Ghidra RL78 support exists (`xyzz/ghidra-rl78`,
-  `hedgeberg/RL78_sleigh`) — not yet installed or tried. Full handoff plan
-  in `notes/front-panel-firmware.md`.
+  `tools/icom_fw/dsp_chunks.py`.
+- ✅ **DSP disassembly retracted from "blocked" to actually working**: the DSP
+  is a TMS320C6745 (TI C674x VLIW) — mainline GNU binutils' `tic6x` target and
+  Capstone's `TMS320C64X` both disassemble it correctly (cross-validated
+  against each other and against TI's own official `dis6x`, all three
+  agreeing). `dsp_program.bin` and (surprisingly) `front_cpu.bin` are now both
+  confirmed genuine TMS320C674x object code — **`front_cpu.bin` is *not*
+  front-panel firmware after all**, retracting the earlier "component0 = Front
+  CPU" hypothesis; its real identity is still open. `dsp_data.bin` shows no
+  such code signature and is now the better-supported bet for "compressed
+  FPGA bitstream relayed by the DSP" — a specific structural match (a 32-byte
+  preamble length) to an independently reverse-engineered same-family Cyclone
+  chip adds real support beyond the original byte-histogram argument. See
+  `notes/multi-cpu-images.md` and `notes/front-panel-firmware.md`.
+- 🔎 **Front-panel MCU (`IC501`, RL78/G14) firmware: still genuinely
+  unidentified.** `front_cpu.bin` (extracted, expecting this to be it) turned
+  out to be DSP code instead (see above) — real front-panel firmware's
+  location in the update container, if it's covered by this mechanism at all,
+  is an open question. RL78 tooling (Ghidra `xyzz/ghidra-rl78`, stock
+  binutils' `rl78` target) is installed and confirmed working regardless, for
+  whenever real front-panel firmware turns up. See
+  `notes/front-panel-firmware.md`.
+- ✅ **Two substantial finds from extending Ghidra's memory map to the RZ/A1H's
+  real, datasheet-confirmed 10 MB on-chip RAM range** (previously only
+  `body.bin`'s own ~3.7 MB static image was mapped): (1) a likely answer to
+  the long-open "how does the radio restart after a firmware update"
+  question — a `"Fup_AutoEnd_3765"` marker written to the very top of RAM
+  right before the same watchdog-reset sequence used elsewhere, checked and
+  cleared on the next boot (`notes/firmware-update.md`); (2) a previously
+  uncharted shared "live radio/UI state" structure with a spectrum/band-scope
+  display sub-region (mode selector + computed low/high frequency bounds,
+  feeding what looks like a frequency→screen-position mapping function) —
+  see `notes/band-scope-state.md`.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is
