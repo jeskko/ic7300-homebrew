@@ -1618,10 +1618,30 @@ through static analysis alone.
 
 **User-supplied hardware fact, IC-7610 (same era, different radio in this family)**: has a **TFP410PAP** (TI's
 well-known parallel-RGB-to-DVI/TMDS transmitter) between its DVI connector and the rest of the system, and
-appears to use a **separate sub-CPU** (same `R7S721001VCBG`-family part number as given for the main CPU —
-**likely a copy/paste slip in the part number given for one of the two; worth getting the real distinct part
-numbers if this is pursued further**) dedicated to driving the display, rather than the main radio-control
-CPU doing it directly.
+uses a **separate sub-CPU dedicated to driving the display**, distinct from the main radio-control CPU.
+**Confirmed, not a transcription slip**: both the main and display sub-CPU are genuinely the same part,
+**`R7S721001VCBG`** — initially flagged here as a likely copy/paste error since it matched the main CPU's own
+part number exactly, but the user's source PDF (the IC-7610 service manual) turns out to reverse character
+order on copy-paste (a real, reproducible PDF text-extraction quirk in that specific document — worth
+remembering if this project ever works with that PDF directly, e.g. via `pdftotext` or a similar
+extraction tool, since a naive extraction would silently produce backwards part numbers/text throughout).
+**`R7S721001VCBG` is the same specific RZ/A1 part already on record as the IC-9700's own main CPU**
+([[ic9700-hardware]]) — notably **not** the same part as the IC-7300's own main CPU (`R7S721000`, a
+different specific part within the same RZ/A1H family, see [[memory-map]]). So IC-7610 apparently uses two
+full RZ/A1 SoCs of the IC-9700's exact main-CPU part, one purely for display/DVI duty — a genuinely
+substantial dedicated graphics computer, which fits a real EGL+OpenVG stack being worth having far better
+than a minor touchscreen driver would. **Checked, and it's a dead end for new SLV5 documentation, but turned up a directly relevant official fact
+instead**: `R7S721001VCBG` and `R7S721000` are **both plain RZ/A1H parts** (confirmed via Renesas' own
+product page and distributor listings) — different specific SKUs/package options within the *same* family
+and the *same* hardware manual (`R01UH0403EJ0600`) already exhausted for the SLV5 search, not a different
+chip family with its own separate datasheet to check. So there's no second manual to search here. **What the
+search did surface, from Renesas' own RZ/A1H marketing copy**: *"With 10MB on-chip SRAM, the RZ/A1H supports
+up to 2 Displays with WXGA (1280x800) resolution without the need for external memory."* — an official,
+direct confirmation that dual-display output is a real, first-class, marketed capability of this exact chip
+family, not a speculative reading of `VDC50`/`VDC51` existing in the SVD. Doesn't confirm the specific
+`0xE8100000`/SLV5 register-level identity, but it's solid, independent support for the general
+"this chip family is built for exactly this kind of dual-output graphics use case" framing this whole thread
+has been assembling piece by piece.
 
 **Is EGL/OpenVG itself open source, could that help trace this?** Nuance worth being precise about:
 - EGL and OpenVG are **Khronos Group specifications** (free, public documents), not code. The specific
