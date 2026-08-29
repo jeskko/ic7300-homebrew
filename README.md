@@ -162,8 +162,9 @@ by but not built on top of the prior work there.
 ## Layout
 
 - `notes/` — reverse-engineering findings, one topic per file, linked with
-  `[[wiki-links]]`. Start at `notes/container-format.md`. The largest topics
-  (`kernel-rtos`, `multi-cpu-images`, `diode-matrix`) are split into a lean
+  `[[wiki-links]]`. Start at `notes/container-format.md`. Several topics
+  (`kernel-rtos`, `multi-cpu-images`, `diode-matrix`, `bitmaps`,
+  `front-panel-firmware`, `ic9700-container-format`) are split into a lean
   active file (current-state tables/summaries, open questions) plus a
   sibling `<topic>-history.md` holding the full session-by-session
   narrative — read the active file first, the history file only for "how
