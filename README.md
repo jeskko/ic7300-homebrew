@@ -137,6 +137,20 @@ by but not built on top of the prior work there.
   display sub-region (mode selector + computed low/high frequency bounds,
   feeding what looks like a frequency→screen-position mapping function) —
   see `notes/band-scope-state.md`.
+- 🟡 **RTOS task catalog's two remaining mystery tasks, chased further without JTAG**: found that 9
+  of the catalog's tasks share one compiled 16-byte-stride descriptor array (cleanly bounded by an
+  adjacent HF band-plan table — no hidden extra task there). `kernel_start`'s own mystery task
+  descriptor is re-confirmed, more rigorously than before, as a genuine JTAG-only dead end (zero
+  writers anywhere in the image, both via Ghidra and a raw literal scan). The other mystery
+  (`thunk_FUN_2007ea68`, a dynamic task activation) got its *mechanism* fully traced — reached
+  through a chain of ARM/Thumb interworking veneers down to real callers touching an unidentified
+  peripheral at `0xE8100000`, triggered by a connect/disconnect-shaped event. **An initial "USB
+  subsystem" guess was checked directly against the real RZ/A1H hardware manual and retracted** —
+  the manual's actual USB2.0 controller bases are `0xE8010000`/`0xE8207000`, not `0xE8100000`, and
+  no chapter documents anything at that address at all. The peripheral's real identity is open
+  again. Also brought `notes/kernel-rtos.md`'s task-catalog table current with several
+  session-old renames that had never made it back into the table itself. See
+  `notes/kernel-rtos.md`.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is
