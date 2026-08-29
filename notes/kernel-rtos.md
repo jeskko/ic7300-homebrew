@@ -1370,16 +1370,15 @@ Status update, no need to re-derive:
 - **Still genuinely pending, low effort**: the file-RPC table's 4 real Thumb islands identified above
   (`0x200ba8f8`/`0x200ba918`/`0x200baca8`/`0x200bae10`) — exact ARM replacement instructions are documented
   above, just need Clear Code Bytes + re-disassemble in the GUI. Not yet confirmed done.
-- **New major thread opened, not on the old handoff list at all**: DSP interaction. `SCIF5` identified as
-  the DSP's real command/data link (full transport chain traced, MTU2-timer-paced, down to `SCFTDR_5`);
-  confirmed DSP Program/DSP Data get written **live** during `firmware_update_main`, almost certainly via
-  the DSP reprogramming its own boot flash (`IC902` — corrected this session from an earlier, wrong "FPGA
-  config flash" call; its pins trace directly to the DSP's `BOOT[4:0]`/SPI0 strapping pins). **Best next
-  step if this thread is picked back up**: `DRESD`'s release is still unfound in the main-CPU call graph
-  despite the DSP clearly running (live `SCIF5` parameter-sync traffic proves it) — worth either a fresh
-  angle (the boot-ROM/`base.dat` stage predating `cold_boot_hw_init`, not yet checked for this specifically)
-  or live JTAG once hardware arrives. Full detail and everything ruled out already: `notes/multi-cpu-images.md`'s
-  `SCIF5`/`IC902` sections.
+- **New major thread opened, not on the old handoff list at all — this is the active thread for the next
+  session**: DSP interaction. `SCIF5` identified as the DSP's real command/data link (full transport chain
+  traced, MTU2-timer-paced, down to `SCFTDR_5`); confirmed DSP Program/DSP Data get written **live** during
+  `firmware_update_main`, almost certainly via the DSP reprogramming its own boot flash (`IC902` — corrected
+  this session from an earlier, wrong "FPGA config flash" call; its pins trace directly to the DSP's
+  `BOOT[4:0]`/SPI0 strapping pins). `DRESD`'s release is still unfound despite the DSP clearly running (live
+  `SCIF5` parameter-sync traffic proves it). **Full ranked next-steps list, what's already ruled out, and
+  don't-re-derive orientation**: `notes/multi-cpu-images.md`'s "Handoff: DSP comms/firmware thread,
+  continuing in a new session" section (end of file) — read that first, not this bullet, before resuming.
 - **Closed this session**: the UI icon/bitmap resource format (`notes/bitmaps.md`) — was on the older
   standing-candidates list as "raw/uncompressed bitmap material", now fully solved with 150 icons
   individually identified and renamed.

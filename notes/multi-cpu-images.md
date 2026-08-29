@@ -789,6 +789,71 @@ flash during programming" line, in which case the DSP might come out of reset fa
 assumed, or via a mechanism that doesn't route through `P2` at all. Not guessed further; flagged for either
 a fresh angle or live JTAG (watch `P2`/`PPR2` bit 6 directly while the radio boots).
 
+## Handoff: DSP comms/firmware thread, continuing in a new session (2026-08-29)
+
+Picking this thread back up — start here, don't re-derive the sections above. Quick orientation first, then
+concrete next steps in priority order.
+
+**Confirmed, solid, don't re-check**:
+- `SCIF5` (`0xE8009800`) is the real DSP link. Full chain: `chunk_transport_send_data` /
+  `chunk_transport_send_reload_cmd` (firmware-update chunk transfer, both single-caller inside
+  `firmware_update_main`) and `dsp_param_sync_tick` (continuous live parameter push, normal operation) all
+  feed `scif5_ring_push_word`, drained by MTU2 ch.4's timer interrupt (event `0xa1` →
+  `scif5_ring_pop_and_send` → `scif5_bitrev_transmit_word` → `SCFTDR_5`).
+- `scif5_dsp_link_driver_init` runs unconditionally on every boot (`cold_boot_hw_init`'s only call to it),
+  right after `port_bulk_gpio_init_pass2` (the `DRESD`-low write). Registers events `0xa1`/`0x9f`/`0xf1`/
+  `0xf2`/`0xf3` — **only `0xa1` and `0x9f` have been traced** (both TX-side: pop-and-send /
+  underrun-handler). `0xf1`/`0xf2`/`0xf3`'s handlers were never looked at.
+- `dsp_boot_handshake` sends exactly 2 command words to the DSP over `SCIF5` right after driver init, at
+  every boot, waiting for an ack after each — contents (`0x100007FF` and one more from `DAT_200b6370`,
+  literal pool near `0x200b6368`) were **not decoded**, just observed to exist.
+- `IC902` = the DSP's own SPI0 boot flash (user's direct pin trace to `IC901` `BOOT[4:0]`/SPI0 pins — solid,
+  don't second-guess without new schematic evidence). Best current model: the DSP self-boots from it, and
+  reprograms it itself in response to `SCIF5` commands during a firmware update.
+- **Ruled out for `DRESD` release** (don't re-check): net inverters (none — user's schematic read, page
+  64/66, purely resistive: 47kΩ pull-up, 1kΩ series to DSP pin 146, 22Ω array + 47kΩ pulldown to `IC902`'s
+  `WP`); release via `PM2` direction/tri-state (only literal `PMn`-block reference in all of `body.bin` is
+  `FUN_2005fdb4`, touches `P2` bits 8-11 only, nowhere near bit 6); every function called immediately around
+  `scif5_dsp_link_driver_init` in `cold_boot_hw_init` (`FUN_200b47f0`, `FUN_200b4800`, `FUN_2002af80`,
+  `FUN_2002aed8`, `FUN_2007ed9c`, `FUN_2007ede0` — all checked, none touch port registers).
+
+**Next steps, roughly in order of promise**:
+
+1. **`0xf1`/`0xf2`/`0xf3` event handlers, never traced.** Registered in `scif5_dsp_link_driver_init`
+   alongside the already-understood TX-side `0xa1`/`0x9f` — plausibly the **receive side** (processing
+   whatever the DSP sends back: acks, status, maybe a "ready"/boot-complete signal). This is the single
+   most promising unopened lead — an RX path is exactly where a DSP-initiated "I'm alive" signal or a
+   firmware-update-complete acknowledgment would show up, and might connect back to whatever the main CPU
+   does with that information (possibly including a delayed `DRESD` re-assertion for a *subsequent*
+   DSP-side reset, if that's ever needed). Find their handler addresses the same way `0xa1`/`0x9f` were
+   found (`register_event_handler(0xf1, ...)` etc., visible directly in `scif5_dsp_link_driver_init`'s own
+   decompile) and decompile.
+2. **The other ~30 callers of `scif5_ring_push_word`** (`references_to` on it) beyond the ones already
+   traced — mostly clustered `0x200b1194`-`0x200b14d0`, plus two more at `0x200b54c8`/`0x200b54e4` never
+   even opened. This is very likely the DSP's real command API (mode/filter/AGC-shaped parameter pushes,
+   given `dsp_param_sync_tick`'s shape) — cataloguing a handful more would either surface a reset-related
+   command or at least map out what "normal operation" DSP control looks like. `FUN_200b1540`'s command/ack
+   lookup table (values `0x106`, `0x1000000`, `0x24000000`, `0x25000000`, `0x41000000`-`0x4f000000`,
+   `0x61000000`/`62000000`/`6b000000`) was seen but never decoded — could be a response-code table worth
+   returning to once more of the command senders are read.
+3. **`DRESD` release, new angle**: everything checked so far was inside `body.bin`'s own `cold_boot_hw_init`
+   and immediate neighborhood. Not yet checked: the **boot-ROM/`base.dat` stage**, which runs *before*
+   `body.bin`'s entry point (see `notes/base-loader.md`) — if `DRESD` is released exactly once, very early,
+   this earlier stage (not `cold_boot_hw_init`) is a real candidate that hasn't been looked at from this
+   specific angle.
+4. **`SCIF5`'s physical `TxD5`/`RxD5` pin** — same "every RZ/A1H alt-function candidate already claimed"
+   problem as `SCIF1` (checked: `P6_6`/`P6_7`, `P8_1`/`P8_2`, `P8_11`/`P8_13`, all already assigned to other
+   confirmed nets). Would need an unlabeled/secondary alt-function on the real schematic, or a live register
+   read.
+5. **Decode `dsp_boot_handshake`'s 2 command words** — lower priority than #1, but if #1's RX-side tracing
+   doesn't pan out, manually decoding what `0x100007FF` means (top-byte command class `0x10`, distinct from
+   the `0xB`/`0xE` classes already decoded for chunk transfer) against the same bit-reversal
+   `scif5_bitrev_transmit_word` applies might reveal a recognizable TI HPI/boot-protocol command.
+
+Once JTAG hardware arrives, this whole thread (watching `SCIF5`'s actual TX/RX bytes and `P2`/`PPR2` bit 6
+live while the radio boots) would likely resolve faster than continued static tracing — flagged as an
+option, not a requirement to wait for.
+
 **`SCIF5`'s physical pin has the same "every candidate already claimed" problem as `SCIF1`.** Register
 identity (`0xE8009800` = `SCSMR_5`) is solid regardless, but checked the RZ/A1H manual's alt-function table
 for where `TxD5`/`RxD5` can physically land, against the user's own full CPU pinout sweep: `P6_6`/`P6_7`
