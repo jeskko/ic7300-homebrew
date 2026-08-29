@@ -115,9 +115,9 @@ drive" question.
 | `DR_AF` | P2_11 | `SSITxD0` | SSIF0 transmit data | 117, `AXR0[5]`/`RMII_RXD[1]`/`GP3[5]` (McASP0 serializer 5) | — | ✅ yes |
 | `DX_FMT` | P3_6 | `SSIRxD1` | SSIF1 receive data | 118, `AXR0[6]`/`RMII_RXER`/`GP3[6]` (McASP0 serializer 6) | — | ✅ yes |
 | `DR_RSV` | P3_7 | `SSITxD1` | SSIF1 transmit data | 120, `AXR0[7]`/`MDIO_CLK`/`GP3[7]` (McASP0 serializer 7) | — | ✅ yes |
-| `DSPCK` | P8_0 | `SSL00` | (was: RSPI ch.0) | 162, `ACLKX1`/`EPWM0A`/`GP3[15]` (**McASP1** bit clock) | `Y1`, `DIFFIO_L29n` | ❌ no CPU-side reference found |
-| `DSPR` | P8_1 | `MOSI0` | (was: RSPI ch.0) | 175, `AXR1[2]`/`GP4[2]` (McASP1 serializer 2) | `AA1`, `DIFFIO_L31n` | ❌ no CPU-side reference found |
-| `DSPX` | P8_2 | `MISO0` | (was: RSPI ch.0) | 176, `AXR1[1]`/`GP4[1]` (McASP1 serializer 1) | — | ❌ no CPU-side reference found |
+| `DSPCK` | P8_0 | `SSL00` | (was: RSPI ch.0) — **found: SCIF5, see below** | 162, `ACLKX1`/`EPWM0A`/`GP3[15]` (**McASP1** bit clock) | `Y1`, `DIFFIO_L29n` | ✅ **found, next session — SCIF5's port-mux (see below)** |
+| `DSPR` | P8_1 | `MOSI0` | (was: RSPI ch.0) — **found: SCIF5, see below** | 175, `AXR1[2]`/`GP4[2]` (McASP1 serializer 2) | `AA1`, `DIFFIO_L31n` | ✅ **found, next session — SCIF5's port-mux (see below)** |
+| `DSPX` | P8_2 | `MISO0` | (was: RSPI ch.0) — **found: SCIF5, see below** | 176, `AXR1[1]`/`GP4[1]` (McASP1 serializer 1) | — | ✅ **found, next session — SCIF5's port-mux (see below)** |
 | `DCSX` | P8_12 | — | (was: SPI Multi I/O ch.1) | 163, `AFSX1`/`EPWMSYNCI`/`EPWMSYNC0`/`GP4[10]` (McASP1 frame sync X) | — | ❌ no reference found |
 | `DCSR` | P8_13 | — | (was: SPI Multi I/O ch.1) | 166, `AFSR1`/`GP4[13]` (McASP1 frame sync R) | — | ❌ no reference found |
 | `HSK0` | P8_8 | — | (was: SPI Multi I/O ch.1) | 100, `EMB_A[3]`/`GP7[5]` (DSP **external memory bus address bit 3**) | — | ❌ no reference found |
@@ -166,6 +166,14 @@ different sub-groups of these 8 pins:
   above, just a second, independent instance — plausibly a second audio/IQ stream (e.g. TX audio, or a
   second IQ pair) running in parallel with the first. `DSPCK`/`DSPR` also land on FPGA pins (`Y1`/
   `DIFFIO_L29n`, `AA1`/`DIFFIO_L31n`), the same three-way sharing pattern as `BCLK_`/`FRM_` above.
+  **Correction, next session (`SCIF5`/DSP-comms thread)**: this "second McASP1 audio link" reading for
+  `DSPCK`/`DSPR`/`DSPX` (`P8_0/1/2`) specifically is very likely wrong. `scif5_dsp_link_driver_init`
+  (the real DSP command/data link's own driver, see [[multi-cpu-images]]) was found to configure exactly
+  these 3 port-8 bits' `PFCn`/`PFCEn`/`PMCn` registers (peripheral mode genuinely enabled, function code 3)
+  — i.e. the CPU side drives them as **`SCIF5`** (a UART), not McASP1. The DSP-side pin names being
+  nominally McASP1-capable doesn't mean the DSP uses them that way on this board — TI DSP pins are commonly
+  multiplexable between McASP and UART/GPIO, and this design apparently picked UART mode here for the
+  DSP boot/control link. `DCSX`/`DCSR` (`P8_12/13`) are untouched by this and still unconfirmed either way.
 - `HSK0`/`HSK1`/`FRWT`/`RTD` (`P8_7/8/9/10`) land on DSP pins `EMB_A[3]`/`EMB_A[4]`/`EMB_A[6]`/`EMB_A[5]` —
   the DSP's **external memory bus address lines**, not a handshake/flow-control protocol as the CPU-side
   alt-function names ("SPBIO"/handshake-style naming) had suggested. ~~Genuinely unclear yet what the main
@@ -274,6 +282,8 @@ architecture), but is confirmed *not* the transport for the `chunk4`/`chunk5` my
 Traced by cross-referencing the RZ/A1H manual's port register map (§54.3, `PORTn_base` = `0xFCFE3000`,
 sub-block bases `Pn`=`+0`, `PSRn`=`+0x100`, `PPRn`=`+0x200`, `PMn`=`+0x300`, `PMCn`=`+0x400`,
 `PFCn`=`+0x500`, `PFCEn`=`+0x600`, `PNOTn`=`+0x700`, `PMSRn`=`+0x800`, `PMCSRn`=`+0x900`,
+**`PFCAEn`=`+0xA00`** (found later, see [[kernel-rtos]]'s "SCIF1 and SCIF5 physical pins resolved" section —
+the alt-function 3rd bit, missed by this session's search since it wasn't needed for `DRESD`),
 `PIBCn`=`+0x4000`, `PBDCn`=`+0x4100`, `PIPCn`=`+0x4200`, each `+n×4` for port `n`) against every
 literal-pool reference to any of these bases in `body.bin`. This is the same "search for the base literal,
 check every candidate's offset" method used successfully for `P5` (diode scan) and `RSPI2`/`SSIF` earlier
@@ -508,12 +518,12 @@ diagram just independently re-confirms it, not a new find):
 | `P5_8`-`P5_10` | `IMR0`/`IMR1`/`IMR2` | The diode-matrix scan's row-read pins — [[diode-matrix]] already fully mapped these three as the scan's row-bottom/middle/top inputs; this session adds their real schematic net names (`IMR0`/`1`/`2`, almost certainly "Input Matrix Row") and confirms they go to a 47 kΩ resistor network (a pull network for the scan), nothing about the row/column mapping itself changes. |
 | `P6_0`/`P6_1` | `LRXD`/`LTXD` | Front-panel UART, confirmed prior sessions (SCIF3) |
 | `P6_2`/`P6_3` | `EKEY`/`ESTA` | Tuner jack signals, confirmed on the PA/Tuner block diagram (`[TUNER]` connector `J20012`, pins `EKEY`/`ESTA`/`14V`) |
-| `P6_4`-`P6_6`, `P6_8`, `P6_11`-`P6_13`, `P6_15` | `USSENI`/`USKI`/`SDPWS`/`VBUS`/`UCLKS`/`UDTXD`/`UDRXD`(`/UDBSY`)/`UPWS` | **The USB subsystem** — the block diagram shows a `USB HUB` + `USB BRIDGE` + `USB CODEC` cluster fed by exactly this group of `U`-prefixed signals (plus `VBUS`, literally USB bus power sense). Reads as: USB audio (via the CODEC) and a USB-to-serial bridge (very plausibly CI-V-over-USB) combined behind one hub, presented as the single external USB-B port. |
+| `P6_4`-`P6_6`, `P6_8`, `P6_11`-`P6_13`, `P6_15` | `USSENI`/`USKI`/`SDPWS`/`VBUS`/`UCLKS`/`UDTXD`/`UDRXD`(`/UDBSY`)/`UPWS` | **The USB subsystem** — the block diagram shows a `USB HUB` + `USB BRIDGE` + `USB CODEC` cluster fed by exactly this group of `U`-prefixed signals (plus `VBUS`, literally USB bus power sense). Reads as: USB audio (via the CODEC) and a USB-to-serial bridge (very plausibly CI-V-over-USB) combined behind one hub, presented as the single external USB-B port. **Correction, next session**: `P6_13` specifically is confirmed by code as **`SCIF1`** (the service/calibration link, see [[kernel-rtos]]), not this USB group's own signal — its schematic label (positionally `UDRXD` in this row) doesn't match the real electrical function found in `scif1_svc_driver_init`. The rest of this group (`P6_4-6/8/11/15`) is unaffected. |
 | `P6_7` | `LCD_ON` | LCD panel power/enable |
 | `P6_9`/`P6_10`, `P7_11` | `CTXD`/`CRXD`(`/CBSY`) | **Confirmed at both the hardware and code level.** Hardware: `CTXD`/`CRXD`/`CBSY` (main CPU) → `IC701` → `Q711`(`L2SC4081`)/`Q712`(`L2SA1576`) → fans out to **both** the `[REMOTE]` jack directly **and** a USB-side path through `Q691`(`L2SC4081`)/`Q602`(`L2SA1576`) → `IC701`(`TC74VHC04FT`, hex inverter) → `IC691`(`TC7W66FU`, analog switch) → **`IC641` (`CP2102GMR`, a genuine USB-to-UART bridge IC)** — CI-V really is available both over the physical `[REMOTE]` jack and over USB. Code (2026-08-29, 29th session): `P6_9`/`P6_10` are SCIF0's `TxD0`/`RxD0` alt-functions (RZ/A1H manual, base `0xE8007000`); `scif0_civ_rx_isr`→`civ_frame_rx_statemachine` (`0x20010b6c`/`0x2001099c`) is a genuine CI-V `FE`/`FD` byte-framing receiver with real destination-address filtering — proves this is CI-V, not just a hypothesis from pins. **Correction**: `civ_command_dispatch_task` (`0x200b9c00`) turned out NOT to be this protocol's consumer — retracted and renamed `sdcard_file_rpc_dispatch_task` (a generic internal file-access RPC service, confirmed unrelated to CI-V). The real consumer of parsed CI-V frames (the documented frequency/mode/etc. command processor) is still unfound — see [[kernel-rtos]]'s "civ_command_dispatch_task retraction" section for the full trace and open items. |
 | `P6_14` | `PWRS` | Not yet traced individually |
 | `P7_1`-`P7_6`, `P7_8`/`P7_9` | `TSTB1`-`TSTB4`/`TCLK`/`TDAT`/`PHASEI`/`IMPI` | **Tuner interface** — matches the PA/Tuner block diagram's own `TDAT`/`TCLK`/`TCON`/`TSTB1`-`4`/`IMPI`/`PHASEI` cluster feeding the antenna tuner control logic, alongside `P0_4`'s `TCON` and `P6_2`/`P6_3`'s `EKEY`/`ESTA` |
-| `P7_12` | `UDRXD`(`/UDBSY`) | Same signal name as `P6_13` — likely a second reference/alias to the same USB-bridge receive line on a different pin, or a transcription duplicate; not resolved further |
+| `P7_12` | `UDRXD`(`/UDBSY`) | **Resolved, next session**: ~~same signal name as `P6_13` — likely a second reference/alias to the same USB-bridge receive line on a different pin, or a transcription duplicate; not resolved further~~ — it isn't a duplicate. `scif1_svc_driver_init` activates `P6_13` and `P7_12` **together** as the two real halves of `SCIF1`'s `RxD1`/`TxD1` (different function codes — 4 on `P6_13`, 7 on `P7_12` — but both with `PMCn` genuinely enabled). See [[kernel-rtos]]'s "SCIF1 and SCIF5 physical pins resolved" section. |
 | `P8_0`-`P8_15` | `DSPCK`/`DSPR`/`DSPX`/`SCPCK`/`SCPSS`/`CSPR`/`SCPX`/`RTD`/`HSK0`/`HSK1`/`FRWT`/`FPDX`/`DCSX`/`DCSR`/`FPSX`/`FPSR` | All confirmed prior sessions (McASP1 DSP link, RSPI2/FPGA differential I/O, `HSK1` handshake) — `CSPR` here is almost certainly the same signal previously called `SCPR` (`P8_5`), a transcription variant, not a new pin |
 | `P9_0`/`P9_1` | `TXS`/`RXS` | Not yet traced individually — plausibly TX/RX band-state strobes given the naming pattern, unconfirmed |
 | `P9_2`-`P9_7` | `SFLCK`/`SFLSS`/`SFLD0`/`SFLD1`/`SFLD2`/`SFLD0`(likely `SFLD3`, repeated label) | **The main CPU's own boot/program flash** (`IC391`, `EN25Q64`) — the block diagram shows this exact `SFLSS`/`SFLCK`/`SFLD0`-`SFLD3` naming for `IC391`'s quad-SPI bus, confirming Port 9 carries the CPU's own XIP flash interface (separate from the boot-mode-3 SPI Multi I/O controller signals already documented in [[base-loader]] — worth reconciling which is the real XIP path vs. a secondary/parallel access route if this matters later) |

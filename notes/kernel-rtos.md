@@ -984,7 +984,17 @@ test point or an external factory jig — rather than anything end-user-facing (
 documented `1A 05 00 73` "CI-V Output for ANT" tuner feature, or to anything else in the public manual).
 Not settled; flagged as a hypothesis, not fact, per this project's usual standard.
 
-**Also still unresolved from the prior session's thread**: which physical pin(s) SCIF1's `RxD1`/`TxD1`
+**RETRACTED, 2026-08-29 (next session) — SCIF1's physical pin is now resolved, and the claim below that "the
+firmware's own driver init doesn't set the pin-mux itself" was wrong.** The prior sweep only checked for a
+literal-pool-built port address referencing a single fixed register; it missed that `scif1_svc_driver_init`
+*does* configure port-mux registers, just via the same base-pointer-plus-computed-offset idiom
+`port_bulk_gpio_init_pass1`/`pass2` use (not a fresh literal per register). See the new section below,
+"SCIF1 and SCIF5 physical pins resolved via each driver's own port-mux code", for the full trace: the real
+pins are **`P6_13` + `P7_12`** — not any of the 5 same-port adjacent pairs this session's candidate list
+assumed (`P9_3`/`4`, `P2_5`/`6`, `P6_12`/`13`, `P4_12`/`13`, `P7_3`/`4`); the two halves of the UART sit on
+*different* ports, which is why the pair-based search never found it.
+
+~~**Also still unresolved from the prior session's thread**: which physical pin(s) SCIF1's `RxD1`/`TxD1`
 alt-function actually uses. All RZ/A1H datasheet candidate pin pairs (`P9_3`/`P9_4`, `P2_5`/`P2_6`,
 `P6_12`/`P6_13`, `P4_12`/`P4_13`, `P7_3`/`P7_4`) are already claimed by other confirmed nets in the existing
 CPU pinout table (boot flash QSPI, `DRESD`/`PSTB`, USB, SD-card, tuner respectively) — a real, unreconciled
@@ -992,15 +1002,72 @@ conflict. The firmware's own driver init doesn't set the pin-mux itself (checked
 generic `port_bulk_gpio_init_pass1`/`pass2` bulk-config functions, which use pointer-index arithmetic off a
 single base rather than per-register literals, so a literal-pool search (which worked for the dead end above)
 doesn't apply here either — resolving this needs the same kind of manual per-port pointer-offset decode that
-the `DRESD`/`P2` trace took real, dedicated effort to do, or the schematic.
+the `DRESD`/`P2` trace took real, dedicated effort to do, or the schematic.~~ (superseded above)
 
 **Resume point if this thread continues**: (a) decompile `scif1_svc_command_dispatch`'s remaining 4-interrupt
 detail (the extra `0xe4` ID vs. SCIF0's 3) for a possible clue about what's on the other end; (b) try tracing
 `DAT_2002a158` via the RTOS event/message primitives instead of direct memory writes (check which
-`register_event_handler` IDs feed into structures near this cluster); (c) do the SCIF1 pin-mux decode or ask
-the user to check the schematic for any unlabeled/secondary alt-function silkscreen on the 5 candidate pins;
-(d) live JTAG, once available, would likely resolve both the trigger and the pin question quickly by simply
-watching `DAT_2002a158` and the SCIF1 register block during radio operation.
+`register_event_handler` IDs feed into structures near this cluster); (c) ~~do the SCIF1 pin-mux decode~~ done,
+see below; (d) live JTAG, once available, would likely resolve the mode-6/7/8 trigger question quickly by
+watching `DAT_2002a158` during radio operation.
+
+## SCIF1 and SCIF5 physical pins resolved via each driver's own port-mux code (2026-08-29, next session)
+
+Picked up the user's tangent suggestion: rather than keep guessing pins from the schematic/datasheet
+candidate-pair approach, go find the actual SCIF *initialization* code itself — it has to set the RZ/A1H
+port mux registers somewhere, and that would nail the pin down directly from `body.bin`.
+
+**First, found a register family missing from this project's own port-register-map notes.** The established
+table (`Pn`/`PSRn`/`PPRn`/`PMn`/`PMCn`/`PFCn`/`PFCEn`/`PNOTn`/`PMSRn`/`PMCSRn`/`PIBCn`/`PBDCn`/`PIPCn`, see
+[[ic7300-signal-chain]]'s `DRESD` section) turned out to be incomplete: there's also a **`PFCAEn`** family at
+`PORTn_base + 0xA00` (RZ/A1H's third alt-function-select bit, "Alternate Enable" — `PFCn`+`PFCEn`+`PFCAEn`
+together form a 3-bit code selecting 1 of 8 peripheral functions per pin, only enabled when `PMCn`'s
+matching bit is also 1). Found it the same way the rest of the table was found originally: cross-referencing
+a computed address against the expected offset pattern, this time inside a driver function rather than the
+bulk-init sweep — confirmed independently 3 times (once per driver below), so this is solid, not a guess.
+
+**The method: every SCIF driver's own `_driver_init` writes the same 6-register pattern for its own port
+bit(s)** — `PBDCn`, `PFCn`, `PFCEn`, `PFCAEn`, `PIPCn`, and finally `PMCn` (the one that actually *enables*
+peripheral mode) — each a read-modify-write clearing then re-setting the target bit(s). This is on top of,
+and independent from, `port_bulk_gpio_init_pass1`/`pass2`'s own generic bulk pass (which sets baseline
+`PMCn`/`PMn`/`Pn`/`PIBCn` values for every port at boot but never touches `PFCn`/`PFCEn`/`PFCAEn` at all —
+confirmed by fully hand-decoding both passes' assembly, address-family by address-family). Concretely, for
+each driver (`iVarN` below is that driver's own literal-pool copy of the `PBDCn`-family base pointer,
+`0xFCFE7100`; offsets are exactly `port_bulk_gpio_init`'s established family deltas):
+
+- **`scif0_civ_driver_init`** (`0x20010c68`, already known-good — `P6_9`/`P6_10` = CI-V `RxD0`/`TxD0`, the
+  cross-check for this whole method): sets bits 9+10 of `PBDC6`/`PFCAE6`/`PIPC6`/`PMC6` to 1 and bits 9+10 of
+  `PFC6`/`PFCE6` to 0 — function code `(PFCAE,PFCE,PFC)=(1,0,0)=4`. Matches the schematic-confirmed pins
+  exactly, validating the method.
+- **`scif1_svc_driver_init`** (`0x20011df4`): two *separate* single-port-bit blocks, not one pair on the same
+  port. Block 1 (port 6, bit 13 — `iVar & 0x18` offset pattern) sets `PBDC6`/`PFCAE6`/`PIPC6` bit 13 to 1,
+  `PFC6`/`PFCE6` bit 13 to 0, and **`PMC6` bit 13 to 1** (function code 4, same code SCIF0 uses) — bit 12 of
+  the same registers gets touched too but `PMC6` bit 12 is explicitly left 0 (prepped, never enabled — not a
+  real pin here). Block 2 (port 7, bit 12 — offset `+0x1c`) sets **all six** of
+  `PBDC7`/`PFC7`/`PFCE7`/`PFCAE7`/`PIPC7`/`PMC7` bit 12 to 1 — function code `(1,1,1)=7`. **Both blocks are
+  real** (`PMCn` enabled in both) — so **SCIF1's `RxD1`/`TxD1` = `P6_13` + `P7_12`**, split across two
+  different ports, which is exactly why the earlier same-port-pair candidate search above never found it.
+  This also resolves [[ic7300-signal-chain]]'s "`P7_12` (`UDRXD`/`UDBSY`) — same name as `P6_13`, likely an
+  alias/transcription duplicate" note from the port-pinout sweep: **it isn't a duplicate — both are real,
+  distinct pins, deliberately activated together by the same driver as the two halves of one UART.**
+- **`scif5_dsp_link_driver_init`** (`0x200b2bb0`): one block, port 8, bits 0+1+2 (offset `+0x20`) *and* bit 11
+  in the same instruction sequence. Bits 0/1/2: `PFC8`/`PFCE8`/`PMC8` set to 1, `PFCAE8` set to 0 — function
+  code `(0,1,1)=3`, all three with `PMC8` enabled. Bit 11: `PFCAE8` set to 1, `PFC8`/`PFCE8`/`PMC8` left 0 —
+  function code 4 prepped but **not enabled** (`PMC8` bit 11 stays 0, so this pin stays plain GPIO/unused by
+  this driver). **So SCIF5 = `P8_0`/`P8_1`/`P8_2`** — three pins, not the usual two, consistent with a
+  clock/handshake line alongside `TxD5`/`RxD5` (or possibly RTS/CTS-shaped flow control).
+
+**This closes `notes/multi-cpu-images.md`'s handoff item 4 (SCIF5's physical pin) and this file's own
+long-open SCIF1 pin question, both from the same method** — go find the driver's own port-mux writes
+instead of guessing from datasheet candidate pairs. **Correction to `notes/ic7300-signal-chain.md`**:
+`P8_0`/`P8_1`/`P8_2` (schematic names `DSPCK`/`DSPR`/`DSPX`, DSP-side McASP1 pins) were flagged there as
+"❌ no CPU-side reference found" — that's now resolved (**found**, this is SCIF5), which also means the
+"second independent DSP audio-serial link via McASP1" characterization for those 3 pins was very likely
+wrong: the CPU side genuinely drives them as a UART (SCIF5), not an audio serializer. The DSP's own pins
+being nominally McASP1-capable doesn't mean the DSP uses them that way — TI DSP pins are commonly
+multiplexable between McASP and UART/GPIO, and this design apparently picked UART for boot/control traffic
+over `IC901`'s own boot-flash-adjacent link. See `notes/ic7300-signal-chain.md`'s pinout table update and
+`notes/multi-cpu-images.md`'s handoff section for the corresponding corrections.
 
 ## Factory/service mode — a real, external fact confirms the shape, third independent piece of evidence found (2026-08-29, 30th session, continued)
 

@@ -841,10 +841,15 @@ concrete next steps in priority order.
    `body.bin`'s entry point (see `notes/base-loader.md`) — if `DRESD` is released exactly once, very early,
    this earlier stage (not `cold_boot_hw_init`) is a real candidate that hasn't been looked at from this
    specific angle.
-4. **`SCIF5`'s physical `TxD5`/`RxD5` pin** — same "every RZ/A1H alt-function candidate already claimed"
-   problem as `SCIF1` (checked: `P6_6`/`P6_7`, `P8_1`/`P8_2`, `P8_11`/`P8_13`, all already assigned to other
-   confirmed nets). Would need an unlabeled/secondary alt-function on the real schematic, or a live register
-   read.
+4. ~~**`SCIF5`'s physical `TxD5`/`RxD5` pin**~~ — **RESOLVED, next session.** Found by decompiling
+   `scif5_dsp_link_driver_init` itself rather than continuing the schematic-candidate search: it directly
+   configures `P8_0`/`P8_1`/`P8_2`'s `PFCn`/`PFCEn`/`PFCAEn`/`PMCn` registers (function code 3, `PMCn`
+   genuinely enabled on all three) — these are the same 3 pins the schematic calls `DSPCK`/`DSPR`/`DSPX`
+   (previously read as a second DSP McASP1 audio link; that reading is now very likely wrong — see
+   `notes/ic7300-signal-chain.md`'s correction). Same method also resolved `SCIF1`'s long-open pin
+   (`P6_13`+`P7_12`, split across two ports) — see `notes/kernel-rtos.md`'s "SCIF1 and SCIF5 physical pins
+   resolved via each driver's own port-mux code" section for the full derivation, including a previously-
+   missing register family (`PFCAEn`, `PORTn_base+0xA00`) this uncovered.
 5. **Decode `dsp_boot_handshake`'s 2 command words** — lower priority than #1, but if #1's RX-side tracing
    doesn't pan out, manually decoding what `0x100007FF` means (top-byte command class `0x10`, distinct from
    the `0xB`/`0xE` classes already decoded for chunk transfer) against the same bit-reversal
@@ -854,13 +859,25 @@ Once JTAG hardware arrives, this whole thread (watching `SCIF5`'s actual TX/RX b
 live while the radio boots) would likely resolve faster than continued static tracing — flagged as an
 option, not a requirement to wait for.
 
-**`SCIF5`'s physical pin has the same "every candidate already claimed" problem as `SCIF1`.** Register
-identity (`0xE8009800` = `SCSMR_5`) is solid regardless, but checked the RZ/A1H manual's alt-function table
-for where `TxD5`/`RxD5` can physically land, against the user's own full CPU pinout sweep: `P6_6`/`P6_7`
-(already `USSENI`/USB cluster and `LCD_ON`), `P8_1`/`P8_2` (already `DSPR`/`DSPX`, McASP1's DSP audio
-serializers), `P8_11`/`P8_13` (already `FPDX`/`DCSR`) — every standard candidate pair is already wired to a
-different, independently-confirmed function. Not resolved; same category as SCIF1's still-open physical pin
-(an unlabeled/secondary alt-function on the real schematic, or a live JTAG register read, would settle it).
+~~**`SCIF5`'s physical pin has the same "every candidate already claimed" problem as `SCIF1`.**~~ **RESOLVED,
+next session — this whole candidate-pair approach was the wrong lens.** Register identity (`0xE8009800` =
+`SCSMR_5`) is solid, and the schematic-candidate-pair search below correctly ruled out `P6_6`/`P6_7` and
+`P8_11`/`P8_13` — but wrongly assumed `P8_1`/`P8_2` (`DSPR`/`DSPX`) were unavailable because "already McASP1
+audio." They weren't: decompiling `scif5_dsp_link_driver_init` itself found it directly enables `P8_0`/
+`P8_1`/`P8_2` (not just a pair — three pins) via the RZ/A1H's `PFCn`/`PFCEn`/`PFCAEn`/`PMCn` port-mux
+registers, function code 3, all three with `PMCn` genuinely set. **`SCIF5` = `P8_0`/`P8_1`/`P8_2`** — the
+"McASP1 audio" reading for these DSP-side pin names was very likely wrong (see
+`notes/ic7300-signal-chain.md`'s correction); the real electrical function is this UART. Full derivation,
+including the same method resolving `SCIF1`'s pin too, in `notes/kernel-rtos.md`'s "SCIF1 and SCIF5 physical
+pins resolved via each driver's own port-mux code" section.
+
+~~Register identity (`0xE8009800` = `SCSMR_5`) is solid regardless, but checked the RZ/A1H manual's
+alt-function table for where `TxD5`/`RxD5` can physically land, against the user's own full CPU pinout
+sweep: `P6_6`/`P6_7` (already `USSENI`/USB cluster and `LCD_ON`), `P8_1`/`P8_2` (already `DSPR`/`DSPX`,
+McASP1's DSP audio serializers), `P8_11`/`P8_13` (already `FPDX`/`DCSR`) — every standard candidate pair is
+already wired to a different, independently-confirmed function. Not resolved; same category as SCIF1's
+still-open physical pin (an unlabeled/secondary alt-function on the real schematic, or a live JTAG register
+read, would settle it).~~ (superseded above)
 
 ## `IC902` identity, corrected again: it's the DSP's own SPI boot flash, at the pin level (2026-08-29)
 
