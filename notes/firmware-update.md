@@ -293,14 +293,22 @@ reference after all — read (not written) as a hardware ready/handshake signal 
 that move the "3 extra chunks" payload and their post-update trigger. Worth re-checking `HSK0`/`FRWT`/`RTD`
 against the same `PPR8`/`PPRn` literal before re-asserting "no reference" for those too.
 
-**`FUN_20025288` — the post-update trigger, called only when Front CPU or DSP Data changed.**
+**`FUN_20025288` — the post-update trigger, called only when component0 or DSP Data changed.**
 `firmware_update_main` calls it exactly when `local_a0[0] != 0 || local_a0[2] != 0` — i.e. when the
-**Front CPU** chunk (index 0) or the **DSP Data** chunk (index 2) was actually written (not when only DSP
+component0 chunk (index 0) or the **DSP Data** chunk (index 2) was actually written (not when only DSP
 Program, index 1, changed — a real, specific asymmetry, not chased further). Its body is shaped exactly
 like `FUN_20025044`'s own low-level transfer primitive (same `DAT_20025610`/`14`/`18` triple, same
 `HSK1`-wait), but sends command byte `0x87` instead of `0x50`/`'P'` — the natural reading is "tell whatever
 is on the other end of this link to reload/reset now that its new firmware has arrived," though this is
 inference from shape, not a decoded protocol spec.
+
+**Correction: index 0 is not confirmed to be "Front CPU."** This section originally labeled index-0/
+component0 as the "Front CPU" chunk, following the `FUN_200a94c8` field-order hypothesis above. Later work
+in [[multi-cpu-images]] and [[container-format]] disassembled the actual extracted component0
+(`front_cpu.bin`) and found it to be genuine TMS320C674x (DSP) object code, not RL78 front-panel code —
+"component0 = Front CPU firmware" is explicitly retracted there. Its real relationship to component1 (DSP
+Program) is still unresolved. So the trigger condition above is better read as "component0 or DSP Data
+changed," with component0's own identity still open — not confirmed to be the front panel at all.
 
 **The system restart mechanism — a real, unambiguous watchdog-forced reset, but not yet tied to
 firmware-update completion specifically.** Found `FUN_20052bd0`: after a graceful-shutdown sequence
@@ -346,8 +354,9 @@ a dedicated hardware safety input, full stop.
 **Consequently, how the radio actually restarts after a successful firmware update is still genuinely
 open** — this session's find rules out `main_idle_loop`/`watchdog_force_reset`/`P1_6` as the mechanism
 rather than confirming it. Worth considering, not yet checked: the update-completion trigger
-(`chunk_transport_send_reload_cmd`, sent only when Front CPU or DSP Data changed) reloads the *front panel*
-and/or *DSP*, not necessarily the main CPU — the user-facing "...restart. NEVER turn OFF..." warning could
+(`chunk_transport_send_reload_cmd`, sent only when component0 or DSP Data changed — see the "index 0 is not
+confirmed to be 'Front CPU'" correction above) reloads whatever component0 turns out to be and/or the
+*DSP*, not necessarily the main CPU — the user-facing "...restart. NEVER turn OFF..." warning could
 plausibly describe a **front-panel/DSP-side reboot cycle** (visible as the display going blank and the
 frequency screen reappearing) rather than a full main-CPU watchdog reset at all. If a main-CPU reset does
 also happen, its trigger is a genuinely different, not-yet-found call — **concrete next step: look for

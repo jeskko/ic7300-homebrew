@@ -1,21 +1,25 @@
 # Firmware body compression: LZSS, not DEFLATE
 
-The container's main body (and one auxiliary chunk, see
-[[container-format]]) is compressed with a classic **Okumura-style LZSS**,
-*not* zlib/DEFLATE. Confirmed by fully tracing the decoder already written
-(as Python) in the user's existing `tunk.py`/`tunk3.py` scripts.
+The container's main body is compressed with a classic **Okumura-style
+LZSS**, *not* zlib/DEFLATE. Confirmed by fully tracing the decoder already
+written (as Python) in the user's existing `tunk.py`/`tunk3.py` scripts.
+(This note originally said "and one auxiliary chunk" — superseded now that
+[[container-format]]/[[multi-cpu-images]] have fully mapped that region:
+it's actually **three** separately-bounded, MD5-verified LZSS components
+— `component0`/`component1`/`component2`, the DSP program/data region —
+each using this same algorithm, not just one.)
 
 **Notable: the Python `unpack()` in those scripts reads like a direct
 transliteration of Ghidra-decompiled C**, not code written from scratch —
 variable names (`piVar7`, `piVar8`, `uVar10`, `bVar1`, `bVar2`, `bVar3`,
 `bVar12`, `iVar6`, `iVar9`) match Ghidra's default decompiler auto-naming
-convention exactly. That strongly suggests **the ARM decompressor function
-has already been located and decompiled once**, in one of the existing
+convention exactly. That strongly suggested the ARM decompressor function
+had already been located and decompiled once in one of the existing
 Ghidra projects (most likely `icom_loader.rep` or `icom.rep`, since the
-decompressor would live in `base.dat`'s loader code). Once MCP is up, worth
-searching those projects' decompiler output for a function shaped like
-this before assuming we need to rediscover it from scratch — see the plan
-notes on locating it via the ring-buffer + `0xfee` idiom below.
+decompressor would live in `base.dat`'s loader code) — **confirmed
+correct**: [[base-loader]] found it directly, `unpack_from_flash_to_mem()`
+in `base.dat`'s boot chain, byte-for-byte the same ring-buffer/`0xfee`-cursor
+algorithm documented below.
 
 ## Algorithm
 

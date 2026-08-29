@@ -216,9 +216,11 @@ boot/mode configuration in general, but **RSPI2 itself is no longer just a gener
    as a real, actively-used SPI link to the FPGA" below (22nd session).**
 3. ~~`DRESD` (P2_6)~~ — **done, see "DRESD (P2_6) resolved" below (13th session).**
 4. ~~Tie this back to the unidentified ring-buffer consumer task from [[multi-cpu-images]]'s `FUN_20025044`
-   trace~~ — **partially done: the consumer (`FUN_200b0f68`) does drive this RSPI2 link, among others, but
-   NOT for the `chunk4`/`chunk5` (`0xb0`/`0xe2`-tagged) traffic specifically — see below, this is a real,
-   useful negative result, not a full connection.**
+   trace~~ — **done: the consumer (`FUN_200b0f68`) does drive this RSPI2 link, among others, but NOT for the
+   `chunk4`/`chunk5` (`0xb0`/`0xe2`-tagged) traffic specifically (see below) — that was a real, useful
+   negative result, and [[multi-cpu-images]] has since found the actual consumer directly:
+   `chunk_transport_send_data` → `dsp_page_transfer_verify` → `SCIF5` (the DSP link), not RSPI2/SSIF/
+   front-panel-UART. See the correction added below.**
 
 ## RSPI2 confirmed as a real, actively-used SPI link to the FPGA (22nd session)
 
@@ -264,8 +266,11 @@ of which match this switch's small-integer cases (`0`-`4`)**. So `chunk4`/`chunk
 through this exact ring buffer, would hit none of these 5 cases and fall through unhandled by
 `FUN_200b0f68` itself — **this confirms RSPI2 is real and active, but confirms (doesn't refute) that it is
 *not* how `chunk4`/`chunk5` data reaches wherever it goes.** [[multi-cpu-images]]'s open question ("who
-consumes the `0xb0`/`0xe2`-tagged entries specifically") remains genuinely open — this session narrows it
-by ruling out RSPI2/SSIF/front-panel-UART as the answer, rather than by answering it directly.
+consumes the `0xb0`/`0xe2`-tagged entries specifically") was, at the time, narrowed rather than answered by
+this session's ruling-out of RSPI2/SSIF/front-panel-UART. **Resolved since, in [[multi-cpu-images]]**: the
+real consumer is `chunk_transport_send_data` → `dsp_page_transfer_verify` → `SCIF5` — i.e. the firmware-update
+chunk transport straight to the DSP link, not any of the 3 candidates this session ruled out. This session's
+negative result stands as a correct (if superseded-in-scope) finding, not an error.
 
 **Driver init found too**: `FUN_200b665c` configures Port 8's pins (via the same bit-manipulation idiom as
 `port_bulk_gpio_init_pass1`/`pass2`) and registers four event handlers via `register_event_handler` — IDs
@@ -534,7 +539,15 @@ The PA/Tuner/RF-unit block diagram shows **two separate shift-register chains sh
 bus**, each latched by its own strobe: `IC751` (`SN74AHC595PW`, single 8-bit) in the **PA unit**, driving
 `L1S`-`L7S` (the PA's own low-pass filter bank relay selects), and `IC1101`-`IC1103` (`SN74AHC595PW`×3, 24
 bits) in the **RF unit**, driving `B0S`-`B12`/`TX` (the 15-filter RX/TX bandpass bank already documented in
-this file's "Precise filter-bank cutoffs" section). This is the concrete hardware mechanism behind the
+this file's "Precise filter-bank cutoffs" section). **Flagged, not resolved**: [[ic7300-hardware]]'s RF Unit
+parts-list table (sourced from a separate service-manual screenshot) gives these same 3 RF-unit shift
+registers as `IC1301`/`IC1302`/`IC1303` instead — a straight designator conflict, not obviously explained by
+either source retracting the other. That table also reuses `IC1301` a second time for one of the two RF
+ADCs, an internal collision that suggests its own OCR read may be the less reliable one here, but this isn't
+confirmed either way — worth checking directly against the schematic sheet (sheet 3 or 13) next time this
+area is touched.
+
+This is the concrete hardware mechanism behind the
 band-segmented filter selection this file already described from the service-manual text alone — now with
 real CPU pins (`MDAT`/`MCLK`/`MSTB1`/`MSTB2`, plus `DSTB`/`PSTB` for additional latches not individually
 resolved) attached to it. Worth a `body.bin` reference search on `MSTB1`/`MSTB2`'s literal port bits if the

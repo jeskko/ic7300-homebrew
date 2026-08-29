@@ -37,6 +37,14 @@ used on their non-ARM MCU families (RL78/78K/RX), distinct from the main
 CPU's ARM JTAG. Drives the front panel: buttons, rotary encoders, LCD
 ("To the MAIN UNIT").
 
+**Resolved (later session, [[ic7300-hardware]]/[[multi-cpu-images]]):** this IC is `IC501`
+(`R5F104LCAFB`, Renesas RL78), confirmed via the service manual's Display Unit parts list and
+independently visible marked `(SX-3765C)` on the schematic itself — the `(UX-3765C)` reading above was a
+misread of `S` as `U`. Every `"SX3765 Vx.xx-yyy"` string in the main firmware is confirmed to be a
+compatibility/version check against this chip's part marking, not an embedded second-processor firmware
+image — the "may just be"/"plausibly" hedging above is settled. Its `TOOL0`/`TOOL1` on-chip-debug UART
+pins remain a real, separate debug path from the main CPU's JTAG, not yet pursued.
+
 **Bonus, unrelated to debug access but found along the way** (block
 diagram, schematic page 4, "MAIN UNIT" overview): the actual DSP is a
 **Texas Instruments TMS320C6745** (`IC901`, labeled "IF-DSP"), and there's
@@ -48,6 +56,12 @@ second/third processor's firmware to find after all, just not
 necessarily "SX3765" (that looks like the front-panel MCU) and not
 necessarily inside the update container (the TI DSP likely loads its own
 firmware through a completely different mechanism, worth checking).
+
+**Followed up, since resolved: yes, this thread paid off.** [[multi-cpu-images]] later confirmed the
+update container's 3 extra components do include real DSP (`IC901`) program/data images (component1/2),
+and separately traced the DSP's own boot flash (`IC902`) at the pin level — see [[ic7300-hardware]]'s
+`IC902` entry. So the "real second/third processor's firmware to find" speculation above was correct; the
+container does carry more than main-CPU code.
 
 ## Assessment: this should take priority over any software code-loading route
 

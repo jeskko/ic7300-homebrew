@@ -23,8 +23,24 @@ figures below are computed straight from the actual files.
 - `size1`, `size3`, `size4`, `size5` are **byte-for-byte constant across
   every release** (`2436080`, `163592`, `721836`, `720648`) — these look
   like fixed structural constants (slot capacities or similar), not
-  per-build data sizes. Not yet matched to anything else in the container
-  (checked against the real chunk1/chunk2/chunk3 sizes below — no match).
+  per-build data sizes. Not matched to the real chunk1/chunk2/chunk3 sizes
+  below (checked — no match, and that check still stands, see next
+  section), but **`size3`/`size4`/`size5` *are* now matched to something
+  else in the container**: [[multi-cpu-images]]'s later, fully-verified
+  container dissection (`size1`/`size2`/`size4`/`size6`/`size7` used
+  directly as offset/length arithmetic for 3 LZSS-compressed
+  "components" beyond the main body) gives, for v1.42, component sizes of
+  compressed/decompressed `97862`/`163592` (component0), `721836`/`720648`
+  (component1, `dsp_program.bin`), and `698201`/`859412` (component2,
+  `dsp_data.bin`) — an exact match to this table's `size2`/`size3`,
+  `size4`/`size5`, and `size6`/`size7` respectively. So `size3` = component0's
+  decompressed size and `size4`/`size5` = component1 (DSP program)'s
+  compressed/decompressed sizes — genuinely fixed because that component
+  never changed size after v1.14 (see below), not because they're slot
+  capacities. `size1` still isn't tied to a specific sub-blob's size
+  directly, but is now known to be used as the base offset
+  (`component0_offset = size1 + 0x3c`) from which the 3 components are
+  located — see [[multi-cpu-images]].
 - `size2`, `size6`, `size7`, and the **version string itself** all changed
   release-to-release only through **v1.11 → v1.14**, then **froze solid**
   for every release from v1.14 through v1.42 (the last official release).
@@ -34,7 +50,17 @@ figures below are computed straight from the actual files.
   like Icom stopped updating a secondary component (whatever `size2`,
   `size6`, `size7`, and the version string track) after v1.14, while
   continuing to update the main RZ/A1H application (`length`) every
-  release through v1.42.
+  release through v1.42. **Now confirmed, not just "looks like"**:
+  [[multi-cpu-images]] identifies `size2`/`size3` as component0's
+  compressed/decompressed sizes and `size6`/`size7` as component2
+  (`dsp_data.bin`, best-supported guess: a compressed Altera FPGA
+  bitstream for `IC1351`)'s — so the frozen-since-1.14 secondary
+  component(s) are component0 (identity still open — confirmed *not*
+  Front CPU firmware, despite the working filename) and the DSP-data/
+  FPGA-bitstream component, while component1 (`dsp_program.bin`, the DSP's
+  own object code) apparently also never changed after v1.14 (`size4`/
+  `size5` constant too) — i.e. **all 3 non-main-body components stopped
+  updating after v1.14**, not just one unspecified "secondary component."
 
 ## Real chunk sizes vs. fixed slot offsets
 
@@ -68,3 +94,15 @@ power-of-two-ish size, followed by one tightly-packed compressed tail
 (chunk4). The rewritten unpacker in `tools/` should assert this shape
 (fixed-offset reads for slots 1–4, immediately-following read for chunk4)
 rather than silently trust it — see [[container-format]].
+
+**Correction, later session**: the "chunk4"/single-trailing-tail framing above (from
+`tools/icom_fw/container.py`'s original byte-accounting model) is superseded by
+[[multi-cpu-images]]'s fuller, byte-verified dissection of this same trailing region: it isn't one
+tightly-packed compressed tail, but **3 separate LZSS-compressed components** (`component0`,
+`dsp_program.bin`, `dsp_data.bin`), located via `size1`/`size2`/`size4` header-field arithmetic, not
+a single contiguous read. [[multi-cpu-images]] notes explicitly that "the real firmware recognizes
+no chunk4/chunk5 boundary; these 3 components just happen to span across where that boundary
+falls" — i.e. the old chunk4 concept wasn't wrong about *where* the data starts, just about there
+being only one blob there instead of three. The "tightly packed, no fixed-offset seek" observation
+above still holds for locating the *start* of this region relative to chunk3; what happens inside
+it is better described by [[multi-cpu-images]]'s component0/1/2 model now.

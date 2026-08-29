@@ -48,7 +48,13 @@ checked, no references either way (same recurring indirect-access
 pattern as most of this codebase). The 10 references to the struct base
 pointer (`DAT_20024a2c`) are all clustered within the loader mechanism
 itself (`0x20024528`-`0x200247b8`), not spread to external consumers.
-D419 (bit 6) remains unconfirmed via this path too.
+D419 (bit 6) remains unconfirmed via **this specific path** — but note
+D419 itself was confirmed via a different route in a later session:
+[[diode-matrix]]'s "D419/D422 resolved" finding is `FUN_2003bd34`/
+`FUN_2003be94` reading the live scan-value bit directly, not this
+EEPROM struct field, so this dead end and that resolution don't
+conflict — they're two different access paths to the same bit, and
+only one of them ever had a consumer.
 
 ## Next steps if continued
 - Sample more of the 73 `FUN_2001e510` call sites (only ~15-20 checked
