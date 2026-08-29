@@ -1613,3 +1613,65 @@ rather than something internal (which wouldn't need connect/disconnect semantics
 step if pursued: get a schematic/BOM for one of the specific sibling models the user has in mind and check
 for an LVDS-to-DVI bridge IC — that would settle it far faster than continuing to chase indirect calls
 through static analysis alone.
+
+## Follow-up, same day: real hardware context from the user, and the "connect" check traced — it's not a hardware detect
+
+**User-supplied hardware fact, IC-7610 (same era, different radio in this family)**: has a **TFP410PAP** (TI's
+well-known parallel-RGB-to-DVI/TMDS transmitter) between its DVI connector and the rest of the system, and
+appears to use a **separate sub-CPU** (same `R7S721001VCBG`-family part number as given for the main CPU —
+**likely a copy/paste slip in the part number given for one of the two; worth getting the real distinct part
+numbers if this is pursued further**) dedicated to driving the display, rather than the main radio-control
+CPU doing it directly.
+
+**Is EGL/OpenVG itself open source, could that help trace this?** Nuance worth being precise about:
+- EGL and OpenVG are **Khronos Group specifications** (free, public documents), not code. The specific
+  function names this firmware calls that match the real spec (`eglGetDisplay`, `eglInitialize`,
+  `eglBindAPI`) are standardized — any conformant implementation from any vendor uses those exact names, so
+  matching them doesn't identify *which* implementation this is.
+- Real open-source OpenVG *implementations* do exist (e.g. Ivan Leben's "Vincent", "ShivaVG") but these are
+  software/OpenGL-backed rasterizers aimed at desktop Linux — nothing about their internals would explain a
+  vendor-specific hardware bring-up sequence on an embedded ARM SoC.
+- **The actual distinguishing names here — `NCGSYS_FrameMemCreate`, `initNativeResource`, `eglStartUp`,
+  `vgStartUp`** — are *not* part of the Khronos EGL/OpenVG spec at all. They read as a vendor SDK's own
+  **porting-layer hooks**: the small amount of platform-specific glue code an integrator (Icom, or whoever
+  wrote this firmware) must implement to plug their own hardware into a portable, otherwise-closed-source
+  commercial OpenVG driver. That glue code is normally NOT open source even when the SDK is well-documented.
+- **Web search for the exact strings came up empty**: `"NCGSYS_FrameMemCreate"`, `"vgStartUp"` +
+  `"initNativeResource"` together, and `"NCGSYS"` alone, returned nothing relevant anywhere indexed online —
+  not matched to any known commercial embedded graphics SDK (AmanithVG, Vivante, Imagination, etc. context
+  didn't turn up either). Genuinely unidentified; plausibly an obscure/Japanese-market SDK with no
+  English-language footprint, or a fully in-house Icom codename. **Tracing this from "the EGL/OpenVG side"
+  isn't productive right now** — there's no public source to diff against, and the standard API calls
+  themselves don't reveal the vendor.
+
+**More useful: actually traced the "connect" gate condition, and it isn't a hardware/GPIO check.**
+`slv5_periph_connect_disconnect_handler`'s branch between "do the full bring-up" and "skip it" is decided by
+`FUN_20156174()` — read in full, this function **does not touch any hardware register at all**. It checks a
+plain RAM flag and, on first call, lazily allocates a small memory pool via the same generic allocator
+(`FUN_20153e60`) used throughout this codebase for ordinary buffer/resource management (seen identically in
+`riic1_driver_init` and the SCIF driver-init functions). The gate is "did my memory allocation succeed", not
+"is an external cable/device physically present". **This weakens the literal "hot-plug" reading of
+connect/disconnect** — it looks much more like this SDK's own generic terminology for "acquire" (connect)
+and "release" (disconnect) of a rendering context's native resources, which would run identically whether or
+not any physical external display exists. (Not exhaustively proven — `slv5_periph_configure`'s own internal
+field checks against caller-supplied config values, and the deeper `FUN_200fe14e(0)` condition also gating
+this handler, haven't been individually traced to rule out a hardware check further downstream.)
+
+**Updated overall read, incorporating the IC-7610 fact**: if IC-7610 really does use a separate,
+same-family sub-CPU to own its display + the TFP410/DVI path, the most likely explanation is that Icom
+licensed or wrote this "NCGSYS" graphics middleware **once** and reused it across whichever CPU in a given
+product actually owns the display — the main CPU on IC-7300 (no sub-CPU, drives its own touchscreen
+directly), a dedicated sub-CPU on IC-7610 (drives its own panel and, via the TFP410, an external DVI output).
+Under this reading, the EGL/OpenVG bring-up code found in **this image (`body.bin`, IC-7300's single main
+CPU)** is likely genuine, functioning code for the IC-7300's *own* touchscreen — not dead/vestigial DVI
+support — while the actual DVI-specific logic on IC-7610, if it exists as a distinct code path at all, would
+live in **IC-7610's own firmware** (very possibly its separate sub-CPU's image, which this project doesn't
+have). **This reframes the productive next step**: continuing to dig in the IC-7300 image for DVI-specific
+evidence is now a weaker bet than it looked before this check — the natural place to look for real DVI
+bring-up logic is a firmware dump for IC-7610 (or whichever sibling model), if one becomes available, as a
+genuinely new side thread rather than a continuation of this one.
+
+**What `0xE8100000`/SLV5 most plausibly is now, net of all sessions on this thread**: an internal RZ/A1H 2D
+rendering/graphics-acceleration resource that this shared graphics middleware brings up as part of its own
+generic startup sequence on *any* product using it — not confirmed to be tied to any specific external
+connector on the IC-7300 specifically. Still not confirmed at the register-bit level; still open.

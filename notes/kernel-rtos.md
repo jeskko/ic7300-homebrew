@@ -172,10 +172,11 @@ genuinely open — `kernel_start`'s own mystery task (`0x203907c4`, a thoroughly
 dead end: no writer anywhere in the compiled image, needs live JTAG) and `thunk_FUN_2007ea68`'s dynamically
 activated task (mechanism fully traced; the peripheral it serves is not yet identified — confirmed **not**
 USB, and now has a well-evidenced but not register-level-confirmed new hypothesis: a 2D/vector-graphics
-rendering resource, see the table row above; a follow-up theory that this is specifically an *external
-monitor* connection, since some sibling models reportedly have DVI, found real supporting circumstantial
-evidence — the RZ/A1H's second display channel `VDC51` is genuinely multi-channel-capable in this
-firmware's own code, not dead-ended to one channel — but isn't confirmed; see history). A handful of
-resolved tasks still have their real-world *purpose* only partially pinned down
+rendering resource, see the table row above; a follow-up "external monitor" theory, prompted by a sibling
+model — IC-7610 — reportedly having a DVI output via a separate sub-CPU, was tested and only partially
+supported: the actual "connect" gate traced to a plain software resource-allocation check, not a hardware/
+GPIO detect, so this is more likely the shared graphics middleware's generic resource-acquire terminology
+running identically on every product that uses it, not evidence of an IC-7300-specific external connector;
+see history for the full trace). A handful of resolved tasks still have their real-world *purpose* only partially pinned down
 (the `audio_buffer_task` pair, `status_poll_task_200095d8`, `queue_driven_task_2001745c`) — see history for
 what's been tried on each.
