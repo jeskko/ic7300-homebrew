@@ -928,10 +928,61 @@ itself done.
 
 **Net effect on the handoff list**: item 1 is closed. Item 2 has a real API surface now
 (`scif5_send_and_wait_reply` + its ~14 callers) rather than being an undifferentiated pile of
-`scif5_ring_push_word` call sites — next natural step is going through those 14 one at a time to see what
-each command class actually controls, which would very plausibly turn up a reset-related command along the
-way (the original motivation for this whole thread). Renamed/commented all 6 functions above in Ghidra;
-committed.
+`scif5_ring_push_word` call sites. Renamed/commented all 6 functions above in Ghidra; committed.
+
+## SCIF5 command API, first real look: 7 of the 14 `scif5_send_and_wait_reply` callers characterized (2026-08-29, next session, continuing straight on)
+
+Went through the suggested next step — the 14 callers one at a time — and 7 of them (spanning 6 command
+words, `0xe0000000`-`0xe0000005`) turned out to be one clean, coherent mechanism, plus a 7th with a
+different shape tying straight back to the firmware-update chunk transfer.
+
+**The 6 `0xE0000000`-`0xE0000005` commands are a DSP identity/version-query protocol, not a bulk transfer
+as first guessed.** Each of the 6 near-identical functions (`dsp_identity_query_cmd0`-`cmd5`) sends one
+command via `scif5_cmd_transmit_now`, drains 2 throwaway replies, then polls up to 18 times for a reply
+whose **top-byte high nibble is class `0xF`** ("done"), formatting the winning reply via
+`dsp_identity_format_reply(dir, reply, record_base)` into a **6-byte record**:
+`[byte2][.][byte1][byte0][ascii tens][ascii units]` — raw middle/low bytes of the reply word, a literal
+`.` separator, and the top byte's low nibble (0-15) rendered as a 2-digit decimal string. This is exactly
+the shape of a formatted version string (e.g. `"12.345XY"`-ish), not a data-block transfer.
+
+**All 6 write into ONE shared struct, `DAT_200b1ca0`, as 3 consecutive 13-byte records** (found by tracing
+which orchestrator calls which pair): commands 0/1 (dir 0/1) → offset `0x00`; commands 4/5 → offset `0x0d`;
+commands 2/3 → offset `0x1a`. Each 13-byte record is 6+6 formatted bytes plus 1 "ready" flag, set by the
+matching orchestrator (`dsp_identity_query_record0`/`record1`/`record2`) once both halves complete. The
+apparent "3 separate destination buffers" seen earlier (`DAT_200b2b2c`/`DAT_200b2b30`) turned out to just
+be runtime pointers into this same struct at `+0xd`/`+0x1a`, not distinct memory.
+
+**Confirmed real boot step, not a menu/on-demand query**: all 3 orchestrators are called unconditionally
+from `cold_boot_hw_init`, in one unbroken run of DSP bring-up calls:
+```
+scif5_dsp_link_driver_init → (2 other init calls) → dsp_cmd_table_init
+  → dsp_identity_query_record0 → dsp_identity_query_record1 → dsp_identity_query_record2
+  → rspi2_driver_init
+```
+i.e. right after the DSP's default command table is pushed, the CPU immediately asks the DSP for 3
+identity/version fields, every boot, before moving on to unrelated RSPI2/FPGA setup.
+
+**Working hypothesis, not proven by a direct xref yet**: these 3 records are DSP Program version / DSP
+Data version / a 3rd field (hardware or silicon revision is a reasonable guess) — which would tie directly
+to the already-documented version-compare fields in `FUN_200a94c8` (`+0xa8`=DSP Program, `+0xac`=DSP Data,
+see this file's earlier session). Not yet chased: whether `FUN_200a94c8` (or the version-display screen)
+actually reads `DAT_200b1ca0`'s 3 records — a concrete, cheap next check if this thread continues.
+
+**7th function, different shape — `dsp_page_transfer_verify`** (`0x200b3054`, was `FUN_200b3054`): its
+*only* caller is `chunk_transport_send_data` itself — this is the low-level **per-256-byte-page transfer
+verification** step underneath the firmware-update chunk mechanism. Drains 4 throwaway replies, polls for a
+reply of class `0xE`, then computes a running byte-sum checksum over a 256-byte page buffer (accumulator
+persists across calls unless explicitly reset — i.e. a whole-transfer checksum, not per-page) and validates
+it two ways against the reply: the checksum's two's-complement must match the reply's low byte, **and** the
+page's destination address (`+0x100`) must match a 20-bit field the DSP echoes back in the reply — i.e. the
+DSP confirms both data integrity and correct placement for every page it receives during an update.
+
+**Remaining open, not yet characterized**: the other 6 of the 14 `scif5_send_and_wait_reply` callers (not
+part of the identity-query family or `dsp_page_transfer_verify`) — worth a follow-up pass if this thread
+continues, along with the direct-xref check on `FUN_200a94c8` mentioned above and the original ~30
+`scif5_ring_push_word` callers (the separate, slower, MTU2-paced path). No reset-related command surfaced
+in this pass — the identity query and page-verify functions are both read-mostly/verification in nature, so
+the original "does releasing DRESD show up in the DSP command API" question is still open.
 
 ## `IC902` identity, corrected again: it's the DSP's own SPI boot flash, at the pin level (2026-08-29)
 
