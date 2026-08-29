@@ -156,7 +156,7 @@ retraction, etc.) — see the history file for the full derivation and narrative
 | `kernel_start` (`0x200052a4`) | `0x203907c4` — **still genuinely unidentified**, still blank/`0xFF` in the static image | ? | ? | ? | ❌ open — real task, unknown identity, needs live JTAG |
 | `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `status_poll_task_200095d8` | **-2** | 0x400 | ✅ real body confirmed (26th session, GUI ARM-disasm fix) — polls a status byte, dispatches to small helpers; purpose not identified |
 | `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `periodic_poll_task_20014384` | 0 | 0x800 | ✅ confirmed — trivial `itron-trampoline-delay(5) → sample → store` loop |
-| `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `queue_driven_task_2001745c` | 1 | 0x2000 (largest stack in the catalog) | ✅ confirmed — queue-driven (`FUN_20186de4`), two-state message dispatch + a flag-toggle side effect (`FUN_200c6374`); purpose not identified |
+| `FUN_2001627c` (`0x2001631c`) | `0x20016800` | `voice_recording_file_task` (renamed from `queue_driven_task_2001745c`) | 1 | 0x2000 (largest stack in the catalog, now explained) | ✅ **fully resolved** — manages recording audio to the SD card's `C:\IC-7300\Voice` folder: builds an RTC-date-stamped filename, runs a 4-state open/process/close file-I/O state machine over a 4-slot ring buffer, and is a confirmed real client of the already-known SD-card file-RPC service (`file_rpc_post_command`, commands `6`/`9`) also used by `sdcard_file_rpc_dispatch_task`. Closes the loop with the `audio_buffer_task` pair's "plausibly WAV record/playback" hypothesis below — very likely the file-I/O half of that same feature |
 | `FUN_20027740` (`0x200277f0`) | `0x2002784c` | `sd_menu_dispatch_task` | 0 | 0x1800 | ✅ **fully resolved** — the SD-card operations menu's central 42-case dispatcher; case `0xb` calls `firmware_update_main` directly, confirming the update flow starts from routine SD-menu interaction, nothing more exotic |
 | `cold_boot_hw_init` (`0x2002b02c`, renamed from `FUN_2002afc0`) | `0x2019889c` | `FUN_2007ef5c` (the UI/display task — entry point itself never renamed) | — | — | ✅ examined — allocates screen objects, runs a message loop |
 | `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `audio_buffer_task_2006bb58` | 0 | 0x800 | ✅ confirmed real state machine — ring-buffer wraparound arithmetic found; leaning circular audio buffer manager (plausibly SD-card WAV record/playback), not fully confirmed |
@@ -178,5 +178,6 @@ supported: the actual "connect" gate traced to a plain software resource-allocat
 GPIO detect, so this is more likely the shared graphics middleware's generic resource-acquire terminology
 running identically on every product that uses it, not evidence of an IC-7300-specific external connector;
 see history for the full trace). A handful of resolved tasks still have their real-world *purpose* only partially pinned down
-(the `audio_buffer_task` pair, `status_poll_task_200095d8`, `queue_driven_task_2001745c`) — see history for
-what's been tried on each.
+(the `audio_buffer_task` pair — now better-supported as the WAV record/playback ring-buffer half of the same
+feature `voice_recording_file_task` handles the file-I/O half of, see that row above —
+and `status_poll_task_200095d8`) — see history for what's been tried on each.

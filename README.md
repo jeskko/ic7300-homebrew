@@ -156,7 +156,12 @@ by but not built on top of the prior work there.
   (`graphics_stack_startup_egl_openvg`), replacing the retracted USB guess with a new, well-evidenced
   (but not register-level-confirmed) hypothesis: a 2D/vector-graphics rendering resource. Also
   surfaced a real embedded **zlib** implementation nearby, of unconfirmed relation to this subsystem
-  — a new, previously-unknown fact in its own right. See `notes/kernel-rtos.md`.
+  — a new, previously-unknown fact in its own right. **Separately, fully resolved another catalog
+  task that had sat at "purpose not identified" since the 26th session**: `voice_recording_file_task`
+  (renamed from `queue_driven_task_2001745c`, notable for having the catalog's largest stack) manages
+  recording audio to the SD card's `C:\IC-7300\Voice` folder, confirmed as a real client of the
+  already-known SD-card file-RPC service — and directly strengthens the long-standing "`audio_buffer_task`
+  pair = WAV record/playback" hypothesis as its likely file-I/O counterpart. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

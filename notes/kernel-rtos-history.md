@@ -1695,3 +1695,50 @@ genuinely new side thread rather than a continuation of this one.
 rendering/graphics-acceleration resource that this shared graphics middleware brings up as part of its own
 generic startup sequence on *any* product using it — not confirmed to be tied to any specific external
 connector on the IC-7300 specifically. Still not confirmed at the register-bit level; still open.
+
+## `queue_driven_task_2001745c` fully resolved: the Voice-recording file-I/O task (2026-08-29, later session)
+
+User's ask, after a triage of which catalogued tasks were only lightly analyzed: pick the best remaining
+candidate and dig deeper. Picked this one specifically for its outlier stack size (`0x2000`/8 KB, the
+largest in the whole catalog, never explained).
+
+**Renamed `voice_recording_file_task`.** Decompiled the task entry point itself first (already had a plate
+comment from the 26th session recording it as a real queue-driven state task, purpose unknown) — its own
+body reads a queue for a status tag and toggles a flag via `FUN_200c6374`, unremarkable on its own. The real
+identity came from following the data, not the control flow:
+
+- **A literal path string, `C:\IC-7300\Voice`, sits inside this task's own small code cluster**
+  (`0x20016fec`, well within the `0x20015e00`-`0x2001746c` span this task's code occupies). Checked its two
+  references directly:
+  - **`voice_file_check_todays_filename`** (renamed from `FUN_20016dd4`, `0x20016dd4`): builds a date-stamped
+    filename via the already-named `rtc_shadow_read_atomic()`/`build_date_filename()` helpers, concatenated
+    onto the `C:\IC-7300\Voice` path, then compares it against a candidate. Deriving a filename from "the
+    current date/time" is a strong, specific signal for *starting a new recording* (playback would need to
+    open a user-selected *existing* file, not one just computed from "now").
+  - **`voice_file_io_state_machine`** (renamed from `FUN_20017000`, `0x20017000`): a real 4-state (open →
+    process → close → idle) file-I/O state machine. Builds the full path (`C:\IC-7300\Voice` + an optional
+    subdir/filename param), manages a 4-slot ring buffer of pending blocks (`param_1 + index*8`, index mod
+    4), and — the key confirmation — **posts commands through `file_rpc_post_command`** (command IDs `6` and
+    `9`, individual semantics not decoded) — **the exact same SD-card file-RPC service already established
+    as `sdcard_file_rpc_dispatch_task`'s own dispatch mechanism** (see this file's `civ_command_dispatch_task`
+    retraction section). This is a genuine, confirmed real *client* of that service — the RPC dispatcher's
+    own investigation never identified a concrete caller, so this closes a real gap on both sides at once.
+- **The flag-toggle helper `FUN_200c6374` (not renamed — still a shared/generic-looking primitive, not
+  task-specific) sits inside a substantial, separate filesystem-driver module** (`0x200c6300`-`0x200cc300`ish)
+  with its own internal debug-log strings: `"FS_TK"`, `"FS_CTL"`, and several `"GRP_FS: ..."` formatted trace
+  messages (file/buffer reference counting, "file still busy", "file not blocked", block I/O with
+  `blk_shift`). This is a real embedded filesystem driver layer sitting underneath the file-RPC service —
+  not chased further this session (out of scope for identifying the task itself), but worth remembering as
+  a distinct, substantial subsystem (à la the `SLV5` graphics module) if a future session wants to fully map
+  the storage stack.
+
+**Bottom line**: `voice_recording_file_task` is the file-I/O half of the SD-card voice-recording feature —
+opens/creates a date-named file under `C:\IC-7300\Voice`, streams data to it in blocks through the
+already-known file-RPC service. This directly strengthens (doesn't yet fully confirm) the `audio_buffer_task`
+pair's long-standing "plausibly circular audio buffer manager for SD-card WAV record/playback" hypothesis —
+the natural reading is now that `audio_buffer_task_2006bb58`/`2006c2c4` manage the live PCM ring buffer while
+this task manages writing that buffer's content out to the SD card as a file, i.e. the two are very likely
+two halves of one feature, not independently-uncertain guesses anymore. Not yet independently proven (no
+direct call/queue link between the two subsystems has been traced) — a good next step if this thread is
+picked up again: check whether `audio_buffer_task`'s ring buffer and this task's queue messages share a
+common producer, which would nail the connection directly.
