@@ -91,6 +91,53 @@ statically without a disassembler — pattern/constant hunting (like the `0x5a82
 up real information without full instruction decoding; (d) live JTAG on the DSP itself, if that's ever
 brought up as a target (not currently planned — the project's JTAG hardware targets the main CPU).
 
+**RETRACTED, 2026-08-29 — (a)/(c)/(d) above are no longer the only options; real disassemblers do exist,
+this session's checks above were checking "installed on this machine" rather than "exists upstream" (the
+same mistake the RL78 thread's original handoff made and then corrected — see [[front-panel-firmware]]).
+Checked properly this time, from actual upstream source, not just local package availability:**
+
+- **GNU binutils has a real, working `tic6x` target** (`opcodes/tic6x-dis.c`, `bfd/elf32-tic6x.c` — added
+  for TI's OMAP-L1x/AM1x DSP+ARM SoCs, which use this exact C674x-class core). Built stock `binutils-2.44`
+  from `ftp.gnu.org` with `--target=tic6x-elf` — clean build, ~2 minutes, zero patches (same recipe as the
+  RL78 build in [[front-panel-firmware]]). Installed at
+  `~/.local/tic6x-binutils/bin/{tic6x-objdump,tic6x-readelf}` (outside the repo, reproducible from this
+  recipe — not committed as a binary blob). **Usage note, easy to get wrong**: needs explicit
+  `-EL`/`--endian=little` — without it, `objdump -m tic6x -b binary` silently assumes big-endian and
+  produces near-total garbage (every word "undefined instruction"). With `-EL` against `dsp_program.bin` at
+  a plateau offset (`0x4000`, well past the low-entropy header-ish region at the very start of the file),
+  the decode looks genuinely convincing: real functional-unit annotations (`.D1`/`.D2`/`.M1`/`.M2`/`.L1`/
+  `.L2`/`.S1`/`.S2`, including cross-path variants like `.L1X`/`.M2X`/`.D1T2`), real predicated-execution
+  syntax (`[a2]`, `[!b1]`), and real parallel-execution bars (`||`) marking same-fetch-packet instructions —
+  these are structural VLIW features a garbage/misaligned decode wouldn't produce convincingly. About
+  25-30% of words in this window still show `<undefined instruction>` — most likely either genuine data
+  words interleaved with code, or floating-point encodings specific to the C674x/C67x+ extension that this
+  disassembler's OMAP-L1x-era Linux-toolchain origins may not fully cover (no `-M`/CPU-variant flag exists
+  to select a silicon revision — checked, `-M help` produces no options for this target). Not chased further
+  this session.
+- **Capstone 5 also has real TI C6x support**: `CS_ARCH_TMS320C64X`, in mainline `capstone-engine/capstone`
+  (not a fork), pip-installable in a throwaway venv (`python3 -m venv venv && venv/bin/pip install
+  capstone`, no system-package changes needed). Also needs explicit `CS_MODE_LITTLE_ENDIAN`. Gives a
+  plausible but less richly-annotated decode than binutils on the same bytes (real mnemonics like `addab`/
+  `lddw`/`mpyluhs`/lda branch targets, but no functional-unit/predicate/parallel-bar detail) — binutils is
+  the better tool of the two for actually reading this code.
+- **Still confirmed absent**: no viable Ghidra Sleigh module. Re-checked via web search — the only related
+  community repo, [gm-stack/tms320-ghidra](https://github.com/gm-stack/tms320-ghidra), targets the
+  unrelated older TMS320C32 family and is explicitly unfinished (decode only, no P-code, no decompilation)
+  even for that different chip. The Ghidra feature-request tickets cited above are still open.
+- **Quick cross-check against the `dsp_data.bin`-is-FPGA-bitstream hypothesis** (section above): tried the
+  same `tic6x-objdump -EL` treatment on a dense region of `dsp_data.bin` (offset `0x30000`) for comparison —
+  came back with a similar ~30% undefined rate to `dsp_program.bin`'s, so this specific check is
+  **inconclusive**, not a confirmation either way. Also noticed a few spots decoding as 2-byte-wide
+  instructions there (address deltas of 2 instead of 4) — possibly TI's compact 16-bit instruction-set
+  extension, possibly a local misalignment artifact; not investigated further.
+
+**Next steps if this is picked up again**: disassemble a much larger span of `dsp_program.bin` with
+`tic6x-objdump -EL` and look for the same kind of anchor this project used successfully elsewhere (the
+`SCIF5` protocol's known command bytes/handshake shape, or literal `SCFTDR_5`-adjacent constants) to orient
+inside the DSP's own code; consider whether the `-EL` flag alone is enough or whether the file needs
+byte-swapping at a different granularity first (the file was correctly LZSS-decompressed and MD5-verified,
+so this is purely an endianness/disassembler-invocation question, not a data-integrity one).
+
 ## Is `dsp_data.bin` (component2) actually the FPGA bitstream? Genuinely plausible, re-examined the evidence (2026-08-29, same session)
 
 User's question, prompted by re-reading this file's own `IC902` history: the *current* model has `IC901`
