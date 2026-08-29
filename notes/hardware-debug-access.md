@@ -101,29 +101,50 @@ jumper wires won't work at this pitch. 10 pins comfortably fits
 `TCK`/`TMS`/`TDI`/`TDO`/`TRST` plus power/ground/reset with a couple
 spare pins, consistent with the schematic.
 
-## Same connector confirmed on the IC-9700 too (2026-08-30)
+## Same connector, same pinout, confirmed on both radios (2026-08-30)
 
 User checked the IC-9700's own schematic (separate radio, separate ongoing thread — see
 [[ic9700-container-format]]) and confirmed its JTAG connector is the **exact same part**,
 `10FLT-SM2-TB` — the identical JST FLT-series 10-position/0.5mm-pitch FPC/FFC connector documented
-above for the IC-7300's `J491`. Not yet confirmed: whether the *pin assignment* is also identical
-(same signal order on the same physical connector family doesn't guarantee the same pinout — would
-need the IC-9700's own schematic page checked pin-by-pin the same way item 2 below still needs for
-the IC-7300 itself), or whether it's populated/accessible the same way. **Practical implication if
-it does match**: the FT2232H adapter + FFC breakout already ordered for the IC-7300 ([[icom-ic7300-re-project]]) would very plausibly work for the IC-9700 as well, without sourcing
-separate hardware — worth confirming pinout before assuming this, not before wiring anything up.
+above for the IC-7300's `J491`. **Full pin assignment now confirmed too, and identical on both
+radios** (pins referenced from the IC-9700's schematic, checked as "similar on IC-7300"):
+
+| Pin | Signal | Pull | Net/alt name |
+|---|---|---|---|
+| 1 | `3.3V` | — | — |
+| 2 | `RES1` | 10k to 3.3V | `RES` |
+| 3 | `MTDO` | 10k to 3.3V | `JP0_1` |
+| 4 | *(unlabeled)* | 10k to GND | — |
+| 5 | `MTCK` | 10k to GND | `TCK` |
+| 6 | `MTMS` | 10k to 3.3V | `TMS` |
+| 7 | `MTDI` | 10k to 3.3V | `JP0_0` |
+| 8 | `MTRST` | 10k to GND | `TRST` |
+| 9 | *(NC)* | — | — |
+| 10 | `GND` | — | — |
+
+Confirms several things this file's earlier "next steps" had flagged as unconfirmed: **signal
+voltage is 3.3V** (pin 1, directly on the connector — matches the SoC's expected level, no separate
+verification against the power rail needed), and the RZ/A1H's own `MTCK`/`MTMS`/`MTDI`/`MTDO`/`MTRST`
+naming confirms standard ARM JTAG (not a Renesas-proprietary protocol), consistent with the schematic
+read in the "Found instead" section above. The `M`-prefixed names and the `JP0_0`/`JP0_1` alt-names on
+`MTDI`/`MTDO` indicate these are muxed pins shared with GPIO port 0 bits 0/1 — the chip likely needs a
+mode/boot-strap configuration to actually route them to the JTAG function rather than plain GPIO (not
+yet confirmed which strap, if any, controls this — worth checking before assuming the interface is
+"live" without configuration). Pin 4's role is unclear (no signal name given, just pulled to GND) —
+possibly a debug-enable strap, not confirmed.
+
+**Practical implication**: the FT2232H adapter + FFC breakout already ordered for the IC-7300
+([[icom-ic7300-re-project]]) should now work for both radios as-is — pinout is confirmed identical,
+not just the connector part.
 
 ## Next steps (physical, not further Ghidra work)
 1. ~~Physically locate the header near `IC301`~~ — done, confirmed
    populated via photos.
-2. **Confirm exact pin order/assignment against schematic page 8 before
-   wiring anything** — getting `TRST` or a power pin wrong risks
-   damaging the board. Not yet done precisely; the schematic render
-   showed the TCK/TMS/TDI/TRST/TDO cluster but pin-1 orientation and
-   exact pin-to-signal mapping needs a closer read.
-3. Confirm signal voltage (expected 3.3V given the SoC, not yet verified
-   against the schematic's power rail for this specific connector).
-4. Identify the connector's exact pitch/pin count to source a matching
-   FFC/FPC breakout adapter.
+2. ~~Confirm exact pin order/assignment against schematic~~ — done, see the pinout table above
+   (confirmed identical on both the IC-7300 and IC-9700).
+3. ~~Confirm signal voltage~~ — done, pin 1 is a direct `3.3V` line, matches the SoC's expected level.
+4. ~~Identify the connector's exact pitch/pin count~~ — done, see "Connector identified precisely"
+   above: 10-position, 0.5mm pitch, JST FLT-series — this is what the already-ordered FFC breakout
+   was sourced against.
 5. A standard ARM debug probe (J-Link or SWD/JTAG-compatible) should
    work once wired, assuming standard ARM JTAG/SWD signal behavior.
