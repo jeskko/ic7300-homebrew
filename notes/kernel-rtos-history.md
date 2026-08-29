@@ -1919,3 +1919,58 @@ This is one more data point against the pixmap being anything other than what it
 internal render-side detail of `ui_graphics_lifecycle_task`'s own presentation pipeline, not a resource any
 other examined subsystem (display-attach code, screen capture) treats as a second, higher-resolution "real"
 canvas.
+
+## `sys_monitor_task_entry` moved from "examined" to "fully resolved" (2026-08-30)
+
+User's ask, finishing the task-catalog triage: get `sys_monitor_task_entry` (marked "examined" — its own
+loop body was already well documented, but its own startup code sat behind the project's known ARM/Thumb
+disassembly bug) to "fully resolved."
+
+**Re-verified the activation dead end properly before doing anything else**, given the RIIC xref-tool
+lesson from an earlier session: a fresh raw literal-byte search for `0x20361318` (this task's descriptor
+address) across the whole image found **zero references anywhere** — confirms the existing plate comment's
+claim rather than trusting it blindly. This really is a permanent static-analysis wall, the same class as
+`kernel_start`'s own mystery task descriptor.
+
+**The task's own startup code was the real remaining gap.** `sys_monitor_task_entry` registers two event
+handlers and executes a one-time `SWI(1)`, but all three targets (`0x20005960`, `0x200059b4`, `0x200b940c`)
+were sitting behind Ghidra's known ARM/Thumb disassembly-context bug — decompiles were either garbage or
+(for `0x200b940c`) not even a defined instruction. Read all three manually via `arm-none-eabi-objdump`
+against `scratch/unpacked/142/body.bin` first, which already gave a solid read:
+- `0x200b940c` (`SWI(1)`'s target): clean ARM — `TLBIALL` → `ICIALLU` → a call to `0x200053ac` (a
+  `CLIDR`/`CSSELR`/`CCSIDR`-walking full data-cache clean+invalidate, the textbook ARMv7 idiom) → `BPIALL`
+  → read `SCTLR`, clear/set a couple of bits, then explicitly set `SCTLR.C`/`SCTLR.I`/`SCTLR.Z` (D-cache,
+  I-cache, branch prediction enable). Read as the one-time boot-to-running cache/MMU state transition.
+- `0x20005960`/`0x200059b4`: near-identical ARM shape each — a kernel-primitive call, a shared-struct
+  store, a counter decrement, a second kernel-primitive call, then an `SPSR` restore. Read (correctly, as
+  it turned out) as some kind of interrupt-handler epilogue, but under-read its actual significance.
+
+**User then fixed the ARM/Thumb disassembly context at all three addresses via the GUI.** Re-decompiling
+confirmed the manual reads exactly and revealed one of them to be far more significant than the objdump
+shape alone suggested:
+- **`irq_context_switch_id0`/`irq_context_switch_id86`** (renamed from `handler_id0_probe`/
+  `handler_id86_probe`, registered for event ids `0`/`0x86`): **not simple IRQ epilogues — full FreeRTOS
+  task context-switches, structurally identical to `swi_handler`'s own already-documented scheduler logic.**
+  Same current-vs-next-task pointer pair at `0x20005954`, the same `coproc_moveto_Context_ID` (ASID) write,
+  the same lazy-FPU `Coprocessor_Access_Control` handling, the same indirect jump into the new task's saved
+  context. This means these two are a **second, hardware-IRQ-triggered entry point into the identical
+  scheduler mechanism `SWI(0)` provides for the software-triggered case** — a completely sensible RTOS
+  architecture (SVC-triggered reschedule + IRQ-triggered reschedule, both converging on the same core
+  logic), and a genuinely new structural fact about how this firmware's scheduler actually gets invoked, not
+  something this project had previously connected. Not confirmed: which physical peripheral/GIC line feeds
+  event id 0 specifically (event id 86 similarly unconfirmed) — the natural guess is one or both are the
+  OS-tick-timer interrupt, but that's inference from shape, not yet independently checked against a real
+  timer peripheral's IRQ line.
+- **`enable_mmu_caches_branch_predictor`** (created as a proper Function and named at `0x200b940c` — it had
+  no Function/instruction defined in Ghidra at all before the fix): decompile matches the manual objdump
+  read exactly, function-name for function-name (`coproc_moveto_Invalidate_unified_TLB_unlocked`,
+  `coproc_moveto_Invalidate_Entire_Instruction`, `coproc_movefrom_Control`/`coproc_moveto_Control` for
+  `SCTLR`). One genuinely new piece past what objdump alone could show: after enabling the caches, it also
+  calls `FUN_200b9270`/`FUN_200b9288` and zeroes/sets several fields of a struct at `DAT_200b9384` —
+  GIC-adjacent-looking bookkeeping, not chased further this session.
+
+**Status moved to fully resolved.** The task's own behavior — event-handler registration, the `SWI(1)`
+cache/MMU transition, and the already-documented forever-loop — is now completely characterized. Only its
+activation trigger remains open, and that's accepted as a permanent static-analysis limit of the same kind
+already standing for `kernel_start`'s task, not an unfinished thread. This closes out the task-catalog
+triage entirely except for `status_poll_task_200095d8`'s real-world purpose.

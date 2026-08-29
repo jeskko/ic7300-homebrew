@@ -175,7 +175,15 @@ by but not built on top of the prior work there.
   (same signature as `kernel_start`'s own unresolved mystery task), so confirming more than one display
   is ever actually active needs live hardware. Also confirmed the 960×552 pixmap specifically is plain
   memory with **no** path to this display-attach mechanism at all — ruling it out as a direct
-  external-display feed. See `notes/kernel-rtos.md`.
+  external-display feed (also confirmed the BMP screen-capture feature doesn't use it either — it
+  captures exactly 480×272, the real window resolution). **Follow-up (2026-08-30, same day)**: moved
+  `sys_monitor_task_entry` from "examined" to **fully resolved**, needing the user to fix this
+  project's known ARM/Thumb disassembly-context Ghidra bug at 3 addresses — its two registered event
+  handlers turned out to be **full FreeRTOS context-switches**, a second, hardware-IRQ-triggered
+  entry point into the exact same scheduler logic already documented under `swi_handler`, and its
+  one-time `SWI(1)` call turned out to be the boot-to-running cache/MMU transition (invalidate
+  TLB/I-cache/D-cache/branch-predictor, then enable all three via `SCTLR`). This closes out the
+  task-catalog triage entirely except for `status_poll_task_200095d8`. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2
