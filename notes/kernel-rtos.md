@@ -831,7 +831,7 @@ entries (command IDs `0x00`-`0x1a`), terminated by a null entry at `0x1b`:
 | 0x05 | `0x200ba2ac` | `vfs_read_record` then `vfs_write_record` | read-modify-write a 0x34-byte record |
 | 0x06 | `0x200ba340` | `vfs_open_ex` (mode 0) | open/stat |
 | 0x07 | `0x200ba378` | tail-call `vfs_close` | close |
-| 0x08 | `0x200bb1cc` | large, not fully chased | — |
+| 0x08 | `0x200bb1cc` | bulk directory scan, dispatches per-entry by file-extension class (via a family of helpers at `0x200ba580`/`680`/`710`/`82c` etc., each keyed by a string-table offset) | typed bulk directory listing/copy (e.g. building an SD-card file-browser list by file type) |
 | 0x09 | `0x200bb794` | `vfs_read_dir_entry` loop | find-next entry |
 | 0x0a | `0x200bb7c8` | tail-call `FUN_200cb04c` | — |
 | 0x0b | `0x200bb7dc` | same body as 0x01 | directory-entry read variant |
@@ -840,16 +840,16 @@ entries (command IDs `0x00`-`0x1a`), terminated by a null entry at `0x1b`:
 | 0x0e | `0x200bb840` | same body as 0x05 | **same as 0x05** — duplicate alias |
 | 0x0f | `0x200bb8d4` | `vfs_open_ex` (mode 0x180 hardcoded) | open in write/create mode |
 | 0x10 | `0x200bb90c` | tail-call `vfs_close` | **same target as 0x07** — duplicate alias |
-| 0x11 | `0x200bb958` | `FUN_200c9bec` | — |
-| 0x12 | `0x200bb98c` | `FUN_200c9d0c` | — |
-| 0x13 | `0x200bb9c0` | `FUN_200c9e9c` | — |
-| 0x14 | `0x200bb9f4` | large — `FUN_200c9634`/`FUN_200cc1ec`, string/format work | set-parameter-by-name (best guess) |
+| 0x11 | `0x200bb958` | thin wrapper, `FUN_200c9bec` | — |
+| 0x12 | `0x200bb98c` | thin wrapper, `FUN_200c9d0c` | — |
+| 0x13 | `0x200bb9c0` | thin wrapper, `FUN_200c9e9c` | — |
+| 0x14 | `0x200bb9f4` | reads file info, on a specific error re-derives a name/extension, classifies it against 2 fixed sets of type codes (`{1,4,6,0xb}`/`{0xe,0x1b,0x1c,0x1e}`), then a create/rename-style call (`FUN_200c3f98`) | file-extension-gated create/rename (best guess) |
 | 0x15 | `0x200bbc68` | `FUN_200c9634`, `FUN_200ca02c`, sets a flag field | set persistent flag/state |
 | 0x16 | `0x200bbcc0` | reads back that same flag field, small state machine | query/clear counterpart of 0x15 |
-| 0x17 | `0x200bbd28` | `FUN_200cc148` | — |
-| 0x18 | `0x200bbd58` | large, wildcard-style path sanitization (`'*'` insertion) | path/glob helper |
-| 0x19 | `0x200bc00c` | tail-call `FUN_200cb8d8` | — |
-| 0x1a | `0x200bc020` | `FUN_200c5dd0` | — |
+| 0x17 | `0x200bbd28` | thin wrapper, `FUN_200cc148` | — |
+| 0x18 | `0x200bbd58` | wildcard-style path sanitization (`'*'` insertion), then the SAME 2-set extension classification as 0x14, then 3 separate `FUN_200c5758` category checks setting 3 output flags | filename classifier — is-type-1/2/3 |
+| 0x19 | `0x200bc00c` | thin wrapper, tail-call `FUN_200cb8d8` | — |
+| 0x1a | `0x200bc020` | thin wrapper, `FUN_200c5dd0` | — |
 
 The shared primitives (`vfs_open`/`vfs_open_ex`/`vfs_read_record`/`vfs_write_record`/`vfs_close`/
 `vfs_rename`/`vfs_read_dir_entry`, all `0x200caxxx`-`0x200ccxxx`, renamed this session) all resolve a
@@ -1196,11 +1196,7 @@ out end to end. JTAG hardware is still not in hand, so the list below is deliber
    `0xd` = MENU, AND bit 4 of offset `0xe` — a *different* status byte, not yet identified against the
    front-panel pinout) but `svc_mode5_idle_loop`'s own behavior beyond "services SCIF0+SCIF1, posts a
    `FUN_2002b818(0xb)` request under one more condition" wasn't characterized as deeply as mode 1's.
-2. **A handful of the 27 file-RPC handlers** (table entries `0x08`, `0x11`-`0x14`, `0x17`-`0x1a` in
-   `sdcard_file_rpc_dispatch_task`'s table) — only their immediate call targets were identified from raw
-   ARM ground-truth, not fully decompiled (this whole table region had never been examined before this
-   session, all hit the known ARM/Thumb Ghidra bug — see "Known Ghidra project quirk" above — worth a GUI
-   force-ARM pass over `0x200bb1cc`-`0x200bc044` and `0x200bbc68`-`0x200bbd58` if picked up).
+2. ~~A handful of the 27 file-RPC handlers~~ — **done, see new section below.**
 3. **`factory_file_case28_report`'s exact purpose** — least-characterized of the three `IC-7300_factory`
    file cases; traces the same path string and per-segment pass/fail bytes but its output destination
    (display buffer? log file? something else?) wasn't traced.
@@ -1239,3 +1235,55 @@ register block live, or by the user checking the schematic for an unlabeled seco
 `DAT_2002a158`'s writer and other task-activation questions (`sys_monitor_task_entry`'s own activator,
 `kernel_start`'s mystery task); confirming `boot_check_challenge_response`'s 10-byte reference data's
 runtime source.
+
+## File-RPC table fully disassembled and decompiled (2026-08-29, follow-up session)
+
+Closed out handoff item 2 above. User force-ARM-disassembled the 9 confirmed-broken entry points from the
+earlier session, then — after a systematic re-check found the fix was incomplete (most of the table's
+*internal* branches and several small shared helper functions between entries were still garbage, since
+fixing only an entry point doesn't make Ghidra's auto-analysis walk forward through every branch) — force-
+ARM-disassembled the whole table range `0x200b9e40`-`0x200bc350` as one contiguous block. That resolved
+all but **7 tiny 4-byte islands**, each sitting exactly where two branch paths converge (a known limitation
+of bulk-range disassembly: it walks the dominant path through a merge point but doesn't always split the
+few bytes the *other* incoming edge lands on): `0x200ba7dc`, `0x200ba8f8`, `0x200ba918`, `0x200bab74`,
+`0x200baca8`, `0x200bae10`, `0x200bb2d0`. Left un-fixed (cosmetic only, four-byte gaps don't block reading
+the surrounding logic) — worth a quick pass if this area gets revisited.
+
+Created `Function` objects at all 27 table entries (named `civ_table_id00`-`civ_table_id1a`) plus the
+shared helper functions between them (`civ_table_shared_open_iterate`, `civ_table_str_copy_helper`,
+`civ_table_trim_helper`, `civ_table_hexaddr_decode`, `civ_table_helper_580`/`680`/`710`/`82c`/`930`/`938`/
+`aa9c`/`ac58`/`ad10`/`ae34`/`af64`/`b148`, `civ_table_notify_helper`) so the decompiler produces real C
+instead of raw disassembly. Decompiled the handlers that were previously only characterized from raw
+`objdump` reading or not at all:
+
+- **`civ_table_id08`** (`0x08`, previously "large, not fully chased") — a genuine **bulk directory scan**:
+  loops `vfs_read_dir_entry`, and for each entry dispatches by a "mode" byte (`uStack_178 & 0xff`, values
+  0-9) into a family of helper functions (`civ_table_helper_580`/`680`/`710`/`82c`, each called with a
+  distinct large offset literal — `0x4b0`, `0x3520`, `0x44c0`, `0x92e0` — almost certainly indices into a
+  string table of known file extensions). Reads as the mechanism behind an SD-card file browser/list — "give
+  me every file of type N", not a single-file operation like most of the table.
+- **`civ_table_id14`** (`0x14`, previously guessed as "set-parameter-by-name") — reads file info
+  (`FUN_200cc1ec`), and on one specific error path re-derives a name/extension and classifies it against two
+  fixed sets of type codes (`{1,4,6,0xb}` vs `{0xe,0x1b,0x1c,0x1e}`) before a create/rename-style call
+  (`FUN_200c3f98`). Reads as a file-extension-gated create-or-rename, not a settings operation — revises the
+  earlier guess.
+- **`civ_table_id18`** (`0x18`) — confirms the earlier wildcard-path-sanitization read, and goes further:
+  after the `'*'` insertion it runs the **same** two-set extension classification as `0x14`, then does 3
+  separate `FUN_200c5758` checks (values 1/2/3) that each set one of 3 output flags — reads as "classify
+  this filename into up to 3 category flags" (e.g. is-it-audio/is-it-text/is-it-something-else), most likely
+  feeding into the same file-browser mechanism `0x08` drives.
+- `civ_table_id11`/`id12`/`id13`/`id17`/`id19`/`id1a` all confirmed as thin one-line wrappers around a
+  single deeper function (`FUN_200c9bec`/`FUN_200c9d0c`/`FUN_200c9e9c`/`FUN_200cc148`/`FUN_200cb8d8`/
+  `FUN_200c5dd0` respectively) — not pursued further into those deeper functions this pass.
+
+**Tip for future ARM/Thumb bug encounters, worth remembering**: this project's Ghidra language module has a
+`TMode` context register controlling ARM-vs-Thumb disassembly per address, which auto-analysis is free to
+flip when it thinks it's found a Thumb-interworking branch. Since this whole firmware is confirmed pure ARM
+(zero genuine Thumb instructions found across the entire project), presetting `TMode = 0` across the whole
+`body.bin` memory range (Listing → select range → right-click → **Set Register Values...** → `TMode` → `0`)
+should stop *fresh* auto-analysis from guessing Thumb in never-before-touched territory going forward —
+worth doing once, proactively, rather than continuing to hit this bug address-by-address as new code gets
+examined. Doesn't undo already-broken analysis (still a one-time cleanup where it's already happened), and
+won't stop a genuine odd-address `BX`/`BLX` target from switching context at that one spot — but this
+firmware doesn't appear to do genuine ARM/Thumb interworking anywhere, so that caveat shouldn't matter in
+practice.
