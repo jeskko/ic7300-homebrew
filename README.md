@@ -162,7 +162,14 @@ by but not built on top of the prior work there.
 ## Layout
 
 - `notes/` — reverse-engineering findings, one topic per file, linked with
-  `[[wiki-links]]`. Start at `notes/container-format.md`.
+  `[[wiki-links]]`. Start at `notes/container-format.md`. The largest topics
+  (`kernel-rtos`, `multi-cpu-images`, `diode-matrix`) are split into a lean
+  active file (current-state tables/summaries, open questions) plus a
+  sibling `<topic>-history.md` holding the full session-by-session
+  narrative — read the active file first, the history file only for "how
+  did we get here". Follow this split for any topic file that grows past a
+  few hundred lines: move narrative to a new `<topic>-history.md`, keep
+  only current-state content in the active file.
 - `tools/` — `icom_fw`, a clean rewrite of the firmware unpacker, plus a
   cross-version verification script. See `tools/README.md`.
 - `ghidra_project/` (git-ignored) — fresh Ghidra project (`icom1`),
