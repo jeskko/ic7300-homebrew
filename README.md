@@ -149,8 +149,14 @@ by but not built on top of the prior work there.
   the manual's actual USB2.0 controller bases are `0xE8010000`/`0xE8207000`, not `0xE8100000`, and
   no chapter documents anything at that address at all. The peripheral's real identity is open
   again. Also brought `notes/kernel-rtos.md`'s task-catalog table current with several
-  session-old renames that had never made it back into the table itself. See
-  `notes/kernel-rtos.md`.
+  session-old renames that had never made it back into the table itself. **Follow-up (2026-08-29,
+  later session)**: verified the `0xE8100000` base has no missed indirection (a single, never-written
+  literal-pool constant, checked at the raw-bytes level) — and found its handler is called as the
+  `"vgStartUp"` step of a real, string-confirmed **EGL + OpenVG graphics-stack bring-up sequence**
+  (`graphics_stack_startup_egl_openvg`), replacing the retracted USB guess with a new, well-evidenced
+  (but not register-level-confirmed) hypothesis: a 2D/vector-graphics rendering resource. Also
+  surfaced a real embedded **zlib** implementation nearby, of unconfirmed relation to this subsystem
+  — a new, previously-unknown fact in its own right. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

@@ -1487,3 +1487,86 @@ this specific bus-matrix slave (SLV5), since the general RZ/A1H I/O bus-matrix s
 project have mapped cleanly onto specific on-board peripherals once the right net was checked; or read
 `thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8` and the earlier stages of `FUN_201009d2` for more contextual
 clues before guessing a specific peripheral again.
+
+## `thunk_FUN_2007ea68`/SLV5: indirection ruled out, and a much better identity lead found (2026-08-29, later session)
+
+User's ask, prompted by the earlier RIIC1/RIIC2 xref-tool mislabeling caught during the SVD peripheral
+sweep (see [[memory-map]]): before trusting `UNIDENTIFIED_SLV5_PERIPH_BASE` (`0xe8100000`) at all, rule out
+any indirection — is this address reached via a mutable pointer cell that something else could have altered,
+the same way the RIIC investigation nearly went wrong?
+
+**Checked directly at the machine-code level, not just the decompiled pseudocode.** `slv5_periph_configure`
+(`0x2014ee46`) loads the base through a standard ARM Thumb-2 PC-relative literal-pool read
+(`ldr r6,[0x2014f25c]`), and the raw bytes at `0x2014f25c` are `00 00 10 e8` = `0xE8100000` exactly — a plain
+compile-time constant sitting in the code section, not a RAM-resident global. **A `references_to` write-check
+on `0x2014f25c` finds exactly one reference in the whole image: the single `READ` at `0x2014f174` (the load
+itself) — zero writers anywhere.** This is about as unambiguous as a hardware address reference gets in this
+codebase: nothing computes it, nothing patches it, and it can't have been altered by anything else at
+runtime. The two low-level accessors this base flows into, `FUN_2007e1e0`/`FUN_2007e1d4`, are also confirmed
+to be trivial raw pointer dereferences (`*(param_1 + (param_2 & ~3)) = param_3` / `return *(...)`) with no
+further table lookup or handle-translation layer — so once the base is confirmed, so is every access through
+it. **A hex search for the raw literal `00 00 10 e8` across the whole image found 18 independent copies**
+(`0x2014ee00`, `0x2014f25c`, `0x2014f69c`, `0x2014f814`, `0x2014fc1c`, `0x20150074`, `0x201504d4`,
+`0x20150934`, `0x20150d90`, `0x201511e8`, `0x201515f8`, `0x20151ac0`, `0x20151f90`, `0x20152418`,
+`0x20152670`, `0x2015fc1c`, `0x20160068`, `0x20161394`) — standard ARM compiler codegen (each function keeps
+its own literal-pool copy of constants it needs), not a single point of failure even in principle. **Verdict:
+no missed indirection, no altered reference — the address is exactly what it appears to be.**
+
+**Unplanned but far more useful discovery, made while characterizing the scope of this module for the check
+above.** Listing every function between the first and last of those 18 literal-pool addresses (roughly
+`0x2014ee00`–`0x20161394`) turned up **hundreds of functions**, not the 2-3 examined in the original trace —
+this "peripheral driver" is a substantial subsystem, not a small isolated block. A `references_to` sweep on
+the two raw MMIO accessors (`FUN_2007e1e0`/`FUN_2007e1d4`) found 100+ call sites just in the first page,
+confirming real breadth. Pulling `ghidra://program/body.bin/strings` bounded to this address range turned up
+**zlib's own verbatim internal error messages** (`"oversubscribed dynamic bit lengths tree"`, `"invalid
+distance code"`, `"invalid block type"`, `"unknown compression method"`, `"incorrect header check"`, `"need
+dictionary"`, a `"1.1.4"` version-shaped string, etc., clustered `0x2015970c`–`0x2015c124`) — genuine zlib
+deflate/inflate algorithm code embedded in this firmware, entirely separate from the project's
+already-established custom Okumura LZSS firmware-update compression ([[decompression-lzss]]). A second,
+higher-level wrapper's error strings (`"unexpected zlib return code"`, `"zlib IO error"`, `"bad parameters to
+zlib"`, `"unsupported zlib version"`, `"deflateEnd failed (ignored)"`) sit earlier and separately, at
+`0x200cf038`–`0x200e7234`. **Not yet established whether this zlib/wrapper code is actually used by the SLV5
+driver module or is simply linker-adjacent** (a statically-linked library commonly ends up placed near
+whatever pulled it in, without that implying a direct logical relationship) — flagged as a real open question,
+not asserted as connected.
+
+**The actual identity breakthrough: traced the one external caller of the whole module.**
+`slv5_periph_connect_disconnect_handler` (`0x201009d2`) has exactly one caller in the entire image:
+`0x200792ac`, inside a function now renamed **`graphics_stack_startup_egl_openvg`** (`0x20079240`). That
+function is a **real, unambiguous EGL + OpenVG (Khronos vector-graphics API) bring-up sequence** — not
+inferred from shape, but named explicitly by its own embedded debug/log strings, each guarded by an
+`"ERROR!! <name>"` printf on failure:
+```
+ERROR!! NCGSYS_FrameMemCreate (%d)
+ERROR!! eglStartUp
+ERROR!! initNativeResource
+ERROR!! vgStartUp          <- this is the guard around slv5_periph_connect_disconnect_handler()
+ERROR!! eglGetDisplay (0x%04X)
+ERROR!! eglInitialize (0x%04X)
+ERROR!! eglBindAPI (0x%04X)
+```
+The call sequence in `graphics_stack_startup_egl_openvg` is, in order: `NCGSYS_FrameMemCreate`-equivalent →
+`initNativeResource`-equivalent → `eglStartUp`-equivalent → **`slv5_periph_connect_disconnect_handler`,
+guarded by the `"vgStartUp"` error string** → `eglGetDisplay` → `eglInitialize` → `eglBindAPI(0x30A1)`.
+`0x30A1` is the real Khronos EGL enum value for `EGL_OPENVG_API` (as opposed to `0x30A0`
+`EGL_OPENGL_ES_API`) — confirms this specifically targets OpenVG, not OpenGL ES. `"NCGSYS"` is an
+unidentified vendor/SDK codename, not yet matched to a specific commercial embedded graphics middleware
+package (worth a web search if resumed) — but the EGL/OpenVG identification itself is not a guess, it's a
+direct read of the code's own strings.
+
+**Updated working hypothesis for `UNIDENTIFIED_SLV5_PERIPH_BASE`, replacing "not yet replaced with a
+better-supported guess" above**: since `slv5_periph_connect_disconnect_handler` *is* (or is a required part
+of) this graphics stack's `"vgStartUp"` hardware bring-up step, whatever lives at `0xe8100000` is very
+plausibly a **dedicated 2D/vector-graphics rendering resource** — a hardware accelerator/compositor/blitter
+distinct from the already-known `VDC5` display-timing-and-output controller ([[memory-map]]), or some
+DMA/memory resource this graphics stack specifically needs at startup. **Not yet confirmed at the
+register-bit level** — the offsets already known (`0x4004`/`0x4010`/`0x4014`/`0x4018`/`0x401c`) haven't been
+individually matched against any known 2D-GPU-IP register layout. Renamed in Ghidra:
+`graphics_stack_startup_egl_openvg` (`0x20079240`); `slv5_periph_configure`/
+`slv5_periph_connect_disconnect_handler` kept their existing names (still accurate at the bus-matrix-slave
+level) with PLATE comments added pointing to this finding. **Concrete next steps if this is picked up
+again**: identify the `"NCGSYS"` SDK via web search (may directly document what hardware `vgStartUp` expects);
+individually decode the `0x4004`/`0x4010`/etc. register offsets against common 2D-accelerator register
+conventions (framebuffer address, stride, format, control/status); check whether the zlib code found nearby
+is actually reachable from this graphics stack (e.g. for compressed vector-asset decoding) or is genuinely
+unrelated linker-adjacent code.
