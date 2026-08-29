@@ -112,11 +112,21 @@ by but not built on top of the prior work there.
   agreeing). `dsp_program.bin` and (surprisingly) `front_cpu.bin` are now both
   confirmed genuine TMS320C674x object code — **`front_cpu.bin` is *not*
   front-panel firmware after all**, retracting the earlier "component0 = Front
-  CPU" hypothesis; its real identity is still open. `dsp_data.bin` shows no
-  such code signature and is now the better-supported bet for "compressed
-  FPGA bitstream relayed by the DSP" — a specific structural match (a 32-byte
-  preamble length) to an independently reverse-engineered same-family Cyclone
-  chip adds real support beyond the original byte-histogram argument. See
+  CPU" hypothesis. `dsp_data.bin` shows no such code signature and is a
+  better-supported bet for "compressed FPGA bitstream relayed by the DSP" — a
+  specific structural match (a 32-byte preamble length) to an independently
+  reverse-engineered same-family Cyclone chip adds real support beyond the
+  original byte-histogram argument. **All 3 components' real identities fully
+  resolved, 2026-08-30**: correlating each one's content-change points across
+  every locally-held release against Icom's own officially-published
+  `DSP Program`/`DSP Data`/`FPGA` version fields for each release gave a
+  perfect, zero-discrepancy match — `front_cpu.bin` is actually `DSP Program`,
+  `dsp_program.bin` is actually `DSP Data` (the internal working names for
+  these two were swapped), and `dsp_data.bin` is confirmed `FPGA` (elevating
+  the bitstream hypothesis from "better-supported bet" to solidly confirmed).
+  One genuine surprise stands: the component identity-tracking `DSP Data` is
+  confirmed real executable DSP code, not a calibration table — Icom's
+  "Program"/"Data" naming apparently isn't a code/non-code split. See
   `notes/multi-cpu-images.md` and `notes/front-panel-firmware.md`.
 - 🔎 **Front-panel MCU (`IC501`, RL78/G14) firmware: still genuinely
   unidentified.** `front_cpu.bin` (extracted, expecting this to be it) turned

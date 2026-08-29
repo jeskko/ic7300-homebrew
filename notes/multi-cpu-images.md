@@ -30,9 +30,42 @@ independently confirmed component-by-component).
 
 | Component | File offset (v1.42) | Compressed | Decompressed | Best-current identity |
 |---|---|---|---|---|
-| 0 (`front_cpu.bin`) | `0x252c2c` | 97,862 B | 163,592 B | **Not Front CPU firmware** (see below) — confirmed genuine TMS320C674x object code; its relationship to component1 is unresolved |
-| 1 (`dsp_program.bin`) | `0x26aa82` | 721,836 B | 720,648 B | Confirmed genuine TMS320C674x (DSP) object code — real floating-point (C67x+/C674x-specific) instruction chains, cross-validated by 3 independent disassemblers |
-| 2 (`dsp_data.bin`) | `0x31ae3e` | 698,201 B | 859,412 B | Not code (no coherent instruction chains found). Best-supported guess: a **compressed Altera FPGA bitstream** for `IC1351`, not a DSP calibration table — whole-file byte histogram dominated by zero/low-Hamming-weight bytes (typical of sparsely-used fabric), size is ~46% of the EP4CE55's published raw `.rbf` size (inside Altera's typical compression range), and the byte after the file's own build-tag is a 32-byte `0xFF` run matching an independently reverse-engineered Cyclone-family bitstream preamble length exactly. Not proven: no Altera compression scheme decoded, no per-frame CRC match found (expected — that test only works on uncompressed frames) |
+| 0 (`front_cpu.bin`, internal name — **confirmed wrong**, see below) | `0x252c2c` | 97,862 B | 163,592 B | **`DSP Program`** — confirmed genuine TMS320C674x object code; identity confirmed 2026-08-30 by correlating its own decompressed-content-change points against Icom's officially-published per-release `DSP Program` version field (see below) — every single transition matches |
+| 1 (`dsp_program.bin`, internal name — **confirmed wrong**, see below) | `0x26aa82` | 721,836 B | 720,648 B | **`DSP Data`** — confirmed genuine TMS320C674x (DSP) object code (real floating-point C67x+/C674x-specific instruction chains, cross-validated by 3 independent disassemblers), yet its identity tracks Icom's `DSP Data` version field, not `DSP Program` (see below) — Icom's "Program"/"Data" naming apparently isn't a code-vs-non-code distinction, more likely main-application-vs-secondary/rarely-updated-image |
+| 2 (`dsp_data.bin`, internal name — **confirmed wrong**, see below) | `0x31ae3e` | 698,201 B | 859,412 B | **`FPGA`** — not code (no coherent instruction chains found); already the best-supported guess from whole-file-histogram/size/preamble evidence (compressed Altera bitstream for `IC1351`), now **strongly confirmed** by version-field correlation (see below) on top of the earlier circumstantial evidence |
+
+**Component identity fully resolved, 2026-08-30, by correlating against Icom's own published sub-component
+version history** (the same official EN+JP scrape done for the IC-9700 thread, see
+[[ic9700-container-format]] — the IC-7300's own firmware-detail pages turned out to carry the identical
+kind of per-release 4-way breakdown: `Main CPU`/`DSP Program`/`DSP Data`/`FPGA`). Extracted and hashed each
+of the 3 components' actual decompressed content (not just compressed size, which can drift slightly
+without ruling identity) across every locally-held release (`v1.11`–`v1.20`, spanning the only window where
+any of these 3 components still changed at all — see [[firmware-versions]]) and compared the resulting
+change-points against Icom's own version numbers for each release:
+
+| Transition | `DSP Program` (official) | `DSP Data` (official) | `FPGA` (official) | component0 content | component1 content | component2 content |
+|---|---|---|---|---|---|---|
+| 1.11→1.12 | 1.05→1.06 (changed) | 1.00→1.00 (same) | 1.10→1.11 (changed) | **changed** | same | **changed** |
+| 1.12→1.13 | 1.06→1.07 (changed) | 1.00→1.00 (same) | 1.11→1.12 (changed) | **changed** | same | **changed** |
+| 1.13→1.14 | 1.07→1.07 (same) | 1.00→1.00 (same) | 1.12→1.13 (changed) | same | same | **changed** |
+| 1.14→1.20 | 1.07→1.07 (same) | 1.00→1.00 (same) | 1.13→1.13 (same) | same | same | same |
+| 1.20→1.42 | 1.07→1.07 (same) | 1.00→1.00 (same) | 1.13→1.13 (same) | same | same | same |
+
+A perfect, zero-discrepancy match on all 5 checked transitions for all 3 components simultaneously —
+component0's content-change points line up exactly with `DSP Program`'s, component1 is byte-identical
+across the *entire* known dataset (matching `DSP Data`'s permanently-pinned `1.00`), and component2's
+matches `FPGA`'s precisely (already the working hypothesis, now this solidly confirms it). This is the
+opposite pairing from `dsp_chunks.py`'s internal working names (`front_cpu`→really `dsp_program`;
+`dsp_program`→really `dsp_data`) — **those internal filenames/variable names are now known to be swapped
+and wrong**, not yet renamed in the tool itself (a real but low-priority cleanup — the extraction offsets
+themselves are correct and unaffected, only the labels are wrong).
+
+One genuine surprise this leaves standing: component1 is **confirmed real, executable TMS320C674x object
+code** (not a calibration table) yet identity-tracks `DSP Data`, not `DSP Program`. Icom's "Program" vs.
+"Data" naming apparently isn't a code-vs-non-code split — more likely "Program" = the main/frequently
+revised application image and "Data" = a secondary DSP-side image (boot monitor? resident kernel? a second
+overlay?) that happens to have gone unrevised for this product's entire locally-held release history. Not
+resolved further; a real follow-up question, not a loose end from bad evidence.
 
 **"Component0 = Front CPU firmware" is retracted.** The original hypothesis (from `FUN_200a94c8`'s 5-field
 version-compare struct order — see below — assumed to map 1:1 onto the 3 update chunks) is contradicted two
@@ -40,9 +73,9 @@ independent ways: (1) tracing `chunk_transport_send_data`'s full call chain show
 are transported identically over `SCIF5` — there is no separate path to the front panel's own known link
 (SCIF3); (2) `front_cpu.bin` disassembles as genuine TMS320C674x code (real `spdp`/`absdp`/`cmpltdp`
 floating-point chains, real branch/call idioms) — not RL78 code, a completely different and much
-smaller-flash architecture. So `component0` is genuinely DSP-side, not front-panel-side; what it actually
-is (a second DSP program/overlay loaded to a different memory region? a separate DSP-side subsystem?)
-remains open.
+smaller-flash architecture. So `component0` is genuinely DSP-side, not front-panel-side. **Resolved,
+2026-08-30**: it's `DSP Program` specifically, confirmed via version-field correlation against Icom's own
+published data — see the table above.
 
 **`IC902` identity — corrected twice, now settled at the pin level.** Final: `IC902` (`EN25QH32A`) is
 **`IC901`'s (the DSP's) own dedicated SPI0 boot flash** — its `CS`/`DO`/`DI`/`CLK` pins trace directly to
@@ -104,8 +137,9 @@ and silicon-version are set up correctly, and all three agree byte-for-byte on d
 
 - Early belief that no C6x disassembler exists anywhere (only custom-disassembler/live-JTAG were viable) —
   retracted; real tools exist upstream (binutils `tic6x`, Capstone `TMS320C64X`, TI's own `dis6x`).
-- Reading `dsp_data.bin`'s leading 64 bytes as small calibration constants — superseded by the whole-file
-  histogram/size/preamble evidence for an Altera FPGA bitstream.
+- Reading component2's (internally named `dsp_data.bin`, really `FPGA`) leading 64 bytes as small
+  calibration constants — superseded by the whole-file histogram/size/preamble evidence for an Altera FPGA
+  bitstream, itself now confirmed by version-field correlation (see above).
 - The original boot-loader-only read of the dual-flash-slot mechanism (via `base.dat`'s
   `unpack_from_flash_to_mem`) — superseded by the fuller confirmation via `body.bin`'s own
   `FUN_20062c64` (same conclusion, firmer evidence).
@@ -118,14 +152,19 @@ and silicon-version are set up correctly, and all three agree byte-for-byte on d
 
 ## Open questions / next steps
 
-- What `component0` ("front_cpu.bin") actually is, if not Front CPU firmware.
+- Why component1 (confirmed real DSP object code) identity-tracks the `DSP Data` label rather than
+  `DSP Program` — a naming-semantics question, not a structural unknown (see the resolved-identity section
+  above).
 - Where the front panel's (`IC501`, RL78) own firmware actually lives/updates from, if not these 3 chunks
   — a separate, freshly-opened thread, see [[front-panel-firmware]].
 - `DRESD` release mechanism — check the `base.dat` boot-ROM stage (see [[base-loader]]), or live JTAG once
   available.
-- Altera's proprietary bitstream compression scheme for `dsp_data.bin` — not identified/decoded; component
-  ordering (0/1/2 ↔ Front CPU/DSP Program/DSP Data label order) never independently confirmed
-  field-by-field.
+- Altera's proprietary bitstream compression scheme for component2/`FPGA` — not identified/decoded.
+  ~~Component ordering never independently confirmed field-by-field~~ — **resolved, 2026-08-30**: real
+  identity of all 3 components confirmed via version-field correlation (component0=`DSP Program`,
+  component1=`DSP Data`, component2=`FPGA`) — see above. `tools/icom_fw/dsp_chunks.py`'s internal
+  `front_cpu`/`dsp_program`/`dsp_data` names are consequently known to be wrong (swapped for 0/1) and
+  worth renaming next time that file is touched.
 - The ~22 individual DSP live-sync parameters not yet individually named — trace each `dsp_cmd_table_init`
   slot's real data source.
 - `dsp_boot_handshake`'s 2 boot-time command words, and `SCIF5` events `0x9f`/underrun handling, not fully

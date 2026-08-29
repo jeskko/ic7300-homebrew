@@ -50,17 +50,33 @@ figures below are computed straight from the actual files.
   like Icom stopped updating a secondary component (whatever `size2`,
   `size6`, `size7`, and the version string track) after v1.14, while
   continuing to update the main RZ/A1H application (`length`) every
-  release through v1.42. **Now confirmed, not just "looks like"**:
-  [[multi-cpu-images]] identifies `size2`/`size3` as component0's
-  compressed/decompressed sizes and `size6`/`size7` as component2
-  (`dsp_data.bin`, best-supported guess: a compressed Altera FPGA
-  bitstream for `IC1351`)'s — so the frozen-since-1.14 secondary
-  component(s) are component0 (identity still open — confirmed *not*
-  Front CPU firmware, despite the working filename) and the DSP-data/
-  FPGA-bitstream component, while component1 (`dsp_program.bin`, the DSP's
-  own object code) apparently also never changed after v1.14 (`size4`/
-  `size5` constant too) — i.e. **all 3 non-main-body components stopped
-  updating after v1.14**, not just one unspecified "secondary component."
+  release through v1.42.
+
+  **Now confirmed, precisely — and the "all 3 froze simultaneously at
+  v1.14" reading above was slightly wrong** (2026-08-30): [[multi-cpu-images]]
+  identified all 3 components' real Icom-official identities by correlating
+  their content-change points against Icom's own published per-release
+  `DSP Program`/`DSP Data`/`FPGA` version fields (a perfect, zero-discrepancy
+  match). The real per-component freeze points are **not** all the same
+  release:
+  - `size2`/`size3` (component0) = **`DSP Program`** — changes `1.11→1.12→1.13`
+    (`1.05→1.06→1.07`), **frozen from v1.13 onward**, one release earlier
+    than the other two.
+  - `size4`/`size5` (component1) = **`DSP Data`** — **never changes at all**
+    across this project's entire local dataset (`v1.11`–`v1.42`, pinned at
+    Icom's own `1.00` the whole time) — not "froze after v1.14," it was
+    already frozen at the very first locally-held release. This component
+    is also confirmed genuine executable TMS320C674x object code, despite
+    the "Data" label — see [[multi-cpu-images]] for that open naming
+    puzzle.
+  - `size6`/`size7` (component2) = **`FPGA`** — changes `1.11→1.12→1.13→1.14`
+    (`1.10→1.11→1.12→1.13`), **frozen from v1.14 onward** — this is the one
+    component that actually matches the "froze at v1.14" framing above.
+
+  So the accurate statement is: **3 different components, 2 different real
+  freeze points** (`DSP Program` at v1.13, `FPGA` at v1.14, `DSP Data` frozen
+  for the entire known history) — not one simultaneous v1.14 cutover across
+  all 3, as the original wording implied.
 
 ## Real chunk sizes vs. fixed slot offsets
 
