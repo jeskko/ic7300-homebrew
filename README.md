@@ -163,8 +163,11 @@ by but not built on top of the prior work there.
   already-known SD-card file-RPC service. **Follow-up (2026-08-30)**: also resolved the
   `audio_buffer_task` pair, renamed `voice_tx_memory_control_task`/`voice_tx_memory_stream_task` — a
   **sibling** feature (TX Voice Memory pre-recorded message playback, reading a *different* folder,
-  `C:\IC-7300\VoiceTx`), correcting last entry's guess that it was the same feature's other half. See
-  `notes/kernel-rtos.md`.
+  `C:\IC-7300\VoiceTx`), correcting last entry's guess that it was the same feature's other half.
+  **Also resolved the catalog's last-thinnest entry**, `ui_graphics_lifecycle_task` (renamed from
+  `FUN_2007ef5c`) — turns out to be the task that actually **starts the whole EGL+OpenVG/SLV5
+  subsystem** documented above, and creates the IC-7300's real 480×272 touchscreen EGL window surface
+  plus a 960×552 off-screen pixmap surface of unconfirmed purpose. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

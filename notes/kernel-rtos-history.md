@@ -1797,3 +1797,50 @@ section) — so the actual "decoded WAV samples out to the transmit audio chain"
 these two tasks, not found here. Also not decoded: the individual field layout of file-RPC commands `6`/`9`/
 `0x13`/`0x17`'s payload structs, or exactly what `FUN_2002232c` (called per listed message) does with each
 entry.
+
+## `FUN_2007ef5c` fully resolved: the master graphics lifecycle task, and it's what starts the whole EGL/OpenVG thread (2026-08-30)
+
+User's ask, continuing the task-catalog triage: look at the UI/display task next — the catalog's thinnest
+entry ("allocates screen objects, runs a message loop", entry point never even renamed).
+
+**Renamed `ui_graphics_lifecycle_task`.** Decompiled it fresh and immediately got the biggest single payoff
+of this triage: **its very first action is calling `graphics_stack_startup_egl_openvg()`** — meaning this
+task is the actual, concrete starting point of the whole EGL+OpenVG/SLV5 subsystem this file's earlier
+sessions traced structurally but never tied to a specific caller. That gap is now closed.
+
+**Two real EGL surfaces created, both confirmed via their own error strings (genuine standard EGL calls,
+not guessed from shape):**
+- **`egl_create_window_surface`** (renamed from `FUN_20079524`): creates the real, on-screen window —
+  **480×272**, the IC-7300's actual documented touchscreen resolution. Full standard sequence:
+  `eglChooseConfig` → `createNativeWindow` → `showNativeWindowEx` → `eglCreateWindowSurface` →
+  `eglSurfaceAttrib` → `eglCreateContext` → `eglMakeCurrent`.
+- **`egl_create_pixmap_surface`** (renamed from `FUN_2007a180`): creates an **off-screen** pixmap surface —
+  **960×552**, exactly 2× the window's linear dimensions in both axes. Same EGL config/context sequence,
+  `eglCreatePixmapSurface` in place of the window call.
+
+**The main loop is a clean 2-state lifecycle, not really "a message loop" in the traditional sense** (that
+framing from the original 26th-session note undersold it): blocks on an event flag each iteration, then:
+- State 1 → **`ui_graphics_buffers_init`** (renamed from `FUN_2007ef08`): clears several fixed-size scratch
+  buffers, sets 3 ready flags.
+- State 2 → **`ui_graphics_present_frame`** (renamed from `FUN_2007ee68`): the actual frame present. Blits a
+  region from the pixmap surface into the window surface (the blit call's width parameter, `0x3c0`/960,
+  matches the pixmap's own width — confirms the pixmap really is the blit source), then calls what's very
+  likely `eglSwapBuffers` (`FUN_20079a88`) on both surfaces. **If this fails while the task was in the ready
+  state, the task deliberately exits its main loop** — a real, intentional error-exit path (surface-lost
+  handling), not a bug or an unreached branch.
+
+Loop exits on a byte flag reading `-1`, then both EGL surfaces/contexts are torn down cleanly
+(`eglDestroySurface`/`eglDestroyContext`-shaped calls, not individually named).
+
+**Open, not resolved this session**: the exact purpose of the pixmap being precisely 2× the window's
+dimensions — genuinely ambiguous between "supersampled/anti-aliased offscreen render target, downscaled on
+blit" and "a larger fixed canvas the window only ever shows one 480×272 corner of" (the observed blit call
+passes the window's own dimensions as the copy size, not a scaled-down size, which is *consistent* with
+either reading — a true downscale blit would typically take separate source/dest rectangles, which this
+call's argument shape doesn't obviously show, but the relevant blit primitives weren't decompiled deeply
+enough to be certain). Worth settling if this thread is picked up again by reading `FUN_200fffea`/
+`FUN_200fff8e` (the two blit functions used, currently unnamed) in full.
+
+**Bottom line**: this closes out the task-catalog triage's original four candidates
+(`voice_recording_file_task`, the `voice_tx_memory_*` pair, and now this one) — the only task with a
+real-world purpose still not pinned down is `status_poll_task_200095d8`.
