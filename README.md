@@ -167,7 +167,15 @@ by but not built on top of the prior work there.
   **Also resolved the catalog's last-thinnest entry**, `ui_graphics_lifecycle_task` (renamed from
   `FUN_2007ef5c`) — turns out to be the task that actually **starts the whole EGL+OpenVG/SLV5
   subsystem** documented above, and creates the IC-7300's real 480×272 touchscreen EGL window surface
-  plus a 960×552 off-screen pixmap surface of unconfirmed purpose. See `notes/kernel-rtos.md`.
+  plus a 960×552 off-screen pixmap surface of unconfirmed purpose. **Follow-up (2026-08-30, same day)**:
+  traced the native platform's real display-attach code and found **genuine multi-display support built
+  into the architecture** — a window can be attached to multiple simultaneous outputs via a runtime
+  bitmask, stronger evidence for planned multi-display than the earlier `VDC50`/`VDC51` argument — but
+  the "which displays are available" mask itself is a runtime-only value, blank in the static image
+  (same signature as `kernel_start`'s own unresolved mystery task), so confirming more than one display
+  is ever actually active needs live hardware. Also confirmed the 960×552 pixmap specifically is plain
+  memory with **no** path to this display-attach mechanism at all — ruling it out as a direct
+  external-display feed. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

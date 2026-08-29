@@ -1844,3 +1844,61 @@ enough to be certain). Worth settling if this thread is picked up again by readi
 **Bottom line**: this closes out the task-catalog triage's original four candidates
 (`voice_recording_file_task`, the `voice_tx_memory_*` pair, and now this one) — the only task with a
 real-world purpose still not pinned down is `status_poll_task_200095d8`.
+
+## Traced the real display-hardware-adjacent init path: genuine multi-display architecture found, but not tied to the 960x552 pixmap (2026-08-30)
+
+User's question, following the `ui_graphics_lifecycle_task` resolution: could the 960×552 pixmap surface be
+intended for a planned external display, and did anything trace how the code initializes the actual
+display/graphics hardware interface, checking for real dual-display signs there (not just the
+`VDC50`/`VDC51` SVD-table-level evidence from the earlier "external monitor" theory session)?
+
+**Traced several real layers below the EGL abstraction, all the way to a genuine architectural finding.**
+Both `egl_create_window_surface`'s `createNativeWindow` and `showNativeWindowEx` calls, and
+`egl_create_pixmap_surface`'s `createNativePixmap` call, route through a small (`3`-entry) category
+dispatcher — renamed **`native_resource_dispatch`** — which looks up category `8` ("native platform
+resource manager", registered during `initNativeResource`/`FUN_200fe2ec` via a call literally named
+`FUN_2007d8e8(8, ...)`) and hands off to a **runtime-populated 16-entry jump table** at `0x20357414`,
+indexed by sub-operation (`0`=create pixmap, `6`=create window, `10`=show window ex — this table itself
+*is* present in the static image, unlike some of this codebase's other runtime-only tables).
+
+- **`createNativePixmap` (sub-op 0) → `native_pixmap_alloc`** (renamed from `FUN_200fe5e4`): confirmed to be
+  a **plain memory allocation** — computes bits-per-pixel from a format code, aligns width, and allocates
+  `width_aligned × height × bpp/8` bytes via the codebase's generic heap allocator (`FUN_201581c4`). No
+  hardware register touched anywhere in this function. **This settles the specific "does the 960×552 pixmap
+  feed a display" question: it can't, structurally** — pixmaps in this native platform are pure off-screen
+  RAM, with no attachment mechanism to any physical output at all.
+- **`createNativeWindow` (sub-op 6) → `native_window_link_context`** (renamed from `FUN_200fe8d6`): not a
+  buffer allocator — validates format/dimension compatibility between two resource handles and registers the
+  pairing into one of up to 8 general-purpose slots. Not display-count-specific.
+- **`showNativeWindowEx` (sub-op 10) → `native_show_window_multi_display`** (renamed from `FUN_200feaae`):
+  **this is the real find.** It takes a display-selection bitmask from the caller, ANDs it against
+  `*(DAT_200fedb8+4)` — a global "which displays are currently available" mask — and then **iterates
+  bit-by-bit over the result, calling a per-display attach function
+  (`native_display_attach_window`, renamed from `FUN_200fe15a`) once for every set bit**, passing the
+  display index each time. This is genuinely, structurally written to support attaching one window to more
+  than one simultaneous display output — not hardcoded to a single display the way a single-screen-only
+  design would be.
+
+**Where this hits a real static-analysis wall, not a stopping point I chose**: `*(DAT_200fedb8+4)`
+(`0x20390a34`) reads as blank `0xFFFFFFFF` in the static image — the exact same "runtime-populated, needs
+live hardware" signature already established for `kernel_start`'s own mystery task descriptor
+(`0x203907c4`) elsewhere in this file. There is no way to determine from the static image alone whether more
+than bit 0 of that mask is ever actually set on real IC-7300 hardware — that's a live-JTAG question, not
+something more careful static reading would resolve (consistent with this project's other confirmed dead
+ends of this exact shape).
+
+**Answer to the user's question, precisely**: yes, the native graphics platform genuinely supports multiple
+simultaneous displays as a real architectural feature at this layer (a bitmask-driven attach loop, not a
+single hardcoded display target) — this is stronger, more direct evidence for "they built this with
+multi-display in mind" than the earlier `VDC50`/`VDC51` SVD-table argument, which only showed the *raw
+timing peripheral* has two channels. But the specific **960×552 pixmap is not itself evidence of this** —
+it's confirmed to be plain memory with zero path to any display-attach code. If IC-7300 (or a sibling model)
+ever does drive two outputs, the mechanism is this bitmask/attach system operating on the *window* surface,
+not the pixmap — and whether it ever actually does is now pinned on the same "needs live hardware" wall as
+`kernel_start`'s task, not on anything left unexamined in the static image.
+
+Renamed in Ghidra: `native_resource_dispatch`, `native_pixmap_alloc`, `native_window_link_context`,
+`native_show_window_multi_display`, `native_display_attach_window`. Not chased further this session:
+`FUN_2007d050` (what `native_display_attach_window` forwards each per-display attach/detach to — the next
+candidate if this thread is picked up again, on the chance it reaches down toward real `VDC5`/hardware
+register territory).
