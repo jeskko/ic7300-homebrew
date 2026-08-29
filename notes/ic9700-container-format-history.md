@@ -332,3 +332,53 @@ understood to be meaningfully more complex than previously documented, with a co
 first — knowing the real component boundaries and having a byte-identical template to compare against other
 occurrences is a solid, self-contained next step. See [[ic9700-container-format]] for the condensed current
 state.
+
+## Correction, same day: the "5-6 component boundaries" framing was wrong — here's what's actually there
+
+Re-checked the ramp-boundary finding above against 4 different releases spanning the full 2019-2025 range
+(`J102`, `J124`, `J150`, `E150`) before building further on it, the same discipline that caught the RIIC
+xref-tool mislabeling in an earlier session. **Every single ramp offset, run-length, and post-ramp byte
+sequence found above is byte-for-byte identical across all four files, including the oldest vs. newest.**
+That's a direct contradiction of "these mark where per-release firmware for a different chip lives" — fixed,
+non-version-specific content can't be a per-release component boundary. The `0x400038`/`0x7f0038` 12-byte
+template match is still real (confirmed, not coincidental), but it's a fixed template at fixed locations,
+not evidence of per-chip segmentation.
+
+**Found what actually varies, by going back to first principles**: direct byte-level diff of `9700J102.dat`
+(oldest, 2019) against `9700J150.dat` (newest, 2025) in 4KB blocks from `0x10038` onward, collapsed into
+contiguous differing ranges:
+```
+0x10038 - 0x2a6038   (2,711,552 bytes)   -- matches the already-known J/E-divergence boundary almost exactly
+0x800038 - 0x801038  (4,096 bytes)        -- component 2's own small per-release header/version field
+0x802038 - 0xee3038  (7,213,056 bytes)    -- a second large varying region, never noticed before
+```
+Everything else — including all of the "5-6 boundary" ramp regions from the earlier (wrong) framing, and
+the large stretch `0x2a6038`-`0x800038` — is completely fixed across every release tested. So is the region
+right after `0xee3038` up to close to EOF (the small remaining difference there is already-understood
+footer content — build-ID stamp and version string, not a new mystery).
+
+**This directly explains `0x30`'s value** (≈7.2-7.3M, varying release to release, tracking the known
+build-family grouping): it's within ~0.2% of the measured size of the *second* varying region
+(7,213,056 bytes measured at 4KB granularity vs. `0x30`'s ~7,225,222 for this same release) — a much better
+fit than my own first guess that it described component 1. Checked `0x34` and component-1's real size
+(2,711,552 = `0x296000`) against the header too — no match, so `0x34`'s exact role is still open.
+
+**Tried compression against this newly-found second component too** (confirmed real start `0x800038`, not
+guessed): both IC-7300's exact LZSS parameters and raw-DEFLATE, same as component 1 — both negative.
+Checked entropy of both components at a large-enough sample (256KB) to be meaningful: both converge to
+~7.999 bits/byte, indistinguishable from each other — the entropy angle doesn't help tell them apart or
+support any particular hypothesis about which is more "compressed" vs. "encrypted."
+
+**Updated working picture**: this container has exactly two real, per-release-varying regions — a ~2.7MB
+one (`0x10038`, very likely main CPU firmware, matches the existing J/E-divergence fact) and a ~7.2MB one
+(`0x800038`, newly found) — separated and followed by large fixed, non-varying stretches whose purpose is
+still unclear (reserved space? a genuinely frozen secondary image nobody has updated in 6 years?). The
+second region's size is much larger than a typical MCU/DSP firmware image and matches the right order of
+magnitude for an FPGA configuration bitstream — [[ic9700-hardware]] already documents a Cyclone V
+(`IC7601`) on this board — making "component 2 = FPGA bitstream" a reasonable working hypothesis, but this
+is a size argument only, not independently confirmed (the real Cyclone V part's actual bitstream size
+hasn't been checked against the measured ~7.2MB).
+
+Recorded here as a visible correction rather than silently editing the earlier entry, per how this project
+tracks mistakes — the ramp-sweep technique itself was sound and did find something real (the fixed
+template), just not what it was first read as.

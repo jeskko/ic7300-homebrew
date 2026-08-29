@@ -215,22 +215,27 @@ by but not built on top of the prior work there.
   37 known releases, but the compression/encryption scheme itself is
   **not cracked** after a thorough negative sweep (LZSS-family
   parameters, buffer-seeding, XOR-whitening, and — new, 2026-08-30 —
-  zlib/raw-DEFLATE all tried and ruled out). **Real structural progress
-  the same session, though**: found two previously-unnoticed header
-  fields that track the container's already-known build-family grouping,
-  and — the bigger find — the container has **at least 5 major
-  component-boundary regions, not the 2 previously known**, two of which
-  share an *identical* byte sequence right after their headers — solid
-  evidence of a repeating per-component header template, very plausibly
-  one segment per physically-separate chip (mirroring the IC-7300's own
-  already-solved multi-component container). See
+  zlib/raw-DEFLATE all tried and ruled out, against both real components
+  now, see below). **Real structural progress the same session,
+  though**: direct byte-level diffing across releases (not just the
+  header-adjacent ramp pattern, which turned out to be 100% fixed across
+  all 37 releases and doesn't mark per-release content — a same-day
+  correction to an initial misreading) found the container actually has
+  **exactly two real, per-release-varying regions** — a ~2.7MB one
+  (already-known start, `0x10038`) and a newly-found ~7.2MB one
+  (`0x800038`) — separated by large completely-fixed stretches. The
+  second region's size is a plausible match for the on-board Cyclone V
+  FPGA's configuration bitstream (`notes/ic9700-hardware.md`'s `IC7601`),
+  a real but not-yet-confirmed hypothesis. See
   `notes/ic9700-container-format.md`. Also probed the user's live IC-9700
   over the network as an intermission (2 TCP ports open, 1111 and 60000 —
   the latter is D-STAR data/picture-transfer per a user-supplied source
   quote; a full port scan briefly took the radio off the network, worth
   remembering to scan embedded devices much more conservatively next
-  time) — see chat history, not yet written up as a note. Genuine
-  cold-start effort, no prior art existed for this radio going in.
+  time) — see chat history, not yet written up as a note. Separately,
+  confirmed the IC-9700's JTAG connector is the exact same part as the
+  IC-7300's own (`10FLT-SM2-TB`) — see `notes/hardware-debug-access.md`.
+  Genuine cold-start effort, no prior art existed for this radio going in.
 
 ## Layout
 
