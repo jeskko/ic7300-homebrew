@@ -819,23 +819,20 @@ concrete next steps in priority order.
 
 **Next steps, roughly in order of promise**:
 
-1. **`0xf1`/`0xf2`/`0xf3` event handlers, never traced.** Registered in `scif5_dsp_link_driver_init`
-   alongside the already-understood TX-side `0xa1`/`0x9f` — plausibly the **receive side** (processing
-   whatever the DSP sends back: acks, status, maybe a "ready"/boot-complete signal). This is the single
-   most promising unopened lead — an RX path is exactly where a DSP-initiated "I'm alive" signal or a
-   firmware-update-complete acknowledgment would show up, and might connect back to whatever the main CPU
-   does with that information (possibly including a delayed `DRESD` re-assertion for a *subsequent*
-   DSP-side reset, if that's ever needed). Find their handler addresses the same way `0xa1`/`0x9f` were
-   found (`register_event_handler(0xf1, ...)` etc., visible directly in `scif5_dsp_link_driver_init`'s own
-   decompile) and decompile.
+1. ~~**`0xf1`/`0xf2`/`0xf3` event handlers, never traced.**~~ — **RESOLVED, next session, see "SCIF5 RX path
+   closed" section below.** All three route to the same function (`scif5_rx_isr`) — SCIF5's real RX path,
+   feeding a genuine ack/retry state machine, not just a boot-complete flag.
 2. **The other ~30 callers of `scif5_ring_push_word`** (`references_to` on it) beyond the ones already
    traced — mostly clustered `0x200b1194`-`0x200b14d0`, plus two more at `0x200b54c8`/`0x200b54e4` never
-   even opened. This is very likely the DSP's real command API (mode/filter/AGC-shaped parameter pushes,
-   given `dsp_param_sync_tick`'s shape) — cataloguing a handful more would either surface a reset-related
-   command or at least map out what "normal operation" DSP control looks like. `FUN_200b1540`'s command/ack
-   lookup table (values `0x106`, `0x1000000`, `0x24000000`, `0x25000000`, `0x41000000`-`0x4f000000`,
-   `0x61000000`/`62000000`/`6b000000`) was seen but never decoded — could be a response-code table worth
-   returning to once more of the command senders are read.
+   even opened. **Partially advanced, next session, see "SCIF5 command API, first real look" below**: found
+   the actual synchronous command/reply API (`scif5_send_and_wait_reply`, 14 call sites) sitting alongside
+   this ring-buffer path, and confirmed `FUN_200b1540`'s command/ack lookup table — now renamed
+   `dsp_cmd_table_init` — is the one-time boot-time builder of that table (values `0x106`, `0x1000000`,
+   `0x24000000`, `0x25000000`, `0x41000000`-`0x4f000000`, `0x61000000`/`62000000`/`6b000000`, called from
+   `cold_boot_hw_init` right after `scif5_dsp_link_driver_init`), not a response-code table. Still open:
+   individually characterizing the ~14 `scif5_send_and_wait_reply` callers (mode/filter/AGC-shaped pushes,
+   per the working hypothesis) and the original ~30 `scif5_ring_push_word` callers (a separate, slower,
+   MTU2-paced TX path — normal-operation `dsp_param_sync_tick` traffic, not this synchronous command API).
 3. **`DRESD` release, new angle**: everything checked so far was inside `body.bin`'s own `cold_boot_hw_init`
    and immediate neighborhood. Not yet checked: the **boot-ROM/`base.dat` stage**, which runs *before*
    `body.bin`'s entry point (see `notes/base-loader.md`) — if `DRESD` is released exactly once, very early,
@@ -878,6 +875,63 @@ McASP1's DSP audio serializers), `P8_11`/`P8_13` (already `FPDX`/`DCSR`) — eve
 already wired to a different, independently-confirmed function. Not resolved; same category as SCIF1's
 still-open physical pin (an unlabeled/secondary alt-function on the real schematic, or a live JTAG register
 read, would settle it).~~ (superseded above)
+
+## SCIF5 RX path closed, command API first real look (2026-08-29, next session, continuing the DSP comms thread)
+
+Picked up the handoff's #1 item directly: decompiled `scif5_dsp_link_driver_init`'s event-`0xf1`/`0xf2`/`0xf3`
+targets (read `DAT_200b3140`'s literal value rather than guessing) and traced the whole chain forward.
+
+**All three events (`0xf1`/`0xf2`/`0xf3`) route to the same function, `scif5_rx_isr`** (`0x200b2950`) — SCIF5's
+real receive path. It polls SCIF5's RX-ready status (`FUN_20360b34` on `0xE8009808+0x14`), collects bytes one
+at a time, and once 4 are in hand, un-bit-reverses them (the same per-byte algorithm `scif5_bitrev_transmit_word`
+uses for TX, run in reverse) into a 32-bit reply word — stored at a shared struct field (`DAT_200b1c84+0x18`)
+also read by the reply-classifier below. It then kicks `shared_job_ring_dispatch(1)` (the same generic
+async-job dispatcher already documented for `chunk4`/`chunk5`/RSPI2/front-panel-UART) — job type 1 there is
+"a DSP command is pending acknowledgment."
+
+**Found the real ack/retry state machine behind that job type**:
+- **`scif5_classify_reply`** (`0x200b0dc4`, was `FUN_200b0dc4`) reads the reply word and takes its **top
+  byte's high nibble as a "reply class"** (0-15; class 9 aliases to class 1). Classes 1/2/8 are recognized:
+  class 1 does an incremental step-towards-target using the reply's 2nd byte against a stored target
+  (shape of a gain/AGC/level slew, not tied to a specific parameter yet); class 2 is a trivial ack; class 8
+  records a 4-field, IQ/status-shaped payload, gated on a separate flag, consumer not yet traced. Returns
+  "still pending" or "resolved" based on a retry-budget counter.
+- **`scif5_arm_retry_timer(int)`** (`0x200b0cd4`, was `FUN_200b0cd4`) is the real **ACK-TIMEOUT RETRY**
+  mechanism — called with a fresh command's kick-off and again whenever `scif5_classify_reply` says
+  "still pending." Reprograms an MTU2-style compare/period register cluster with one of 2 timing profiles
+  selected by its `param_1`. **Also toggles `PMC8` bits 2 and 11 as a mutually-exclusive pair** depending on
+  that same `param_1` — `param_1==0` re-enables `P8_2` (SCIF5's normal 3rd static pin, confirmed in the pin
+  section above); `param_1!=0` instead enables **`P8_11`** (the schematic's `FPDX`, previously read as
+  FPGA-only). This is a second dynamic pin-toggle mechanism on this codebase, structurally similar to
+  `SCIF1`'s TX/RX turnaround found in the prior detour (see `notes/kernel-rtos.md`) — but every sampled
+  caller passes `param_1=0`, so the `P8_11` path is real in the code but not yet observed actually triggered.
+- **`scif5_send_and_wait_reply`** (`0x200b237c`/`thunk_FUN_200b237c`) is the blocking wrapper tying it
+  together: wait for a busy flag, call `scif5_arm_retry_timer` (forwarding its own caller's hidden parameter
+  — Ghidra doesn't show this function taking any argument, but it clearly passes one through), wait for the
+  reply-ready flag, return the decoded reply word. **14 call sites across the firmware** — this is the DSP's
+  real synchronous command/reply API, i.e. most of handoff item 2.
+- **`scif5_cmd_transmit_now(cmd_word)`** (`0x200b253c`) is a direct, immediate SCIF5 transmit (busy-wait,
+  `scif5_bitrev_transmit_word`, arm a timeout deadline) — a different, faster path than the ring-buffer/MTU2-
+  paced one used for `chunk4`/`chunk5` transfer and `dsp_param_sync_tick`. Callers build a command word (e.g.
+  `0xe0000000`/`0xe0000001` in the 2 samples checked — a **new top-byte class, `0xE`, not in the default
+  table below**), push it with this, then call `scif5_send_and_wait_reply` (up to a small retry count in the
+  samples checked) and compare the reply's top nibble against an expected class (`9`, `0xE` seen).
+
+**`FUN_200b1540`, renamed `dsp_cmd_table_init`, is confirmed (not just guessed) as the boot-time table
+builder**: it's `cold_boot_hw_init`'s own direct call, right after `scif5_dsp_link_driver_init` (2 other init
+calls between them, then `rspi2_driver_init` right after) — so this really is the "DSP driver is up, push its
+full default/saved parameter set" boot step, not something reached later. It builds the 24-entry table at
+`DAT_200b1cb8` (the literal words from the old handoff list), with **6 of the 24 slots populated from runtime
+variables instead of fixed literals** (plausibly per-unit calibration/EEPROM-backed settings, not yet traced
+further) — then fires exactly one `dsp_param_sync_tick()` call and waits for it to finish before marking
+itself done.
+
+**Net effect on the handoff list**: item 1 is closed. Item 2 has a real API surface now
+(`scif5_send_and_wait_reply` + its ~14 callers) rather than being an undifferentiated pile of
+`scif5_ring_push_word` call sites — next natural step is going through those 14 one at a time to see what
+each command class actually controls, which would very plausibly turn up a reset-related command along the
+way (the original motivation for this whole thread). Renamed/commented all 6 functions above in Ghidra;
+committed.
 
 ## `IC902` identity, corrected again: it's the DSP's own SPI boot flash, at the pin level (2026-08-29)
 
