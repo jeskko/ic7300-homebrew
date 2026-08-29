@@ -1070,3 +1070,24 @@ the *ordinary* SD-card menu UI or only from a separate, service-mode-only menu s
 SD-menu's own item-visibility table, not yet located — likely separate from the 216-item general menu table
 already documented); live JTAG would very plausibly resolve the actual boot-condition check in minutes by
 just watching GPIO/SCIF3 traffic during a real service-mode entry.
+
+**Same session, continued — user's hunch on the REMOTE-jack-short detection mechanism, and a start on the
+SCIF3 packet-dispatch structure.** User suggested the short probably isn't read as raw GPIO but detected by
+the SCIF0 UART hardware itself (through the level converters) — worth noting `FUN_200108b0` (SCIF0's retry/
+echo-verify path, reached when a specific status bit is set during RX) does exactly this shape of check:
+compares a just-received byte against `DAT_200115c0[7]` ("last transmitted byte") and counts mismatches —
+but this reads as CI-V's ordinary bus-collision/echo-verify logic (a real, standard part of single-wire
+CI-V arbitration), not an obviously special boot-time short-detector; not confirmed either way.
+
+Went to look at the front-panel (SCIF3) side as suggested and found its own frame-receive machinery for the
+first time: `scif3_frame_rx_statemachine` (`0x20036c68`, found via its `register_event_handler` IDs
+`0xe9`-`0xec`) is a **third independent implementation of the exact same `0xFE`/`0xFD` framing** used by
+CI-V (SCIF0) and the service-mode link (SCIF1) — strong confirmation this whole firmware has one shared
+low-level driver template reused across all three internal serial links. Once a full frame arrives, control
+passes to `scif3_frame_dispatch_by_type` (`0x20036bb8`): the packet's first content byte is a "type" (up to
+32 values), and the rest of the frame gets copied into a shared status buffer at an offset determined by
+that type (`DAT_20037590 + type` — different types can write overlapping regions of one larger front-panel
+status struct, not fixed independent slots). This is almost certainly where keypad/encoder state lands, but
+**the exact type→offset→field mapping, and which bit is MENU vs. FUNCTION, was not decoded this session** —
+a real, scoped-out next step (comparable in size to the diode-matrix or `DRESD` traces), not a quick lookup.
+Both functions renamed and commented in Ghidra.
