@@ -87,26 +87,16 @@ standard Altera/Intel passive-serial configuration behavior (matches the
 `DCLK`/`DATA0` pins the user identified on the FPGA package early in
 this project).
 
-This **refines, and likely corrects**, the working assumption in
-[[multi-cpu-images]]'s "Strong new lead" section that `IC902`
-(`EN25QH32A`) is "the DSP's own flash" (based on physical proximity to
-IC901 on the schematic). Given the FPGA's config source is described
-here as a dedicated external EEPROM, and IC902's `DO`/`DI`/`CLK`/`CS`
-lines were independently found routed toward the FPGA's `DCLK`/`DATA0`
-pins (the standard passive-serial config pair) — **IC902 is more likely
-the FPGA's own configuration flash, not the DSP's**, with physical
-proximity to IC901 being coincidental board layout rather than a
-functional link. This leaves an open question the multi-cpu-images
-investigation hadn't previously framed correctly: **where does the DSP's
-own program actually come from**, if not IC902? Plausible answer: the
-DSP has no dedicated persistent flash at all and is boot-loaded by the
-main CPU into DSP-accessible RAM at power-on — which would be consistent
-with the already-found genuinely-separate async queue/DMA-style write
-mechanism (`FUN_20025044`, see [[multi-cpu-images]]) used for the "3
-extra chunks" during firmware updates, rather than that mechanism being
-(as previously framed) about updating "the DSP's flash". Worth
-re-reading that section's conclusions with this correction in mind
-before extending the investigation further.
+**Superseded, 2026-08-29 — this "refinement" was itself wrong, retracted in [[multi-cpu-images]].** The
+FPGA-EEPROM manual quote above is real, but IC902 isn't that EEPROM: the user traced IC902's `CS`/`DO`/`DI`/
+`CLK` pins directly to `IC901` (the DSP) pins 9/17/18/11 — which double as `BOOT[4]`/`BOOT[0]`/`BOOT[1]`/
+`BOOT[2]`, the DSP's own boot-mode strapping pins. That's a direct point-to-point connection, stronger
+evidence than the net-label routing this section's correction was based on. **IC902 is IC901's own SPI
+boot flash** — the DSP self-boots from it via its internal ROM bootloader. See [[multi-cpu-images]]'s
+"`IC902` identity, corrected again" section for the full reasoning and what it means for DSP firmware
+updates (short version: `IC901`, already running from its current `IC902` contents, is almost certainly
+what reprograms `IC902` on the main CPU's behalf during a firmware update — the DSP is the only thing with
+electrical access to that flash at all).
 
 ## DSP/FPGA control signal mapping — user-derived from schematics, cross-referenced against the RZ/A1H manual (12th session)
 

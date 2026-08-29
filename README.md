@@ -78,8 +78,27 @@ by but not built on top of the prior work there.
   once available, several open items above (the real CI-V dispatcher, some task-activation
   and mode-2/pin-mux questions) are flagged as better resolved live than by continued static
   guessing.
-- 🔎 **Open**: user-flagged raw/uncompressed bitmap material not yet pinned
-  down to a specific offset (`notes/bitmaps.md`).
+- ✅ **UI icon/bitmap resource format fully solved**: a 708-entry pointer table
+  (`g_icon_table`, RAM `0x20335234`) indexes 32-byte header structs (offset/
+  width/height) each followed by tightly-packed BGRA8888 pixel data, row
+  stride padded to a 4-pixel boundary (both quirks found by re-reading the
+  real consumer code, `icon_blit_by_id_v1`/`_v2`, after user-caught decode
+  bugs); extracted and rendered all 708 icons cleanly (`tools/extract_icons.py`)
+  and individually identified/renamed 150 of them in Ghidra — the complete
+  touchscreen UI icon set (`TUNE`/`SPLIT`/filter labels/meters/arrows/menu
+  icons/etc.), confirmed visually (`notes/bitmaps.md`, `notes/icon_table.csv`).
+- ✅ **`SCIF5` identified as the real DSP command/data link** (a 5th serial
+  channel, not previously catalogued): full transport chain traced from
+  `firmware_update_main`'s "3 extra chunks" mechanism down to the literal
+  `SCFTDR_5` register, MTU2-timer-paced; also carries live, ongoing
+  parameter-sync traffic during normal operation, not just updates. Confirms
+  DSP Program/DSP Data get written **live during the firmware update**, not
+  deferred to a post-restart check — almost certainly by the DSP itself
+  reprogramming its own boot flash (`IC902`, corrected this session from an
+  earlier "FPGA config flash" misattribution — its `CS`/`DO`/`DI`/`CLK` pins
+  trace directly to the DSP's own `BOOT[4:0]`/SPI0 strapping pins). **Open**:
+  where `DRESD` (DSP reset) actually gets released — still not found in the
+  traced main-CPU call graph despite this — see `notes/multi-cpu-images.md`.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is

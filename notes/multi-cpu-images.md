@@ -708,3 +708,143 @@ wrapper functions rather than referenced as a direct literal. The component **id
 solid and new; the **byte-offset** confirmation the hypothesis ultimately needs is not — flagged accurately
 rather than asserted. Live JTAG (watch what gets written to `0x203ff76c` while browsing the version-check
 screen with a real update SD card inserted) would resolve this quickly and directly.
+
+## `SCIF5` identified: the real physical DSP link, both for firmware update and live control (2026-08-29)
+
+New target picked up: DSP interaction/firmware-update timing, specifically hoping to find where `DRESD`
+gets released after boot. Didn't close that out, but found the actual **physical transport** the "3 extra
+chunks" mechanism uses — a genuinely new discovery, not previously catalogued in this project's serial-link
+inventory (SCIF0=CI-V, SCIF1=service-mode, SCIF3=front-panel).
+
+**Full chain traced, `FUN_20025044`/`chunk_transport_send_reload_cmd` down to real hardware**:
+
+```
+FUN_20025044 (per-chunk producer) / chunk_transport_send_reload_cmd (reload trigger, cmd 0x87)
+  -> FUN_200b10a0 (ring-buffer push -- 32-bit words tagged by top nibble: 0xB=3-byte payload
+     triplet + channel, 0xE=total-size header)
+  -> ring buffer drained by MTU2 channel 4's compare-match interrupt (GIC IRQ 161 = TGI4C per the
+     RZ/A1H manual; event ID 0xa1 in this firmware's own registration scheme, confirmed via
+     `register_event_handler(0xa1, FUN_200b2a14)`)
+  -> FUN_200b2a14 (pop one ring-buffer entry) -> FUN_200b2440 (bit-reverses each of the 4
+     payload bytes, then writes them one at a time to 0xE800980C)
+  -> **SCFTDR_5 -- SCIF5's transmit FIFO data register** (confirmed against the RZ/A1H manual:
+     SCSMR_5 base 0xE8009800, SCFTDR_5 at +0xC)
+```
+
+`DAT_200b2b28` (polled throughout this chain for a ready/done flag) = `0xFCFF022D` = `TSR_4`, MTU2 channel
+4's own status register — the whole thing is a timer-paced software transmit loop over SCIF5, not a plain
+blocking UART write.
+
+**Confirms the update-timing question directly**: `FUN_20025044` and `chunk_transport_send_reload_cmd` each
+have exactly **one caller**, both inside `firmware_update_main`. Nothing else in the traced firmware pushes
+onto this transport for a chunk transfer. **DSP Program/DSP Data get sent to the DSP live, during the
+update itself, over SCIF5 — not deferred to a post-restart check.**
+
+**SCIF5's driver is armed on every boot, not just during updates.** `FUN_200b2bb0` (SCIF5 init: registers
+event handlers `0xa1`/`0x9f`/`0xf1`/`0xf2`/`0xf3`, configures the MTU2 timer) is called unconditionally from
+`cold_boot_hw_init`, right after `port_bulk_gpio_init_pass2()` (the `DRESD`-low write). Its only caller —
+confirmed via `references_to`, this isn't a guess.
+
+**This is not just an update channel — it carries live, ongoing control traffic.** `FUN_200b11c0`, running
+regularly (looks timer/interrupt-driven, same family), continuously diffs a "current" parameter-state
+struct against a "last-sent-to-DSP" shadow copy and pushes any changed field over the exact same
+`FUN_200b10a0` ring buffer. This reads as a real-time parameter-sync bus (filter/mode/AGC-shaped settings
+pushed to the DSP as the user changes them), not a one-shot mechanism — meaning **the DSP must be an
+actively-running core receiving this traffic in normal operation**, not permanently held in reset.
+
+**Boot-time DSP handshake, also over SCIF5**: right after `FUN_200b2bb0`/`FUN_200b48e4` (an `HSK1` wait,
+same `PPR8` bit 9 signal already confirmed elsewhere), `FUN_200b5aa0` sends two specific command words
+(`0x100007FF` and one more from `DAT_200b6370`) via the same `FUN_200b2440` primitive and waits for an ack
+flag after each — reads as a real boot-time identification/handshake exchange with the DSP, all inside
+`cold_boot_hw_init`'s unconditional call sequence.
+
+**Open tension, not resolved this session**: this directly conflicts with the earlier, already-exhaustive
+finding that `DRESD` (`P2_6`) is driven LOW once at boot by `port_bulk_gpio_init_pass2` and never touched
+again anywhere in `body.bin` (see [[ic7300-signal-chain]]) — a DSP core in hardware reset cannot be
+receiving live SCIF5 traffic. Checked and ruled out this session:
+- **No inverter on the net** (user's schematic check, page 64/66): a 47kΩ pull-up to 3.3V on `DRESD`, a
+  1kΩ series resistor (`R902`) straight to DSP pin 146 (`\RESET`) with the service-programming connector
+  `J901` tapped off the same node, and a separate branch through a resistor array (`R927`, ~22Ω) to a
+  47kΩ-pulldown-terminated `WP`/`DQ2` pin on `IC902` (a flash chip on this net — **note**: an earlier
+  session's schematic read concluded `IC902` is the *FPGA's* config flash, not the DSP's; this reappearance
+  on the `DRESD` net is worth reconciling, not asserted as a contradiction yet). No active component
+  anywhere in this path — polarity is not flipped, `CPU LOW` really does mean `DSP pin sees LOW`.
+- **Considered and checked: release via direction/tri-state instead of a data-register write** (the 47kΓ
+  pull-up means the CPU need only stop *driving* the pin, not drive it HIGH, for the DSP to see it float
+  back up) — would show up as a `PM2` (port 2 direction register, `0xFCFE3308`) write instead of a `P2`
+  data-register write, a literal the earlier P2-only sweep would have missed entirely. Checked: the *only*
+  literal reference to the whole `PMn` block base (`0xFCFE3300`) anywhere in `body.bin` is `FUN_2005fdb4`,
+  and it touches `P2` bits 8-11 only — nowhere near bit 6. Ruled out.
+- Checked the remaining not-yet-examined calls immediately around `cold_boot_hw_init`'s SCIF5-init sequence
+  (`FUN_200b47f0`, `FUN_200b4800`, `FUN_2002af80`, `FUN_2002aed8`, `FUN_2007ed9c`, `FUN_2007ede0`) — all
+  turned out to be RAM-state clears, a `scif3_driver_init()` call (front panel, unrelated), or ITRON
+  semaphore-creation calls. None touch port registers.
+
+**Where this leaves it**: either (a) the release genuinely isn't in the statically-traced call graph — a
+real candidate for the same "computed/indirect, not a literal" blind spot that's beaten static analysis
+elsewhere in this project (`chunk4`/`chunk5`'s destination table, `0x203ff76c`'s writer), or (b) `DRESD`'s
+role needs re-examination given the `IC902`/flash-`WP` branch the schematic just revealed — worth checking
+whether `DRESD` is better understood as a combined "hold DSP in reset **and** write-protect its companion
+flash during programming" line, in which case the DSP might come out of reset far earlier/differently than
+assumed, or via a mechanism that doesn't route through `P2` at all. Not guessed further; flagged for either
+a fresh angle or live JTAG (watch `P2`/`PPR2` bit 6 directly while the radio boots).
+
+**`SCIF5`'s physical pin has the same "every candidate already claimed" problem as `SCIF1`.** Register
+identity (`0xE8009800` = `SCSMR_5`) is solid regardless, but checked the RZ/A1H manual's alt-function table
+for where `TxD5`/`RxD5` can physically land, against the user's own full CPU pinout sweep: `P6_6`/`P6_7`
+(already `USSENI`/USB cluster and `LCD_ON`), `P8_1`/`P8_2` (already `DSPR`/`DSPX`, McASP1's DSP audio
+serializers), `P8_11`/`P8_13` (already `FPDX`/`DCSR`) — every standard candidate pair is already wired to a
+different, independently-confirmed function. Not resolved; same category as SCIF1's still-open physical pin
+(an unlabeled/secondary alt-function on the real schematic, or a live JTAG register read, would settle it).
+
+## `IC902` identity, corrected again: it's the DSP's own SPI boot flash, at the pin level (2026-08-29)
+
+**Retracts the 2026-08-27 "confirmed: IC902 = FPGA config flash" conclusion above.** That call was based on
+tracing IC902's `SPDI`/`SPDO`/`SPCK`/`SPCS` net *labels* through the schematic to a cluster also carrying
+`DONE`/`STAT`/`CFG` (Altera passive-serial config handshake names) — real evidence, but one hop removed
+from IC902 itself. This session the user traced IC902's actual `CS`/`DO`/`DI`/`CLK` pins directly to their
+destination and got a much more direct answer: **`IC901` (the DSP, TMS320C6745) pins 9/17/18/11** —
+
+| `IC902` pin | `IC901` (DSP) pin | DSP pin's dual function |
+|---|---|---|
+| `CS` | 9 | `\SPI0_SCS[0]` / `\UART0_RTS` / `EQEP0B` / `GP5[4]` / **`BOOT[4]`** |
+| `DO` | 17 | `SPI0_SOMI[0]` / `EQEP0I` / `GP5[0]` / **`BOOT[0]`** |
+| `DI` | 18 | `SPI0_SIMO[0]` / `EQEP0S` / `GP5[1]` / **`BOOT[1]`** |
+| `CLK` | 11 | `SPI0_CLK` / `EQEP1I` / `GP5[2]` / **`BOOT[2]`** |
+
+Every one of these DSP pins doubles as a `BOOT[n]` strapping input — TI C674x-family DSPs sample
+`BOOT[4:0]` at reset release to select boot mode, and the same physical pins then serve as the SPI0
+peripheral once that mode is selected. Wiring a flash chip straight onto exactly this pin group is the
+textbook "boot from SPI flash" hardware configuration. This is about as direct as schematic evidence gets —
+**`IC902` is `IC901`'s own dedicated boot flash**, and the DSP almost certainly self-boots autonomously
+from it via its internal ROM bootloader, with no main-CPU involvement needed to load DSP program code after
+reset is released.
+
+**Reconciles rather than contradicts the FPGA-config-signal observation**: the 2026-08-27 finding (IC902's
+net labels reaching a cluster with `DONE`/`STAT`/`CFG`) already came with a recorded hypothesis — "the
+FPGA's config bitstream is fed by the DSP rather than directly by the main CPU" — that fits perfectly now:
+`IC901`, once self-booted from `IC902`, likely drives the FPGA's config pins itself as part of its own
+firmware, rather than `IC902` feeding the FPGA directly. Nothing here rules that out; it just moves the
+FPGA-config relationship one hop later (DSP → FPGA, not flash → FPGA).
+
+**This reframes the whole DSP-update picture and directly answers both of the session's open questions**:
+
+- **DSP code update timing**: the "DSP Program" chunk `firmware_update_main` sends over `SCIF5` (see the
+  section above) is very unlikely to be streamed straight into DSP RAM for direct execution — `IC901` is
+  already running (it has to be, to receive and act on `SCIF5` traffic at all) on whatever program it
+  self-booted from `IC902`'s *current* contents. The far more coherent model: `IC901`'s own running
+  firmware includes a flash-programming routine that listens on `SCIF5`, receives the new image from the
+  main CPU, and **reprograms `IC902` itself** — the DSP is the only device electrically able to program
+  this flash at all, since `IC902` sits on the DSP's private SPI0 bus, not on any bus the main CPU can
+  reach directly. That write happens live, during the update (matches the confirmed single-caller timing
+  above) — but the new code doesn't start *running* until `IC901` itself next reboots and self-loads from
+  the freshly-written flash, which most likely coincides with the same restart that follows the main CPU's
+  own update (matching the "...restart. NEVER turn OFF..." warning), though whether that's the main CPU
+  re-asserting `DRESD` or the DSP self-resetting once programming+verification completes isn't determined.
+- **Where `DRESD` gets released**: still not found in the statically-traced main-CPU call graph (see above)
+  — but this finding weakens the assumption that it *needs* to be released repeatedly or on any complex
+  schedule. If `IC901` only needs taking out of reset once, ever, per power-on (and then runs and manages
+  its own subsequent reboots/reprogramming autonomously via its own flash and its own logic, independent of
+  further main-CPU `P2_6` writes), a single early release — however it happens — would be entirely
+  sufficient to explain every SCIF5 observation in this session, live traffic included. Doesn't close the
+  question, but narrows what kind of mechanism is worth still looking for.

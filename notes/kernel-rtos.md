@@ -1249,6 +1249,28 @@ few bytes the *other* incoming edge lands on): `0x200ba7dc`, `0x200ba8f8`, `0x20
 `0x200baca8`, `0x200bae10`, `0x200bb2d0`. Left un-fixed (cosmetic only, four-byte gaps don't block reading
 the surrounding logic) — worth a quick pass if this area gets revisited.
 
+**Follow-up (same day): whole-program Thumb-conflict hunt.** User's own bulk Ctrl-A "set `TMode`=0 across
+the whole program" fix (attempted to finish off any stray Thumb-context regions program-wide in one shot)
+failed with "Context register change conflicts with one or more instructions" — Ghidra refusing to
+silently overwrite bytes *currently* disassembled as genuine Thumb. Swept all 174 "Bad Instruction"
+bookmarks program-wide (Ghidra auto-creates one on every disassembly conflict encountered during analysis —
+this project's established proxy for finding these bugs) and checked each address's *current* disassembly
+state individually. Result: **only 4 addresses in the whole program are still genuinely live Thumb-context
+conflicts**, and all 4 are exactly 4 of the 7 "tiny islands" listed above — the merge-point bytes the bulk
+file-RPC-table fix skipped:
+
+- `0x200ba8f8` → real ARM instruction is `ldrh r0,[r5]` (`e1d500b0`)
+- `0x200ba918` → real ARM instruction is `ldr r0,[r6]` (`e5960000`)
+- `0x200baca8` → real ARM instruction is `ldr r1,[r8]` (`e5981000`)
+- `0x200bae10` → real ARM instruction is `str r0,[r1]` (`e5810000`)
+
+(cross-checked against `objdump -m arm --adjust-vma=0x20005000` ground truth). The other 3 islands
+(`0x200ba7dc`, `0x200bab74`, `0x200bb2d0`) are **not** conflicts — currently just undefined single bytes,
+harmless to a `TMode` bulk set. Every other bookmark checked program-wide (the full remaining ~167) is
+stale: either a proper ARM function/instruction already, or genuinely undefined bytes. So the whole-program
+`TMode=0` Ctrl-A fix should succeed once these 4 addresses are individually cleared (Clear Code Bytes) and
+re-disassembled as ARM — no other blockers exist anywhere else in `body.bin`.
+
 Created `Function` objects at all 27 table entries (named `civ_table_id00`-`civ_table_id1a`) plus the
 shared helper functions between them (`civ_table_shared_open_iterate`, `civ_table_str_copy_helper`,
 `civ_table_trim_helper`, `civ_table_hexaddr_decode`, `civ_table_helper_580`/`680`/`710`/`82c`/`930`/`938`/
@@ -1276,14 +1298,91 @@ instead of raw disassembly. Decompiled the handlers that were previously only ch
   single deeper function (`FUN_200c9bec`/`FUN_200c9d0c`/`FUN_200c9e9c`/`FUN_200cc148`/`FUN_200cb8d8`/
   `FUN_200c5dd0` respectively) — not pursued further into those deeper functions this pass.
 
-**Tip for future ARM/Thumb bug encounters, worth remembering**: this project's Ghidra language module has a
-`TMode` context register controlling ARM-vs-Thumb disassembly per address, which auto-analysis is free to
-flip when it thinks it's found a Thumb-interworking branch. Since this whole firmware is confirmed pure ARM
-(zero genuine Thumb instructions found across the entire project), presetting `TMode = 0` across the whole
-`body.bin` memory range (Listing → select range → right-click → **Set Register Values...** → `TMode` → `0`)
-should stop *fresh* auto-analysis from guessing Thumb in never-before-touched territory going forward —
-worth doing once, proactively, rather than continuing to hit this bug address-by-address as new code gets
-examined. Doesn't undo already-broken analysis (still a one-time cleanup where it's already happened), and
-won't stop a genuine odd-address `BX`/`BLX` target from switching context at that one spot — but this
-firmware doesn't appear to do genuine ARM/Thumb interworking anywhere, so that caveat shouldn't matter in
-practice.
+**RETRACTED (2026-08-29): "zero genuine Thumb instructions anywhere" was wrong.** The tip below was written
+before checking whether the whole program is really pure ARM — it isn't. There's a real, sizeable Thumb-2
+code block, and the user's own attempt to apply the blanket fix below is what surfaced this (see "Whole-
+program Thumb-conflict hunt, part 2" further down) — do **not** follow the struck-through advice.
+
+~~this project's Ghidra language module has a `TMode` context register controlling ARM-vs-Thumb disassembly
+per address, which auto-analysis is free to flip when it thinks it's found a Thumb-interworking branch.
+Since this whole firmware is confirmed pure ARM (zero genuine Thumb instructions found across the entire
+project), presetting `TMode = 0` across the whole `body.bin` memory range (Listing → select range →
+right-click → **Set Register Values...** → `TMode` → `0`) should stop *fresh* auto-analysis from guessing
+Thumb in never-before-touched territory going forward — worth doing once, proactively, rather than
+continuing to hit this bug address-by-address as new code gets examined. Doesn't undo already-broken
+analysis (still a one-time cleanup where it's already happened), and won't stop a genuine odd-address
+`BX`/`BLX` target from switching context at that one spot — but this firmware doesn't appear to do genuine
+ARM/Thumb interworking anywhere, so that caveat shouldn't matter in practice.~~
+
+## Whole-program Thumb-conflict hunt, part 2: real Thumb code found, "zero Thumb" retracted (2026-08-29)
+
+Follow-up to the bookmark sweep above. User tried the whole-program `TMode=0` Ctrl-A fix suggested by the
+(now-retracted) tip above; Ghidra correctly refused. While investigating why, the user noticed Ghidra
+decoding parts of the program around `0x2015xxxx` sensibly in Thumb mode but as garbage in ARM mode —
+directly contradicting the "pure ARM" claim. Verified with `arm-none-eabi-objdump` ground truth in both
+modes (`-M force-thumb` forces Thumb decode of a raw binary), and confirmed:
+
+- **Real, coherent Thumb-2 code exists**, roughly `0x2014b000`-`0x2017d400` (~200 KB) — clean function
+  prologues/epilogues (`push {r4,r5,r6,lr}` / `pop {r4,r5,r6,pc}`), sensible in-range `bl`/`b.w` targets,
+  `cbz`/`it`/32-bit Thumb-2 encodings throughout. This is the statically-linked **FreeType** library body —
+  matches the `TxtRender_FT2_Init`/`_Create`/`_Destroy`/`_setSize`/`_LoadGlyphData`/`_GetFonInfo` wrapper
+  functions and the `truetype`/`postscript-cmaps`/`sfnt-table`/`postscript-font-name` string tables already
+  known nearby (e.g. `FUN_20108cc8`'s FreeType internals, `notes/` references to font rendering). One ~14 KB
+  **ARM**-mode sub-block sits embedded inside it at `0x20158400`-`0x2015bc00` (confirmed by the same
+  ground-truth method — clean ARM function bodies, calls back into the Thumb region and out to known ARM
+  helpers around `0x200f3890`/`0x200f4af0`/`0x200f6474`/`0x2017c766`) — plausible per-object-file ARM/Thumb
+  mix within one statically-linked library, not unusual for a real-world build.
+- **Ghidra's own auto-analysis already has this region correct** — checked live: `0x201544a0` currently
+  disassembles in Ghidra's listing as `push {r4,r5,r6,lr}` (Thumb), matching ground truth. That's *why* this
+  never showed up in the 174-bookmark "Bad Instruction" sweep above: auto-analysis correctly propagated
+  Thumb context here from the start (almost certainly via `BLX`/interworking-branch detection into this
+  region), so no conflict was ever recorded. **No fix is needed here** — this was purely a documentation
+  error, not a live bug.
+- **This is exactly why the blanket Ctrl-A `TMode=0` fix was the wrong tool**: applying it program-wide
+  would have silently converted this entire correct, real Thumb-2 library into garbage ARM. The user's
+  instinct to test first ("i guess the ctrl-a is not very feasible") caught this before any damage was done.
+  The bookmark-based per-address sweep remains the right approach precisely *because* the rest of the
+  program (outside this one library) really is ARM-only, so Ghidra's own conflict bookmarks are a reliable
+  proxy there — the file-RPC table's 4 genuine islands identified above are still the only real, actionable
+  fix outstanding.
+- **False-positive trap, worth remembering**: a first-pass coarse scan (`tools/arm_thumb_scan.py`, see
+  below) flagged huge additional swaths of the image as "Thumb" — megabytes of it, mostly beyond
+  `0x20185000`. Spot-checking several samples (`0x201ad000`, `0x20225000`, `0x202c1000`, `0x202f9000`, …)
+  showed these are **font/glyph bitmap data** (highly repetitive byte patterns like `ff ff 00 ff` or
+  `85 85 00 85`), not code in either mode — Thumb's denser 16-bit encoding space makes random/structured
+  *data* statistically far more likely to "decode clean" than ARM's 32-bit space, so a bare bad-instruction-
+  count heuristic produces false positives on data-heavy regions. Only trust a "looks like Thumb" verdict
+  after eyeballing actual code-flow coherence (real prologues, in-range branch targets, non-repeating
+  bytes) — which is why the FreeType boundaries above were hand-verified, not just heuristic output.
+
+**Tooling built from this**: `tools/arm_thumb_scan.py` — a local, Ghidra-independent ground-truth scanner
+(objdump-based, both ARM and forced-Thumb decode, windowed bad-instruction-count classification). Explicitly
+a **locator, not an auto-fixer** — it never touches the live Ghidra project, and given both near-misses above
+(almost corrupting a correct Thumb region via blanket Ctrl-A; the data-vs-code false-positive trap) it's
+staying that way. Use it to narrow down where to look; verify by hand before changing anything in Ghidra,
+same as every other fix in this project.
+
+## Session handoff update (2026-08-29, later same day) — read this before the section above
+
+The "Session handoff" section further up this file is from earlier the same day and is now partly stale.
+Status update, no need to re-derive:
+
+- **Still genuinely pending, low effort**: the file-RPC table's 4 real Thumb islands identified above
+  (`0x200ba8f8`/`0x200ba918`/`0x200baca8`/`0x200bae10`) — exact ARM replacement instructions are documented
+  above, just need Clear Code Bytes + re-disassemble in the GUI. Not yet confirmed done.
+- **New major thread opened, not on the old handoff list at all**: DSP interaction. `SCIF5` identified as
+  the DSP's real command/data link (full transport chain traced, MTU2-timer-paced, down to `SCFTDR_5`);
+  confirmed DSP Program/DSP Data get written **live** during `firmware_update_main`, almost certainly via
+  the DSP reprogramming its own boot flash (`IC902` — corrected this session from an earlier, wrong "FPGA
+  config flash" call; its pins trace directly to the DSP's `BOOT[4:0]`/SPI0 strapping pins). **Best next
+  step if this thread is picked back up**: `DRESD`'s release is still unfound in the main-CPU call graph
+  despite the DSP clearly running (live `SCIF5` parameter-sync traffic proves it) — worth either a fresh
+  angle (the boot-ROM/`base.dat` stage predating `cold_boot_hw_init`, not yet checked for this specifically)
+  or live JTAG once hardware arrives. Full detail and everything ruled out already: `notes/multi-cpu-images.md`'s
+  `SCIF5`/`IC902` sections.
+- **Closed this session**: the UI icon/bitmap resource format (`notes/bitmaps.md`) — was on the older
+  standing-candidates list as "raw/uncompressed bitmap material", now fully solved with 150 icons
+  individually identified and renamed.
+- The rest of the older "Session handoff" section above (mode5_combo, `factory_file_case28_report`, SCIF3
+  packet types, the real CI-V dispatcher, older standing candidates, JTAG-dependent items) is untouched —
+  still accurate, still the list to work from once the two items above are resolved.

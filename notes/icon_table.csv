@@ -1,0 +1,709 @@
+icon_id,header_addr,width,height,label
+0,0x202e258c,52,18,TUNE (outline/inactive)
+1,0x202e344c,52,18,TUNE (red/active)
+2,0x202e430c,52,18,TUNE (dark/disabled)
+3,0x202c2c4c,52,18,"""E"" (orange box) -- meaning unconfirmed"
+4,0x202c3b0c,52,18,E-TUN (outline/inactive)
+5,0x202c49cc,52,18,E-TUN (red/active)
+6,0x202e5dcc,40,19,TX (outline/inactive)
+7,0x202e69cc,40,19,TX (red/active)
+8,0x202e51cc,40,19,TX (grey/disabled)
+9,0x202e75cc,40,19,TX (dotted outline)
+10,0x202dda3c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+11,0x202de02c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+12,0x202dd82c,1,31,probable level/meter-segment tick (1x31) -- unconfirmed
+13,0x202c5a9c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+14,0x202c608c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+15,0x202c588c,1,31,probable level/meter-segment tick (1x31) -- unconfirmed
+16,0x202e15bc,51,18,SPLIT
+17,0x202bf4ac,97,18,AUTOTUNE
+18,0x202de61c,35,18,"solid orange swatch, no text"
+19,0x202df05c,13,12,red status dot
+20,0x202df37c,13,12,pause (II) icon
+21,0x202df69c,23,12,RIT
+22,0x202c256c,33,12,triangle+TX (out-of-band/TX-inhibit warning)
+23,0x202c1fac,37,9,"""BLANK"" placeholder icon"
+24,0x202e047c,37,9,star+1 (memory/preset slot 1)
+25,0x202e0a3c,37,9,star+2 (slot 2)
+26,0x202e0ffc,37,9,star+3 (slot 3)
+27,0x202dfbbc,13,17,SD card icon
+28,0x202e001c,13,17,SD card icon (variant)
+29,0x202c1c8c,10,16,small flag/pointer marker
+30,0x202c10ec,1,16,
+31,0x202c196c,10,16,
+32,0x202c164c,10,16,
+33,0x202c120c,1,16,
+34,0x202c132c,10,16,
+35,0x202e247c,11,5,
+36,0x202dfb3c,6,3,
+37,0x202beb8c,30,18,"page indicator ""1/4"""
+38,0x202c667c,30,18,key-lock icon
+39,0x202dcbcc,31,8,"""S"" meter-select label"
+40,0x202dc7ac,31,8,"""Po"" meter-select label (power out)"
+41,0x202dcfec,31,8,"""SWR"" meter-select label"
+42,0x202dbb4c,31,8,"""ALC"" meter-select label"
+43,0x202dbf6c,31,8,"""COMP"" meter-select label"
+44,0x202dc38c,31,8,"""Id"" meter-select label (drain current)"
+45,0x202dd40c,31,8,"""Vd"" meter-select label (drain voltage)"
+46,0x202d285c,266,13,"dotted horizontal meter scale, red marker"
+47,0x202cfa2c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+48,0x202d5eec,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+49,0x202c6f9c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+50,0x202c9dcc,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+51,0x202ccbfc,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+52,0x202d8d1c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+53,0x202be74c,21,11,RIT (size/style variant)
+54,0x202b8e3c,28,11,triangle+TX (variant)
+55,0x202bd06c,46,10,"""S/Po"" combined meter label"
+56,0x202bd80c,46,10,"""S/SWR"" combined meter label"
+57,0x202bb98c,46,10,"""S/ALC"" combined meter label"
+58,0x202bc12c,46,10,"""S/COMP"" combined meter label"
+59,0x202bc8cc,46,10,"""S/Id"" combined meter label"
+60,0x202bdfac,46,10,"""S/Vd"" combined meter label"
+61,0x202ba02c,99,12,dotted meter scale with numbered ticks (S-meter scale)
+62,0x202b9cec,99,2,
+63,0x202bb30c,99,2,
+64,0x202b932c,99,2,
+65,0x202b966c,99,2,
+66,0x202b99ac,99,2,
+67,0x202bb64c,99,2,
+68,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+69,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+70,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+71,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+72,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+73,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+74,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+75,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+76,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+77,0x2028137c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+78,0x20281bac,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+79,0x202810ac,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+80,0x201a031c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+81,0x201a147c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+82,0x2019fd3c,1,92,probable level/meter-segment tick (1x92) -- unconfirmed
+83,0x201a2bbc,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+84,0x201a3d1c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+85,0x201a25dc,1,92,probable level/meter-segment tick (1x92) -- unconfirmed
+86,0x202ed4ac,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+87,0x202ee72c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+88,0x202ece6c,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+89,0x202effec,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+90,0x202f126c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+91,0x202ef9ac,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+92,0x202f2b2c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+93,0x202f3dac,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+94,0x202f24ec,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+95,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+96,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+97,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+98,0x202e975c,65,18,
+99,0x2025bc7c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+100,0x2025ed0c,11,12,"""0"" dB-scale digit (active/blue)"
+101,0x2025eaac,11,12,"""0"" dB-scale digit (dim)"
+102,0x2026048c,11,12,"""5"" dB-scale digit (active/blue)"
+103,0x2026022c,11,12,"""5"" dB-scale digit (dim)"
+104,0x2025f28c,15,12,"""10"" dB-scale digit (active/blue)"
+105,0x2025ef6c,15,12,"""10"" dB-scale digit (dim)"
+106,0x2025f8cc,15,12,"""15"" dB-scale digit (active/blue)"
+107,0x2025f5ac,15,12,"""15"" dB-scale digit (dim)"
+108,0x2025ff0c,15,12,"""20"" dB-scale digit (active/blue)"
+109,0x2025fbec,15,12,"""20"" dB-scale digit (dim)"
+110,0x20260a0c,13,12,"""dB"" unit label (active/blue)"
+111,0x202606ec,13,12,"""dB"" unit label (dim)"
+112,0x202664cc,137,40,"supply-voltage gauge ""Vd 10-16V"" with bargraph+marker"
+113,0x20260d2c,137,40,"PA temperature gauge ""TEMP COOL/HOT"" with bargraph"
+114,0x201b70cc,83,16,BW (bandwidth)
+115,0x201caa0c,96,16,SFT (shift)
+116,0x201b67ac,36,16,BPF (band pass filter)
+117,0x201b9c8c,59,92,SHARP/SOFT filter-shape selector (SHARP selected)
+118,0x201bf2ec,59,92,SHARP/SOFT filter-shape selector (neither selected)
+119,0x201cc22c,59,92,SHARP/SOFT filter-shape selector (SHARP focused)
+120,0x201d188c,59,92,SHARP/SOFT filter-shape selector (SOFT selected)
+121,0x201b85ec,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+122,0x201b880c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+123,0x201b8c2c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+124,0x201b904c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+125,0x201b966c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+126,0x201c494c,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+127,0x201c4b6c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+128,0x201c518c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+129,0x201c57ac,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+130,0x201c599c,7,29,probable level/meter-segment tick (7x29) -- unconfirmed
+131,0x201c5d5c,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+132,0x201c611c,11,29,probable level/meter-segment tick (11x29) -- unconfirmed
+133,0x201c66ac,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+134,0x201c6c3c,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+135,0x201c6e2c,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+136,0x201c71ec,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+137,0x201c75ac,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+138,0x201c7b3c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+139,0x201c80cc,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+140,0x201c848c,7,29,probable level/meter-segment tick (7x29) -- unconfirmed
+141,0x201c884c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+142,0x201c8ddc,11,29,probable level/meter-segment tick (11x29) -- unconfirmed
+143,0x201c936c,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+144,0x201c958c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+145,0x201c99ac,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+146,0x201c9dcc,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+147,0x201ca3ec,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+148,0x201a4e7c,59,11,ATT OFF
+149,0x201a58ec,59,11,ATT 10dB
+150,0x201a635c,59,11,ATT 20dB
+151,0x201a6dcc,59,11,ATT 30dB
+152,0x201ec6bc,21,17,cycle/refresh icon (2 curved arrows)
+153,0x201ecd3c,15,15,up-arrow status badge
+154,0x201ab89c,10,10,red status dot (large)
+155,0x201aba9c,26,11,"TX (red, compact)"
+156,0x201abf8c,26,11,"TX (grey, compact, disabled)"
+157,0x2027aabc,39,11,HOLD
+158,0x201ab4ac,3,7,vertical pill (cyan)
+159,0x201ab53c,1,7,vertical line (white)
+160,0x201ab5cc,1,7,
+161,0x201ab65c,4,7,left chevron (light)
+162,0x201ab6ec,4,7,
+163,0x201ab77c,4,7,right chevron (light)
+164,0x201ab80c,4,7,
+165,0x2027629c,10,39,probable level/meter-segment tick (10x39) -- unconfirmed
+166,0x20276a0c,10,39,probable level/meter-segment tick (10x39) -- unconfirmed
+167,0x2027600c,1,39,probable level/meter-segment tick (1x39) -- unconfirmed
+168,0x202772dc,10,20,solid rectangle (dark blue)
+169,0x202776bc,10,20,"solid rectangle (dark blue, variant)"
+170,0x2027717c,1,20,probable level/meter-segment tick (1x20) -- unconfirmed
+171,0x20273bec,8,14,left triangle (grey)
+172,0x20273dcc,8,14,left triangle (black)
+173,0x202e81cc,11,5,up chevron/mountain (orange)
+174,0x20277cbc,10,5,"""<<"" rewind (orange)"
+175,0x20277dcc,10,5,""">>"" fast-forward (orange)"
+176,0x202e8d1c,36,18,play-triangle(outline) + stop-square(filled)
+177,0x202e82dc,36,18,play-triangle(filled) + stop-square(outline)
+178,0x202eafcc,10,81,probable level/meter-segment tick (10x81) -- unconfirmed
+179,0x202ebf1c,10,81,probable level/meter-segment tick (10x81) -- unconfirmed
+180,0x202eaa9c,4,81,probable level/meter-segment tick (4x81) -- unconfirmed
+181,0x2027b1bc,18,11,"""R"" badge (green)"
+182,0x2027b54c,18,11,"""R"" badge (dim/disabled)"
+183,0x2027cffc,18,11,"""T"" badge (orange)"
+184,0x2027d38c,18,11,"""T"" badge (dim/disabled)"
+185,0x2027a3bc,39,11,HOLD (dim/disabled)
+186,0x2027aabc,39,11,HOLD
+187,0x2027919c,52,11,CENTER
+188,0x20279aac,52,11,FIX
+189,0x2027b8dc,60,11,SCROLL-C
+190,0x2027c34c,60,11,SCROLL-F
+191,0x2027cdbc,7,8,
+192,0x2027cedc,7,8,pointer/arrow cursor (blue)
+193,0x20277a9c,10,5,"""<<"" rewind (green)"
+194,0x20277bac,10,5,""">>"" fast-forward (green)"
+195,0x20277cbc,10,5,"""<<"" rewind (orange)"
+196,0x20277dcc,10,5,""">>"" fast-forward (orange)"
+197,0x202823dc,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+198,0x202825cc,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+199,0x20282b5c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+200,0x201d7e6c,477,16,"wide thin bar (477x16) -- probable scale/ruler graphic, unconfirmed"
+201,0x201df68c,477,1,"wide thin bar (477x1) -- probable scale/ruler graphic, unconfirmed"
+202,0x201d6eec,477,2,"wide thin bar (477x2) -- probable scale/ruler graphic, unconfirmed"
+203,0x201d7e0c,1,1,
+204,0x201d7e3c,1,1,
+205,0x201e2b8c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+206,0x201e36ec,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+207,0x201e47ec,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+208,0x201dfe2c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+209,0x201e098c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+210,0x201e1a8c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+211,0x201e58ec,5,90,"vertical bracket, teal (small)"
+212,0x201e644c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+213,0x201e754c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+214,0x201e864c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+215,0x201e91ac,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+216,0x201ea2ac,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+217,0x201eb3ac,5,37,probable level/meter-segment tick (5x37) -- unconfirmed
+218,0x201eb86c,10,37,probable level/meter-segment tick (10x37) -- unconfirmed
+219,0x201ebf7c,10,37,probable level/meter-segment tick (10x37) -- unconfirmed
+220,0x201ec68c,1,1,
+221,0x2023b67c,90,90,SCOPE menu icon
+222,0x201ef6bc,90,90,AUDIO menu icon
+223,0x20253afc,90,90,VOICE menu icon
+224,0x201ff9bc,90,90,KEYER menu icon
+225,0x201f783c,90,90,DECODE menu icon (live decode-text preview)
+226,0x2020fcbc,90,90,METER menu icon
+227,0x2024b97c,90,90,SWR menu icon
+228,0x20207b3c,90,90,MEMORY menu icon
+229,0x202334fc,90,90,SCAN menu icon
+230,0x20217e3c,90,90,MPAD menu icon
+231,0x2022b37c,90,90,RECORD menu icon
+232,0x202437fc,90,90,SET menu icon
+233,0x2028663c,16,15,"triangle, up (plain white)"
+234,0x202836fc,16,15,"triangle, down (plain white)"
+235,0x20283adc,5,86,probable level/meter-segment tick (5x86) -- unconfirmed
+236,0x202845bc,10,86,probable level/meter-segment tick (10x86) -- unconfirmed
+237,0x202855fc,10,86,probable level/meter-segment tick (10x86) -- unconfirmed
+238,0x202894ec,480,24,"wide thin bar (480x24) -- probable scale/ruler graphic, unconfirmed"
+239,0x2028948c,1,1,
+240,0x202894bc,1,1,
+241,0x20288cec,480,1,"wide thin bar (480x1) -- probable scale/ruler graphic, unconfirmed"
+242,0x202afb4c,55,55,speaker/volume-mixer settings icon
+243,0x2029d9cc,55,55,wrench+hammer tools settings icon
+244,0x2029490c,55,55,audio/USB-jack connection icon
+245,0x2029794c,55,55,display/monitor settings icon
+246,0x202acb0c,55,55,clock/date-time settings icon
+247,0x202a9acc,55,55,SD card settings icon
+248,0x202a0a0c,55,55,"""etc."" settings icon"
+249,0x2029a98c,55,55,folder icon
+250,0x202a3a4c,55,55,cassette/tape icon
+251,0x202a6a8c,55,55,red status dot (settings context)
+252,0x202b2c3c,167,13,"level-bar segment, black/off (long horizontal)"
+253,0x202b2b8c,1,9,"vertical gradient bar, cyan"
+254,0x2028835c,1,9,"vertical gradient bar, red"
+255,0x202882ac,1,9,"vertical gradient bar, green"
+256,0x202881fc,1,9,"vertical gradient bar, blue"
+257,0x202b4e7c,104,13,"level-bar segment, black/off (horizontal)"
+258,0x202b63bc,104,13,"level-bar segment, cyan (horizontal)"
+259,0x202b78fc,104,13,"level-bar segment, gold (horizontal)"
+260,0x20286a1c,27,27,checkmark (orange)
+261,0x2028760c,27,27,"checkmark (orange, variant)"
+262,0x2028840c,26,20,
+263,0x201ede2c,35,23,
+264,0x201ed11c,35,23,
+265,0x201ed11c,35,23,
+266,0x201ed11c,35,23,
+267,0x201eeb3c,26,26,
+268,0x20271fdc,37,1,
+269,0x2026bc6c,68,13,
+270,0x2026ca5c,68,13,
+271,0x2026d84c,68,13,
+272,0x2026f47c,7,53,probable level/meter-segment tick (7x53) -- unconfirmed
+273,0x2026fb3c,7,53,probable level/meter-segment tick (7x53) -- unconfirmed
+274,0x2026e63c,7,56,probable level/meter-segment tick (7x56) -- unconfirmed
+275,0x2026ed5c,7,56,probable level/meter-segment tick (7x56) -- unconfirmed
+276,0x202701fc,77,20,
+277,0x20271b1c,15,9,
+278,0x20271d7c,15,9,
+279,0x2027209c,116,15,
+280,0x202f96ac,376,26,"wide thin bar (376x26) -- probable scale/ruler graphic, unconfirmed"
+281,0x202f842c,376,3,"wide thin bar (376x3) -- probable scale/ruler graphic, unconfirmed"
+282,0x202f95ec,3,1,
+283,0x202f961c,3,1,
+284,0x202f964c,1,1,
+285,0x202f831c,9,5,
+286,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+287,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+288,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+289,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+290,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+291,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+292,0x20273fac,47,43,blank rounded-rect button frame
+293,0x2027841c,16,16,corner-bracket marker (selection UI)
+294,0x202790cc,1,11,
+295,0x20278cac,16,16,
+296,0x20277ffc,16,16,
+297,0x20277edc,1,11,
+298,0x2027888c,16,16,
+299,0x20277fac,11,1,
+300,0x2027883c,11,1,
+301,0x201af21c,53,52,warning triangle (!)
+302,0x201ac47c,53,52,error/cancel (X in red circle)
+303,0x202831dc,10,13,
+304,0x202830ec,1,13,
+305,0x2028346c,10,13,
+306,0x202f548c,9,17,"left triangle (play/prev, white)"
+307,0x202f502c,15,17,"right triangle (play, white)"
+308,0x202f57dc,9,17,"right triangle (play, white, small)"
+309,0x202f5b2c,2,17,
+310,0x202f5fac,17,17,red REC dot (transport)
+311,0x202f651c,15,17,"stop square (transport, white)"
+312,0x202f5c5c,11,17,"pause (II, transport, white)"
+313,0x202f697c,201,8,percentage scale bar (0-20-40-60-80-100%)
+314,0x201b1fbc,31,17,"rewind/skip (◄►) icon, white"
+315,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+316,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+317,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+318,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+319,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+320,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+321,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+322,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+323,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+324,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+325,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+326,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+327,0x202823dc,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+328,0x202825cc,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+329,0x20282b5c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+330,0x201b58dc,22,20,
+331,0x201b513c,22,20,
+332,0x201b499c,22,20,
+333,0x201b285c,1,64,probable level/meter-segment tick (1x64) -- unconfirmed
+334,0x201b2c7c,10,64,probable level/meter-segment tick (10x64) -- unconfirmed
+335,0x201b3d7c,10,64,probable level/meter-segment tick (10x64) -- unconfirmed
+336,0x201b389c,15,19,undo/back arrow
+337,0x201b607c,21,5,
+338,0x201b627c,21,5,
+339,0x201b647c,28,7,circled digit 1
+340,0x201a7bcc,10,55,circled digit 2
+341,0x201a783c,1,55,probable level/meter-segment tick (1x55) -- unconfirmed
+342,0x201a863c,10,55,probable level/meter-segment tick (10x55) -- unconfirmed
+343,0x201a972c,10,51,probable level/meter-segment tick (10x51) -- unconfirmed
+344,0x201a90ac,5,51,probable level/meter-segment tick (5x51) -- unconfirmed
+345,0x201aa0dc,10,51,probable level/meter-segment tick (10x51) -- unconfirmed
+346,0x201aaa8c,30,20,
+347,0x202f967c,1,1,
+348,0x2021ffbc,40,40,
+349,0x202218dc,40,40,
+350,0x202231fc,90,90,"""FT8 PRESET"" tag icon"
+351,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+352,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+353,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+354,0x202e258c,52,18,TUNE (outline/inactive)
+355,0x202e344c,52,18,TUNE (red/active)
+356,0x202e430c,52,18,TUNE (dark/disabled)
+357,0x202c2c4c,52,18,"""E"" (orange box) -- meaning unconfirmed"
+358,0x202c3b0c,52,18,E-TUN (outline/inactive)
+359,0x202c49cc,52,18,E-TUN (red/active)
+360,0x202e5dcc,40,19,TX (outline/inactive)
+361,0x202e69cc,40,19,TX (red/active)
+362,0x202e51cc,40,19,TX (grey/disabled)
+363,0x202e75cc,40,19,TX (dotted outline)
+364,0x202dda3c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+365,0x202de02c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+366,0x202dd82c,1,31,probable level/meter-segment tick (1x31) -- unconfirmed
+367,0x202c5a9c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+368,0x202c608c,10,31,probable level/meter-segment tick (10x31) -- unconfirmed
+369,0x202c588c,1,31,probable level/meter-segment tick (1x31) -- unconfirmed
+370,0x202e15bc,51,18,SPLIT
+371,0x202bf4ac,97,18,AUTOTUNE
+372,0x202de61c,35,18,"solid orange swatch, no text"
+373,0x202df05c,13,12,red status dot
+374,0x202df37c,13,12,pause (II) icon
+375,0x202df69c,23,12,RIT
+376,0x202c256c,33,12,triangle+TX (out-of-band/TX-inhibit warning)
+377,0x202c1fac,37,9,"""BLANK"" placeholder icon"
+378,0x202e047c,37,9,star+1 (memory/preset slot 1)
+379,0x202e0a3c,37,9,star+2 (slot 2)
+380,0x202e0ffc,37,9,star+3 (slot 3)
+381,0x202dfbbc,13,17,SD card icon
+382,0x202e001c,13,17,SD card icon (variant)
+383,0x202c1c8c,10,16,small flag/pointer marker
+384,0x202c10ec,1,16,
+385,0x202c196c,10,16,
+386,0x202c164c,10,16,
+387,0x202c120c,1,16,
+388,0x202c132c,10,16,
+389,0x202e247c,11,5,
+390,0x202dfb3c,6,3,
+391,0x202beb8c,30,18,"page indicator ""1/4"""
+392,0x202c667c,30,18,key-lock icon
+393,0x202dcbcc,31,8,"""S"" meter-select label"
+394,0x202dc7ac,31,8,"""Po"" meter-select label (power out)"
+395,0x202dcfec,31,8,"""SWR"" meter-select label"
+396,0x202dbb4c,31,8,"""ALC"" meter-select label"
+397,0x202dbf6c,31,8,"""COMP"" meter-select label"
+398,0x202dc38c,31,8,"""Id"" meter-select label (drain current)"
+399,0x202dd40c,31,8,"""Vd"" meter-select label (drain voltage)"
+400,0x202d285c,266,13,"dotted horizontal meter scale, red marker"
+401,0x202cfa2c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+402,0x202d5eec,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+403,0x202c6f9c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+404,0x202c9dcc,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+405,0x202ccbfc,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+406,0x202d8d1c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+407,0x202be74c,21,11,RIT (size/style variant)
+408,0x202b8e3c,28,11,triangle+TX (variant)
+409,0x202bd06c,46,10,"""S/Po"" combined meter label"
+410,0x202bd80c,46,10,"""S/SWR"" combined meter label"
+411,0x202bb98c,46,10,"""S/ALC"" combined meter label"
+412,0x202bc12c,46,10,"""S/COMP"" combined meter label"
+413,0x202bc8cc,46,10,"""S/Id"" combined meter label"
+414,0x202bdfac,46,10,"""S/Vd"" combined meter label"
+415,0x202ba02c,99,12,dotted meter scale with numbered ticks (S-meter scale)
+416,0x202b9cec,99,2,
+417,0x202bb30c,99,2,
+418,0x202b932c,99,2,
+419,0x202b966c,99,2,
+420,0x202b99ac,99,2,
+421,0x202bb64c,99,2,
+422,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+423,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+424,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+425,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+426,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+427,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+428,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+429,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+430,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+431,0x2028137c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+432,0x20281bac,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+433,0x202810ac,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+434,0x201a031c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+435,0x201a147c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+436,0x2019fd3c,1,92,probable level/meter-segment tick (1x92) -- unconfirmed
+437,0x201a2bbc,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+438,0x201a3d1c,10,92,probable level/meter-segment tick (10x92) -- unconfirmed
+439,0x201a25dc,1,92,probable level/meter-segment tick (1x92) -- unconfirmed
+440,0x202ed4ac,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+441,0x202ee72c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+442,0x202ece6c,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+443,0x202effec,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+444,0x202f126c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+445,0x202ef9ac,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+446,0x202f2b2c,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+447,0x202f3dac,10,98,probable level/meter-segment tick (10x98) -- unconfirmed
+448,0x202f24ec,1,98,probable level/meter-segment tick (1x98) -- unconfirmed
+449,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+450,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+451,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+452,0x202e975c,65,18,
+453,0x2025bc7c,266,11,"wide thin bar (266x11) -- probable scale/ruler graphic, unconfirmed"
+454,0x2025ed0c,11,12,"""0"" dB-scale digit (active/blue)"
+455,0x2025eaac,11,12,"""0"" dB-scale digit (dim)"
+456,0x2026048c,11,12,"""5"" dB-scale digit (active/blue)"
+457,0x2026022c,11,12,"""5"" dB-scale digit (dim)"
+458,0x2025f28c,15,12,"""10"" dB-scale digit (active/blue)"
+459,0x2025ef6c,15,12,"""10"" dB-scale digit (dim)"
+460,0x2025f8cc,15,12,"""15"" dB-scale digit (active/blue)"
+461,0x2025f5ac,15,12,"""15"" dB-scale digit (dim)"
+462,0x2025ff0c,15,12,"""20"" dB-scale digit (active/blue)"
+463,0x2025fbec,15,12,"""20"" dB-scale digit (dim)"
+464,0x20260a0c,13,12,"""dB"" unit label (active/blue)"
+465,0x202606ec,13,12,"""dB"" unit label (dim)"
+466,0x202664cc,137,40,"supply-voltage gauge ""Vd 10-16V"" with bargraph+marker"
+467,0x20260d2c,137,40,"PA temperature gauge ""TEMP COOL/HOT"" with bargraph"
+468,0x201b70cc,83,16,BW (bandwidth)
+469,0x201caa0c,96,16,SFT (shift)
+470,0x201b67ac,36,16,BPF (band pass filter)
+471,0x201b9c8c,59,92,SHARP/SOFT filter-shape selector (SHARP selected)
+472,0x201bf2ec,59,92,SHARP/SOFT filter-shape selector (neither selected)
+473,0x201cc22c,59,92,SHARP/SOFT filter-shape selector (SHARP focused)
+474,0x201d188c,59,92,SHARP/SOFT filter-shape selector (SOFT selected)
+475,0x201b85ec,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+476,0x201b880c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+477,0x201b8c2c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+478,0x201b904c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+479,0x201b966c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+480,0x201c494c,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+481,0x201c4b6c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+482,0x201c518c,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+483,0x201c57ac,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+484,0x201c599c,7,29,probable level/meter-segment tick (7x29) -- unconfirmed
+485,0x201c5d5c,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+486,0x201c611c,11,29,probable level/meter-segment tick (11x29) -- unconfirmed
+487,0x201c66ac,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+488,0x201c6c3c,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+489,0x201c6e2c,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+490,0x201c71ec,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+491,0x201c75ac,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+492,0x201c7b3c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+493,0x201c80cc,6,29,probable level/meter-segment tick (6x29) -- unconfirmed
+494,0x201c848c,7,29,probable level/meter-segment tick (7x29) -- unconfirmed
+495,0x201c884c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+496,0x201c8ddc,11,29,probable level/meter-segment tick (11x29) -- unconfirmed
+497,0x201c936c,1,32,probable level/meter-segment tick (1x32) -- unconfirmed
+498,0x201c958c,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+499,0x201c99ac,7,32,probable level/meter-segment tick (7x32) -- unconfirmed
+500,0x201c9dcc,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+501,0x201ca3ec,11,32,probable level/meter-segment tick (11x32) -- unconfirmed
+502,0x201a4e7c,59,11,ATT OFF
+503,0x201a58ec,59,11,ATT 10dB
+504,0x201a635c,59,11,ATT 20dB
+505,0x201a6dcc,59,11,ATT 30dB
+506,0x201ec6bc,21,17,cycle/refresh icon (2 curved arrows)
+507,0x201ecd3c,15,15,up-arrow status badge
+508,0x201ab89c,10,10,red status dot (large)
+509,0x201aba9c,26,11,"TX (red, compact)"
+510,0x201abf8c,26,11,"TX (grey, compact, disabled)"
+511,0x2027aabc,39,11,HOLD
+512,0x201ab4ac,3,7,vertical pill (cyan)
+513,0x201ab53c,1,7,vertical line (white)
+514,0x201ab5cc,1,7,
+515,0x201ab65c,4,7,left chevron (light)
+516,0x201ab6ec,4,7,
+517,0x201ab77c,4,7,right chevron (light)
+518,0x201ab80c,4,7,
+519,0x2027629c,10,39,probable level/meter-segment tick (10x39) -- unconfirmed
+520,0x20276a0c,10,39,probable level/meter-segment tick (10x39) -- unconfirmed
+521,0x2027600c,1,39,probable level/meter-segment tick (1x39) -- unconfirmed
+522,0x202772dc,10,20,solid rectangle (dark blue)
+523,0x202776bc,10,20,"solid rectangle (dark blue, variant)"
+524,0x2027717c,1,20,probable level/meter-segment tick (1x20) -- unconfirmed
+525,0x20273bec,8,14,left triangle (grey)
+526,0x20273dcc,8,14,left triangle (black)
+527,0x202e81cc,11,5,up chevron/mountain (orange)
+528,0x20277cbc,10,5,"""<<"" rewind (orange)"
+529,0x20277dcc,10,5,""">>"" fast-forward (orange)"
+530,0x202e8d1c,36,18,play-triangle(outline) + stop-square(filled)
+531,0x202e82dc,36,18,play-triangle(filled) + stop-square(outline)
+532,0x202eafcc,10,81,probable level/meter-segment tick (10x81) -- unconfirmed
+533,0x202ebf1c,10,81,probable level/meter-segment tick (10x81) -- unconfirmed
+534,0x202eaa9c,4,81,probable level/meter-segment tick (4x81) -- unconfirmed
+535,0x2027b1bc,18,11,"""R"" badge (green)"
+536,0x2027b54c,18,11,"""R"" badge (dim/disabled)"
+537,0x2027cffc,18,11,"""T"" badge (orange)"
+538,0x2027d38c,18,11,"""T"" badge (dim/disabled)"
+539,0x2027a3bc,39,11,HOLD (dim/disabled)
+540,0x2027aabc,39,11,HOLD
+541,0x2027919c,52,11,CENTER
+542,0x20279aac,52,11,FIX
+543,0x2027b8dc,60,11,SCROLL-C
+544,0x2027c34c,60,11,SCROLL-F
+545,0x2027cdbc,7,8,
+546,0x2027cedc,7,8,pointer/arrow cursor (blue)
+547,0x20277a9c,10,5,"""<<"" rewind (green)"
+548,0x20277bac,10,5,""">>"" fast-forward (green)"
+549,0x20277cbc,10,5,"""<<"" rewind (orange)"
+550,0x20277dcc,10,5,""">>"" fast-forward (orange)"
+551,0x202823dc,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+552,0x202825cc,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+553,0x20282b5c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+554,0x201d7e6c,477,16,"wide thin bar (477x16) -- probable scale/ruler graphic, unconfirmed"
+555,0x201df68c,477,1,"wide thin bar (477x1) -- probable scale/ruler graphic, unconfirmed"
+556,0x201d6eec,477,2,"wide thin bar (477x2) -- probable scale/ruler graphic, unconfirmed"
+557,0x201d7e0c,1,1,
+558,0x201d7e3c,1,1,
+559,0x201e2b8c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+560,0x201e36ec,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+561,0x201e47ec,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+562,0x201dfe2c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+563,0x201e098c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+564,0x201e1a8c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+565,0x201e58ec,5,90,"vertical bracket, teal (small)"
+566,0x201e644c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+567,0x201e754c,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+568,0x201e864c,5,90,probable level/meter-segment tick (5x90) -- unconfirmed
+569,0x201e91ac,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+570,0x201ea2ac,10,90,probable level/meter-segment tick (10x90) -- unconfirmed
+571,0x201eb3ac,5,37,probable level/meter-segment tick (5x37) -- unconfirmed
+572,0x201eb86c,10,37,probable level/meter-segment tick (10x37) -- unconfirmed
+573,0x201ebf7c,10,37,probable level/meter-segment tick (10x37) -- unconfirmed
+574,0x201ec68c,1,1,
+575,0x2023b67c,90,90,SCOPE menu icon
+576,0x201ef6bc,90,90,AUDIO menu icon
+577,0x20253afc,90,90,VOICE menu icon
+578,0x201ff9bc,90,90,KEYER menu icon
+579,0x201f783c,90,90,DECODE menu icon (live decode-text preview)
+580,0x2020fcbc,90,90,METER menu icon
+581,0x2024b97c,90,90,SWR menu icon
+582,0x20207b3c,90,90,MEMORY menu icon
+583,0x202334fc,90,90,SCAN menu icon
+584,0x20217e3c,90,90,MPAD menu icon
+585,0x2022b37c,90,90,RECORD menu icon
+586,0x202437fc,90,90,SET menu icon
+587,0x2028663c,16,15,"triangle, up (plain white)"
+588,0x202836fc,16,15,"triangle, down (plain white)"
+589,0x20283adc,5,86,probable level/meter-segment tick (5x86) -- unconfirmed
+590,0x202845bc,10,86,probable level/meter-segment tick (10x86) -- unconfirmed
+591,0x202855fc,10,86,probable level/meter-segment tick (10x86) -- unconfirmed
+592,0x202894ec,480,24,"wide thin bar (480x24) -- probable scale/ruler graphic, unconfirmed"
+593,0x2028948c,1,1,
+594,0x202894bc,1,1,
+595,0x20288cec,480,1,"wide thin bar (480x1) -- probable scale/ruler graphic, unconfirmed"
+596,0x202afb4c,55,55,speaker/volume-mixer settings icon
+597,0x2029d9cc,55,55,wrench+hammer tools settings icon
+598,0x2029490c,55,55,audio/USB-jack connection icon
+599,0x2029794c,55,55,display/monitor settings icon
+600,0x202acb0c,55,55,clock/date-time settings icon
+601,0x202a9acc,55,55,SD card settings icon
+602,0x202a0a0c,55,55,"""etc."" settings icon"
+603,0x2029a98c,55,55,folder icon
+604,0x202a3a4c,55,55,cassette/tape icon
+605,0x202a6a8c,55,55,red status dot (settings context)
+606,0x202b2c3c,167,13,"level-bar segment, black/off (long horizontal)"
+607,0x202b2b8c,1,9,"vertical gradient bar, cyan"
+608,0x2028835c,1,9,"vertical gradient bar, red"
+609,0x202882ac,1,9,"vertical gradient bar, green"
+610,0x202881fc,1,9,"vertical gradient bar, blue"
+611,0x202b4e7c,104,13,"level-bar segment, black/off (horizontal)"
+612,0x202b63bc,104,13,"level-bar segment, cyan (horizontal)"
+613,0x202b78fc,104,13,"level-bar segment, gold (horizontal)"
+614,0x20286a1c,27,27,checkmark (orange)
+615,0x2028760c,27,27,"checkmark (orange, variant)"
+616,0x2028840c,26,20,
+617,0x201ede2c,35,23,
+618,0x201ed11c,35,23,
+619,0x201ed11c,35,23,
+620,0x201ed11c,35,23,
+621,0x201eeb3c,26,26,
+622,0x20271fdc,37,1,
+623,0x2026bc6c,68,13,
+624,0x2026ca5c,68,13,
+625,0x2026d84c,68,13,
+626,0x2026f47c,7,53,probable level/meter-segment tick (7x53) -- unconfirmed
+627,0x2026fb3c,7,53,probable level/meter-segment tick (7x53) -- unconfirmed
+628,0x2026e63c,7,56,probable level/meter-segment tick (7x56) -- unconfirmed
+629,0x2026ed5c,7,56,probable level/meter-segment tick (7x56) -- unconfirmed
+630,0x202701fc,77,20,
+631,0x20271b1c,15,9,
+632,0x20271d7c,15,9,
+633,0x2027209c,116,15,
+634,0x202f96ac,376,26,"wide thin bar (376x26) -- probable scale/ruler graphic, unconfirmed"
+635,0x202f842c,376,3,"wide thin bar (376x3) -- probable scale/ruler graphic, unconfirmed"
+636,0x202f95ec,3,1,
+637,0x202f961c,3,1,
+638,0x202f964c,1,1,
+639,0x202f831c,9,5,
+640,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+641,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+642,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+643,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+644,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+645,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+646,0x20302f8c,47,43,
+647,0x2027841c,16,16,corner-bracket marker (selection UI)
+648,0x202790cc,1,11,
+649,0x20278cac,16,16,
+650,0x20277ffc,16,16,
+651,0x20277edc,1,11,
+652,0x2027888c,16,16,
+653,0x20277fac,11,1,
+654,0x2027883c,11,1,
+655,0x201af21c,53,52,warning triangle (!)
+656,0x201ac47c,53,52,error/cancel (X in red circle)
+657,0x202831dc,10,13,
+658,0x202830ec,1,13,
+659,0x2028346c,10,13,
+660,0x202f548c,9,17,"left triangle (play/prev, white)"
+661,0x202f502c,15,17,"right triangle (play, white)"
+662,0x202f57dc,9,17,"right triangle (play, white, small)"
+663,0x202f5b2c,2,17,
+664,0x202f5fac,17,17,red REC dot (transport)
+665,0x202f651c,15,17,"stop square (transport, white)"
+666,0x202f5c5c,11,17,"pause (II, transport, white)"
+667,0x202f697c,201,8,percentage scale bar (0-20-40-60-80-100%)
+668,0x201b1fbc,31,17,"rewind/skip (◄►) icon, white"
+669,0x2027d71c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+670,0x2027d9ec,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+671,0x2027e21c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+672,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+673,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+674,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+675,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+676,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+677,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+678,0x2027ea4c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+679,0x2027f54c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+680,0x2027ed1c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+681,0x202823dc,1,29,probable level/meter-segment tick (1x29) -- unconfirmed
+682,0x202825cc,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+683,0x20282b5c,10,29,probable level/meter-segment tick (10x29) -- unconfirmed
+684,0x201b58dc,22,20,
+685,0x201b513c,22,20,
+686,0x201b499c,22,20,
+687,0x201b285c,1,64,probable level/meter-segment tick (1x64) -- unconfirmed
+688,0x201b2c7c,10,64,probable level/meter-segment tick (10x64) -- unconfirmed
+689,0x201b3d7c,10,64,probable level/meter-segment tick (10x64) -- unconfirmed
+690,0x201b389c,15,19,undo/back arrow
+691,0x201b607c,21,5,
+692,0x201b627c,21,5,
+693,0x201b647c,28,7,circled digit 1
+694,0x201a7bcc,10,55,circled digit 2
+695,0x201a783c,1,55,probable level/meter-segment tick (1x55) -- unconfirmed
+696,0x201a863c,10,55,probable level/meter-segment tick (10x55) -- unconfirmed
+697,0x201a972c,10,51,probable level/meter-segment tick (10x51) -- unconfirmed
+698,0x201a90ac,5,51,probable level/meter-segment tick (5x51) -- unconfirmed
+699,0x201aa0dc,10,51,probable level/meter-segment tick (10x51) -- unconfirmed
+700,0x201aaa8c,30,20,
+701,0x202f967c,1,1,
+702,0x2021ffbc,40,40,
+703,0x202218dc,40,40,
+704,0x202231fc,90,90,"""FT8 PRESET"" tag icon"
+705,0x2027fd7c,1,43,probable level/meter-segment tick (1x43) -- unconfirmed
+706,0x2028004c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
+707,0x2028087c,10,43,probable level/meter-segment tick (10x43) -- unconfirmed
