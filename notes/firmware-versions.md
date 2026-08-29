@@ -79,15 +79,15 @@ While chasing the IC-9700's per-component version history (see
 [[ic9700-container-format]]), also fetched Icom's official EN/`icomjapan.com`
 firmware-history page for the IC-7300. Two things worth recording:
 
-- **The official page lists only 9 IC-7300 firmware releases (v1.12 through
-  v1.42)** — it does not list v1.11 at all. This project's own local archive
-  (table above) has 10 files including v1.11, so either v1.11 was pulled from
-  the official download history at some point (plausible — Icom does this;
-  the IC-9700's own official list is similarly missing its earliest v1.02/
-  v1.03 releases despite those clearly having existed, per
-  [[ic9700-container-format]]) or v1.11 was never a public general-release
-  build. Not investigated further — doesn't change anything about the local
-  analysis above, which stands regardless of what Icom currently advertises.
+- **The EN/`icomjapan.com` page lists only 9 IC-7300 firmware releases (v1.12
+  through v1.42)** — it does not list v1.11 at all. **Resolved**: v1.11 is on
+  the JP/`icom.co.jp` page instead (dated 2016/02/18, the oldest entry
+  there) — same pattern already seen on the IC-9700 side, where the JP page
+  carries early releases (v1.02/v1.03) the EN page has dropped. Not a real
+  discrepancy, just each region's page having trimmed different early history
+  from its own display list; the release genuinely existed and is a normal
+  general-release build, confirmed by both being a real local file and now
+  being listed on Icom's own JP page.
 - **The same fetched page also lists several unrelated IC-PW2 (linear
   amplifier, a completely different product) firmware entries** mixed in
   after the IC-7300 rows — this is a page-layout quirk on Icom's side (both

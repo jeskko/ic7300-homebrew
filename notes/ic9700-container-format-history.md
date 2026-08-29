@@ -452,7 +452,9 @@ again" list.
 
 **Also fetched, on the user's request, the equivalent IC-7300 EN support page** (a check of the already
 long-settled IC-7300 side of the project against Icom's own public data, not a new investigation) — see
-[[firmware-versions]] for what that turned up: a minor discrepancy (the official page lists only 9 releases,
-v1.12-v1.42, missing v1.11 despite v1.11 being a real file in this project's own archive) and confirmation
-that the "other entries" the user had spotted at the end of that page are unrelated IC-PW2 (linear
-amplifier) firmware listings sharing the same page layout, not an IC-7300 data problem.
+[[firmware-versions]] for what that turned up: initially a minor discrepancy (the EN page lists only 9
+releases, v1.12-v1.42, missing v1.11 despite v1.11 being a real file in this project's own archive),
+resolved by fetching the JP page too — v1.11 is there (2016/02/18, the oldest entry on that page), same
+"JP page keeps older history the EN page has trimmed" pattern already seen on the IC-9700 side (v1.02/v1.03).
+Also confirmed the "other entries" the user had spotted at the end of the EN page are unrelated IC-PW2
+(linear amplifier) firmware listings sharing the same page layout, not an IC-7300 data problem.
