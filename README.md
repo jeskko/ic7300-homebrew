@@ -99,6 +99,19 @@ by but not built on top of the prior work there.
   trace directly to the DSP's own `BOOT[4:0]`/SPI0 strapping pins). **Open**:
   where `DRESD` (DSP reset) actually gets released — still not found in the
   traced main-CPU call graph despite this — see `notes/multi-cpu-images.md`.
+- ✅ **DSP/Front CPU firmware images precisely located, unpacked, and verified**:
+  the exact per-component file-offset formula for the "3 extra chunks" (Front
+  CPU/DSP Program/DSP Data) decoded from `firmware_update_main` and confirmed
+  byte-exact (LZSS consumption + MD5) against a real v1.42 container —
+  supersedes the old `chunk4`/`chunk5-tail` model. New tool:
+  `tools/icom_fw/dsp_chunks.py`. The DSP Program image shows real internal
+  structure (low-entropy header, then a dense body) and a specific Q15
+  `√2⁄2` DSP constant. **Disassembly remains blocked**: the DSP is a
+  TMS320C6745 (TI C674x VLIW) — confirmed no Ghidra/binutils/Capstone/LLVM
+  support exists anywhere for this architecture; a custom disassembler or
+  Ghidra SLEIGH module would be a real, standalone project. See
+  `notes/multi-cpu-images.md`'s "DSP firmware precisely located and
+  unpacked" section.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is

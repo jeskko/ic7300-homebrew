@@ -1,5 +1,96 @@
 # Open question: how many processor images does the container hold?
 
+## DSP firmware precisely located and unpacked (2026-08-29, next session, continuing the DSP comms thread)
+
+**This closes the long-running "where is the DSP's firmware" question, first opened in this file's
+`chunk4`/`chunk5-tail` entropy analysis many sessions ago.** Picked up directly from
+`firmware_update_main`'s `local_9c[]` offset computation (already partially transcribed in
+`notes/firmware-update.md`, never fully decoded) and traced it to an exact, byte-verified formula.
+
+**The exact per-component formula, decompiled from `firmware_update_main` directly:**
+```
+size1..size7 = the container's existing 7 header fields (file offsets 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28)
+
+component0_offset = size1 + 0x3c
+component1_offset = component0_offset + size2 + 0x10
+component2_offset = component1_offset + size4 + 0x10
+```
+Each component is `[LZSS-compressed payload][0x10-byte MD5 trailer]` back-to-back — compressed length is
+size2/size4/size6 respectively (read + MD5-verified as a block), decompressed length is size3/size5/size7
+respectively. The decompressor is a **second, independent instance of the exact same Okumura LZSS variant**
+already documented for the main body (`chunk_lzss_decompress_init`/`_fill`, was `FUN_20024ef8`/`FUN_20024f30`
+— found inside `chunk_transport_send_data`, decompressing 256 bytes at a time as it feeds each DSP transfer
+page). Full derivation, including the exact decompiled source, is in `firmware_update_main`'s own Ghidra
+plate comment now.
+
+**Verified against a real v1.42 container (`/data/misc/icom/7300/7300_142.dat`), about as thoroughly as static
+analysis allows**: computed all 3 offsets from the real header, sliced out the 3 compressed blobs, ran them
+through `tools/icom_fw`'s existing LZSS decoder (already proven correct for the main body), and got — for
+all 3 components — **exact byte-for-byte LZSS stream consumption** (no leftover bytes, no early exhaustion)
+**and an exact MD5 match** against each component's own embedded trailer. This is as close to proof as this
+project gets without live hardware: both independent checks the real firmware itself would perform both pass.
+
+| Component (hypothesized) | File offset | Compressed | Decompressed |
+|---|---|---|---|
+| 0 — Front CPU | `0x252c2c` | `0x17e46` (97,862 B) | `0x27f08` (163,592 B) |
+| 1 — DSP Program | `0x26aa82` | `0xb03ac` (721,836 B) | `0xaff08` (720,648 B) |
+| 2 — DSP Data | `0x31ae3e` | `0xaa759` (698,201 B) | `0xd1d14` (859,412 B) |
+
+(Component ordering is the existing working hypothesis from the `FUN_200a94c8` version-field-ordering
+finding earlier in this file — matches structurally, not yet independently confirmed component-by-component.)
+
+**This retracts/supersedes `tools/icom_fw/container.py`'s `chunk4`/`chunk5_tail` model for this region** —
+that model's fixed-0x10000-decompressed "chunk4 right after chunk3" + "chunk5/tail decode-to-EOF" framing
+was a reasonable first guess from `tunk3.py`'s byte accounting (and the 9th session's own caveat already
+flagged this as suspect), but the real firmware doesn't recognize any chunk4/chunk5 boundary — these 3
+components just happen to span across where that boundary falls. New tool: `tools/icom_fw/dsp_chunks.py`
+(`python3 -m tools.icom_fw.dsp_chunks <container.dat> <out_dir>`) implements the correct model and reports
+MD5 pass/fail per component. Extracted files live in `scratch/unpacked/142/`: `front_cpu.bin`,
+`dsp_program.bin`, `dsp_data.bin` (plus each one's own `_compressed.bin`).
+
+**Forensic look at the decompressed bytes — genuinely promising, not conclusive**:
+- **Real internal structure, unlike the old (wrongly-scoped) `chunk4`/`chunk5-tail` entropy analysis**:
+  `dsp_program.bin` starts with several *low*-entropy 1 KB blocks (as low as ~1.5 bits/byte) before ramping
+  to a steady ~7.0 bits/byte plateau — a low-entropy header/vector-table region followed by a dense body is
+  exactly the shape real executable images have, unlike the smooth, structureless ramps the old
+  (mis-scoped) analysis found. `dsp_data.bin` shows the same pattern even more sharply (down to ~0.25
+  bits/byte in a couple of blocks — long constant/padding runs), consistent with a sparse calibration/
+  coefficient table rather than code.
+- **`front_cpu.bin` starts with an ASCII string, `"TIPAcYSX"`** (ambiguous — not immediately recognizable),
+  and both `front_cpu.bin` and `dsp_program.bin` end with a distinctive plain-ASCII numeric tag right
+  before EOF (`"31101070"` and `"20001000"` respectively), preceded by `0xFF` padding — shaped like an
+  embedded build/version tag, a common firmware-image convention. `dsp_data.bin` starts with `"31601130"`
+  (also ASCII digits) followed by a long `0xFF` run.
+- **One specific, hard-to-fake match**: `dsp_program.bin` contains the 16-bit value `0x5a82` **19 times**
+  (2 of those as a full 32-bit word with a zero upper half) — this is the *exact* standard Q15 fixed-point
+  representation of `√2⁄2` (`0.70710678… × 32768 = 23170 = 0x5a82`), an extremely common DSP constant (FFT
+  twiddle factors, quadrature/Costas-loop trig, etc.). Suggestive, not proof by itself, but a genuinely
+  specific, checkable match — not the kind of thing that shows up by chance in arbitrary data.
+
+**Disassembly: checked concretely, not currently possible with any available tool.** The DSP is `IC901`,
+a TI **TMS320C6745** (C674x core, VLIW). Checked this session:
+- **Ghidra** (this project's own install, `/opt/ghidra`): no TMS320C6000/C674x processor module among its
+  `Ghidra/Processors/*` directories (has `TI_MSP430`, an unrelated TI chip family, but nothing for the C6000
+  DSP line).
+- **binutils** (`objdump`/`arm-none-eabi-objdump` on this machine): no `tic6x` target registered; no
+  `tic6x-elf-*` toolchain package found via `pacman`.
+- **Capstone**: not installed, and doesn't support this architecture regardless.
+- **LLVM** (`llc`): no C6x-shaped target in its registered target list.
+- **Web search**: confirmed this is a known, longstanding gap — TMS320C6000 support has been an open,
+  unfulfilled Ghidra feature request for years ([NationalSecurityAgency/ghidra#1807](https://github.com/NationalSecurityAgency/ghidra/issues/1807),
+  [#5259](https://github.com/NationalSecurityAgency/ghidra/issues/5259)); no ready community Ghidra
+  processor extension or other open-source disassembler for this specific TI DSP family turned up (there IS
+  a community extension for the unrelated `tms320c24x` family, [banksy-git/ghidra-tms320c24x](https://github.com/banksy-git/ghidra-tms320c24x),
+  demonstrating the *pattern* is done for other TI DSPs, just not this one).
+
+**So the practical options, if this is picked up again**: (a) write a minimal custom disassembler from TI's
+own public C6000 CPU and Instruction Set Reference (`SPRU189`) — the encoding is fully documented, just a
+real, multi-session undertaking (VLIW fetch packets, 2 register files, cross-path stalls); (b) build a real
+Ghidra processor module (SLEIGH) for it, a bigger version of the same task; (c) keep working the bytes
+statically without a disassembler — pattern/constant hunting (like the `0x5a82` find above) can still turn
+up real information without full instruction decoding; (d) live JTAG on the DSP itself, if that's ever
+brought up as a target (not currently planned — the project's JTAG hardware targets the main CPU).
+
 ## Headline finding: `tunk3.py` silently drops ~1.46 MB of the container
 
 Built and ran a from-scratch decoder (`tools/icom_fw/`, see
