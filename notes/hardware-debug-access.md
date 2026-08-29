@@ -101,6 +101,18 @@ jumper wires won't work at this pitch. 10 pins comfortably fits
 `TCK`/`TMS`/`TDI`/`TDO`/`TRST` plus power/ground/reset with a couple
 spare pins, consistent with the schematic.
 
+## Same connector confirmed on the IC-9700 too (2026-08-30)
+
+User checked the IC-9700's own schematic (separate radio, separate ongoing thread — see
+[[ic9700-container-format]]) and confirmed its JTAG connector is the **exact same part**,
+`10FLT-SM2-TB` — the identical JST FLT-series 10-position/0.5mm-pitch FPC/FFC connector documented
+above for the IC-7300's `J491`. Not yet confirmed: whether the *pin assignment* is also identical
+(same signal order on the same physical connector family doesn't guarantee the same pinout — would
+need the IC-9700's own schematic page checked pin-by-pin the same way item 2 below still needs for
+the IC-7300 itself), or whether it's populated/accessible the same way. **Practical implication if
+it does match**: the FT2232H adapter + FFC breakout already ordered for the IC-7300 ([[icom-ic7300-re-project]]) would very plausibly work for the IC-9700 as well, without sourcing
+separate hardware — worth confirming pinout before assuming this, not before wiring anything up.
+
 ## Next steps (physical, not further Ghidra work)
 1. ~~Physically locate the header near `IC301`~~ — done, confirmed
    populated via photos.

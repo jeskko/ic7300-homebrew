@@ -100,9 +100,12 @@ to installed firmware exists yet.
    by its being identical across 37 releases, but the format-ID angle stands regardless of what it
    turns out to be.
 5. Actual IC-9700 JTAG hardware access, bypassing the update-container problem entirely — same
-   approach as [[hardware-debug-access]]'s IC-7300 plan, different radio. **In progress, 2026-08-30**:
-   user is checking the schematic for a JTAG connector on the IC-9700 board (nothing scoped yet —
-   unlike the IC-7300, no connector has been identified as populated on this board at all).
+   approach as [[hardware-debug-access]]'s IC-7300 plan, different radio. **Progressed, 2026-08-30**:
+   JTAG connector confirmed on the IC-9700's schematic, `10FLT-SM2-TB` — the exact same JST FLT-series
+   part as the IC-7300's own `J491`. Pin assignment not yet checked (same connector part doesn't
+   guarantee same pinout), but if it matches, the FT2232H adapter + FFC breakout already ordered for
+   the IC-7300 would very plausibly work here too. See [[hardware-debug-access]]'s own new section on
+   this.
 
 Treat this as a genuine cold-start RE effort if resuming, not a quick adaptation of existing
 IC-7300 tooling.
