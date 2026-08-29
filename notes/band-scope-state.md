@@ -243,21 +243,41 @@ Went through the remaining uncharacterized pockets from the previous section's p
   validator indexed 0-4 into an array of `{ptr, len}` slots, copying a `NUL`-or-`\`-terminated
   string into each. Reads as a **multi-field text-entry screen** (5 fields) — candidate guesses
   (memory-channel naming, a callsign/station-ID field) not confirmed.
-- **`0x203fca1e`-`0x203fcb6a` / `0x203fccbc`-`0x203fcd8e` cluster — the most interesting new find
-  this round**: both ranges turn out to be the same shared literal pool, serving `FUN_2006a400`.
-  That function parses an input value, **byte-swaps it (full 32-bit reversal)**, then runs a
-  **binary search** over a sorted table (`DAT_2006a560`, 8-byte stride) for a match. Parse → 
-  byte-reverse → binary-search-a-sorted-table is a classic shape for a **prefix/lookup-table
-  feature** — a plausible (not confirmed) candidate given this is a ham radio is a **DXCC/callsign
-  country-prefix lookup**. Worth a closer look if this thread continues; `FUN_20047754`/
-  `FUN_20016ae0`/`FUN_20006728` (the input-parsing helpers it calls) are the natural next stop.
+- **`0x203fca1e`-`0x203fcb6a` / `0x203fccbc`-`0x203fcd8e` cluster — confirmed, and it's not what it
+  first looked like.** Both ranges are the same shared literal pool, serving `FUN_2006a400`. First
+  pass guessed "DXCC/callsign prefix lookup" from the parse→byte-swap→binary-search shape alone;
+  chasing its three helper calls (`FUN_20047754`/`FUN_20016ae0`/`FUN_20006728`) **retracts that and
+  replaces it with a much better-supported reading**:
+  - `FUN_20047754` does an **interrupt-protected read of a live 7-byte struct** at `0x2039027c`
+    (`DAT_20047500`) — the disable/enable-IRQ bracketing is the standard idiom for a torn-read-safe
+    RTC access, and this is very likely a **RAM shadow copy of the real-time clock** (`IC351`, see
+    [[ic7300-hardware]]), not previously pinned to an exact address elsewhere in this project.
+  - `FUN_20016ae0` formats 3 of those clock bytes into **decimal** two-digit pairs (confirmed via
+    its own helper, `FUN_200064d0`, which does `÷10`/`+'0'` digit extraction, clamped to 0-99 —
+    unambiguously decimal, not hex) and builds a literal string: `"\20"` + 6 decimal digits +
+    an optional single-letter suffix — i.e. **`"\20YYMMDD"` or `"\20YYMMDDX"`**, the classic
+    Icom SD-card daily-folder naming convention already confirmed elsewhere in this project (the
+    `sdcard_file_rpc_dispatch_task`/VFS work, e.g. `C:\IC-7300\Voice\...`).
+  - `FUN_20006728` then **re-parses those same 6 digits as hex** back into a packed binary value —
+    at first glance inconsistent with them being decimal, but harmless and still fully
+    order-preserving for search purposes (decimal digits 0-9 are a strict subset of hex digits,
+    so the resulting key sorts identically either way) — just an internal, slightly unusual
+    encoding choice, not a bug or a sign this is really hex data.
+  - Put together: `FUN_2006a400` builds **today's date-coded SD-card filename from the live clock,
+    turns it into a sortable key, and binary-searches an existing table of such date-codes** —
+    almost certainly a "does today's folder/file already exist" check feeding the date-organized
+    SD-card storage system (voice memos, screen captures, and similar date-named saves).
 
-**Updated status**: of the 7 pockets flagged after the last sweep, 2 are now reasonably well
-characterized (`0x203fc000`'s general shape, `0x20403fec` resolved as a non-issue), 2 have strong
-working hypotheses (text-entry screen, DXCC-shaped lookup), and 1 remains genuinely unclear
-(`0x2040466c`, likely not worth more time). The 87-ref pointer-table cluster and the ~40 smaller
-1-4-ref clusters from the original sweep are still unexamined, lowest priority given the pattern so
-far (most turn out to be more instances of the same generic per-screen buffer architecture).
+**Updated status**: of the 7 pockets flagged after the last sweep, 1 is confirmed with real
+evidence (`sdcard_date_key_lookup` — date-coded SD-card filename lookup, renamed/commented in
+Ghidra along with its 3 helpers and `g_rtc_shadow`), 2 more are reasonably well characterized
+(`0x203fc000`'s general shape, `0x20403fec` resolved as a non-issue), 1 has a working-but-unconfirmed
+hypothesis (the text-entry screen), and 1 remains genuinely unclear (`0x2040466c`, likely not worth
+more time). The 87-ref pointer-table cluster and the ~40 smaller 1-4-ref clusters from the original
+sweep are still unexamined, lowest priority given the pattern so far (most turn out to be more
+instances of the same generic per-screen buffer architecture). **Not yet found**: who calls
+`sdcard_date_key_lookup` — tracing that would confirm which specific SD-card feature (voice memo,
+screen capture, or something else) this serves.
 
 ## Methodological note
 
