@@ -583,7 +583,7 @@ reading an old copy of this file, the version that follows is the one to trust.
 | `cold_boot_hw_init` (`0x2002b02c`, renamed from `FUN_2002afc0`) | `0x2019889c` | `FUN_2007ef5c` (the UI/display task — entry point itself never renamed) | — | — | ✅ examined — allocates screen objects, runs a message loop |
 | `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `audio_buffer_task_2006bb58` | 0 | 0x800 | ✅ confirmed real state machine — ring-buffer wraparound arithmetic found; leaning circular audio buffer manager (plausibly SD-card WAV record/playback), not fully confirmed |
 | `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `audio_buffer_task_2006c2c4` | 0 | 0x800 | ✅ confirmed real state machine — same subsystem as above, shares state at `0x2006c3d4` |
-| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | 🟡 **traced to the USB subsystem, 2026-08-29 (much later session)** — see the new section below; still not a fully pinned-down task identity, but no longer a total dead end |
+| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | 🟡 **mechanism traced, peripheral identity still open, 2026-08-29 (much later session)** — an initial "USB subsystem" guess was checked against the real RZ/A1H manual and retracted; see the section below |
 | `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `bmp_capture_task` | **-1** | 0x1000 | ✅ **fully resolved** — the BMP screen-capture-to-SD-card feature (real `BITMAPFILEHEADER`/`BITMAPINFOHEADER` construction) |
 | `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `sdcard_file_rpc_dispatch_task` (renamed **twice**: `task_probe_200b9c00` → `civ_command_dispatch_task` (wrong guess) → `sdcard_file_rpc_dispatch_task`, see the 2026-08-29 "civ_command_dispatch_task retraction" section) | 1 (highest priority in the catalog) | 0x1800 | ✅ **fully resolved, then corrected** — **not** CI-V; a generic internal SD-card file-access RPC service (open/read/write/close/rename/list), dispatched through a function-pointer table by command ID |
 | *(no direct call site found — genuine static-analysis dead end, not yet fixed)* | `0x20361318` | `sys_monitor_task_entry` (`0x200b94e8`) | 3 | 0x800 | ✅ examined — runs the `cold_boot_hw_init` chain (`DRESD`/GPIO init); its own **caller**, `sys_monitor_task_loop` (`0x2003bb70`), *is* known — called unconditionally every iteration by `FUN_2002b29c` — but what activates `sys_monitor_task_entry` itself remains unresolved |
@@ -1562,36 +1562,49 @@ same address). The surrounding 128 bytes are uniformly `0xFF` — not a compact 
 thoroughly re-confirmed as a static-analysis dead end can be** — there is no writer anywhere in the compiled
 image; the real value only exists at runtime. Still needs live JTAG.
 
-**`thunk_FUN_2007ea68` — actually resolved to a subsystem, not just "dynamic and unresolved."** This one
-paid off. `FUN_2007ea68` itself is a generic "activate whatever task descriptor the caller hands me" helper
+**`thunk_FUN_2007ea68` — the activation mechanism itself got fully traced, though the first guess at
+*what* it activates didn't survive a check against the real manual (see below).** `FUN_2007ea68` itself is
+a generic "activate whatever task descriptor the caller hands me" helper
 (`itron_act_tsk(*param_1, param_1)`), unlike every other task's fixed-literal activation — explaining why it
 looked like a dead end to begin with. Its caller isn't found by a normal reference lookup because it's
 reached through a **chain of ARM/Thumb interworking veneers** (`bx pc` + `b <target>` pairs, the standard
 linker-generated pattern for cross-mode calls — several links deep, each auto-named `thunk_FUN_2007ea68` by
 Ghidra, which is why they all look identical at a glance). Walked the chain (`0x20184950` →`0x2015824c`
 → two further branches) down to 3 genuine, non-veneer call sites:
-- **`usb_controller_configure`** (renamed from `FUN_2014ee46`) — touches `USB_CTRL_BASE` (`0xe8100000`,
-  confirmed as the exact documented RZ/A1H I/O region from [[memory-map]]) with register offsets
-  `0x4004`/`0x4010`/`0x4014`/`0x4018`/`0x401c` and endpoint sizes `0x20`/`0x40` (32/64 bytes — the classic
-  USB max-packet sizes) — a real USB controller init/configure routine.
-- **`usb_connect_disconnect_handler`** (renamed from `FUN_201009d2`) — wraps `usb_controller_configure`
-  inside a connect/disconnect-shaped state machine, with sibling thunk calls
-  (`thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8`) that read as the deactivate/queue-teardown counterparts —
-  not examined yet.
-- **`FUN_2014d146`** — a retry/completion-callback handler that lazily activates a task only once a retry
+- **`FUN_2014ee46`** — touches a peripheral at `0xe8100000` with register offsets
+  `0x4004`/`0x4010`/`0x4014`/`0x4018`/`0x401c` and small size constants `0x20`/`0x40`.
+- **`FUN_201009d2`** — wraps `FUN_2014ee46` inside a connect/disconnect-shaped state machine, with sibling
+  thunk calls (`thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8`) that read as deactivate/queue-teardown
+  counterparts — not examined yet.
+- **`FUN_2014d146`** — a retry/completion-callback handler that lazily activates a task once a retry
   queue becomes non-empty, the same "activate on demand" shape.
 
-**Working conclusion: the dynamic task-activation case belongs to the USB device/host controller
-subsystem** — a worker/handler task spun up only when USB is actually connected, which is exactly why no
-fixed literal descriptor for it ever existed to find. This connects to the already-established USB hardware
-in [[ic7300-signal-chain]] (the HUB+BRIDGE+CODEC pinout, `CP2102GMR` bridge carrying CI-V-over-USB). Not
-fully closed out: the task's exact purpose (endpoint transfer processing? a USB CDC/serial handler feeding
-the CI-V-over-USB path specifically?) still isn't pinned down — `thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8`
-and the earlier stages of `usb_connect_disconnect_handler` are the natural next stop. Renamed/commented in
-Ghidra (`usb_controller_configure`, `usb_connect_disconnect_handler`, `USB_CTRL_BASE`, and a full plate
-comment on `FUN_2007ea68` itself recording the whole veneer-chain trace).
+**First guess: "USB device/host controller subsystem" — checked against the real manual and RETRACTED.**
+The `0x20`/`0x40` size constants looked like classic USB max-packet sizes, so this session initially
+renamed the two functions `usb_controller_configure`/`usb_connect_disconnect_handler` and labelled
+`0xe8100000` as `USB_CTRL_BASE`. **User pushed back, correctly**: the only USB connectivity this project has
+ever established is via dedicated external chips with their own USB silicon (`IC621` `TUSB2046BIVFRG4` hub,
+`IC661` `PCM2901E` audio codec, `IC641` `CP2102GMR` serial bridge — see [[ic7300-hardware]]), none of which
+need the main CPU to run a USB protocol stack at all. Checked directly against the real RZ/A1H hardware
+manual (`R01UH0403EJ0600`, extracted and searched in full, ~213,000 lines): the actual, explicitly
+documented USB2.0 host/function module register bases are `SYSCFG0_0 = 0xE801_0000` (channel 0) and
+`SYSCFG0_1 = 0xE820_7000` (channel 1) — **neither matches `0xe8100000`** (easy to misread as the same address
+at a glance; they aren't). Searched the whole manual for any register table documenting
+`0xE810_0000`-`0xE813_FFFF`: **none exists** — the top-level bus address map (§5.4, Table 5.5) lists this
+range only as a generic "I/O area, SLV5" bus-matrix slave, with no peripheral chapter naming what's actually
+there. Also checked and ruled out as alternatives: Ethernet (`0xE820_3xxx`/`0xE820_4xxx`, a different bus
+slave, SLV4), SD Host Interface (`0xE804_Exxx`, SLV2). **Reverted the Ghidra renames**: `FUN_2014ee46`/
+`FUN_201009d2` are back to generic names (`slv5_periph_configure`/`slv5_periph_connect_disconnect_handler`
+— kept the "SLV5 peripheral" framing since that bus-matrix fact is solid, dropped "USB" entirely since it
+isn't), and `USB_CTRL_BASE` is now `UNIDENTIFIED_SLV5_PERIPH_BASE`.
 
-**Net effect on the "2 mystery tasks" framing**: down to 1 genuine, thoroughly-reconfirmed JTAG-only dead
-end (`kernel_start`'s own descriptor), and 1 that's no longer really a mystery — just an unclosed loose end
-within a now-identified subsystem (USB), a qualitatively different and much better position than "fully
-unresolved."
+**Net effect on the "2 mystery tasks" framing, corrected**: down to 1 genuine, thoroughly-reconfirmed
+JTAG-only dead end (`kernel_start`'s own descriptor), and 1 where the *mechanism* is now understood (a
+dynamic task activated on some connect/disconnect-shaped event touching an unidentified peripheral at
+`0xe8100000`/SLV5) but the peripheral's actual identity is genuinely open again — not USB, not yet
+replaced with a better-supported guess. **Concrete next steps if this is picked up again**: check whether
+any already-traced CPU pin/net connects to a chip-select or control line that would explain what's wired to
+this specific bus-matrix slave (SLV5), since the general RZ/A1H I/O bus-matrix slaves elsewhere in this
+project have mapped cleanly onto specific on-board peripherals once the right net was checked; or read
+`thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8` and the earlier stages of `FUN_201009d2` for more contextual
+clues before guessing a specific peripheral again.
