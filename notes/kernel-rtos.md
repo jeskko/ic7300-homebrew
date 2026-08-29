@@ -1001,3 +1001,72 @@ detail (the extra `0xe4` ID vs. SCIF0's 3) for a possible clue about what's on t
 the user to check the schematic for any unlabeled/secondary alt-function silkscreen on the 5 candidate pins;
 (d) live JTAG, once available, would likely resolve both the trigger and the pin question quickly by simply
 watching `DAT_2002a158` and the SCIF1 register block during radio operation.
+
+## Factory/service mode — a real, external fact confirms the shape, third independent piece of evidence found (2026-08-29, 30th session, continued)
+
+**User-supplied ground truth**: the IC-7300 has a real, documented-by-experience service mode — enter it by
+shorting the contacts in the REMOTE (CI-V) plug, then powering on while holding MENU and FUNCTION. This
+directly explains why the SCIF1 investigation above found what it found: the REMOTE jack is exactly
+`CTXD`/`CRXD`/`CBSY` (SCIF0's own pins), so "short the REMOTE contacts" is a physical condition readable as
+raw GPIO state on the same pins SCIF0 uses — and MENU/FUNCTION are front-panel keys reported over SCIF3
+(the separate front-panel-MCU link). Went looking for the exact boot-time detection code for this condition
+and for who requests `DAT_2002a158`'s "mode 6/7/8" — did not find either (see below), but found a **third,
+independent, very concrete piece of evidence** for a real factory/service subsystem while looking.
+
+**Found: a real "factory data" file and a full MD5-verified load/save mechanism.** A string search for
+plausible service-mode text turned up `"C:\IC-7300\IC-7300_factory"` (literal path at `0x20025620`, no
+extension visible in the image) — a real SD-card file, not a menu label. It's used by three consecutive,
+previously-unidentified cases in `sd_menu_dispatch_task`'s existing 42-case switch:
+- **case `0x26`** → `factory_file_load` (renamed from `FUN_200253f4`): opens the file via the same
+  open/read/seek/close file-RPC primitives `sdcard_file_rpc_dispatch_task` exposes, reads a 3-field header
+  (4 bytes each, `+0`/`+0xd`/`+0x1a` stride) and compares each field against a fixed reference table,
+  recording a pass/fail byte per field.
+- **case `0x27`** → `factory_file_verify_md5` (renamed from `FUN_20025650`): a full, real **MD5 checksum
+  validator** over the file's 3 segments — reads each segment in up to `0x8000`-byte chunks through
+  `md5_init`/`md5_update`/`md5_final`, compares the computed digest against a stored 16-byte MD5 per
+  segment, and maintains a live 0-255 progress value (`*(DAT_20024a04+0x50)`) while doing it — i.e. this
+  is built to run under a visible progress bar, not silently in the background.
+- **case `0x28`** → `factory_file_case28_report` (renamed from `FUN_20025300`, purpose least certain of the
+  three): references the same path string and the per-segment pass/fail bytes case `0x26` records; reads
+  as some kind of report/log/summary step, not fully traced.
+
+This is a genuine, deliberately-engineered **factory calibration/settings backup-and-restore mechanism with
+real integrity checking** — not a stray leftover. Exactly the shape you'd expect behind a documented
+short-and-hold service-mode entry: load calibration constants back onto a radio after a board/EEPROM
+replacement, with MD5 verification so a corrupted or wrong-model file gets rejected before it's trusted.
+
+**Three independent findings now point at the same real subsystem, not yet proven wired together in the
+traced call graph**: (1) SCIF1's parallel CI-V-shaped-but-calibration-behaved protocol (previous section);
+(2) this MD5-verified `IC-7300_factory` file mechanism; (3) the `DAT_2002a158` "mode request" byte whose
+values `6`-`9` trigger a full-system reinit through `system_mode_request_dispatch`. All three are exactly
+the pieces a real factory/service mode would need (a calibration data channel, a backup/restore file with
+integrity checking, and a distinct system-wide operating state) — treated as a strong, well-supported
+working picture, not asserted as a proven single mechanism.
+
+**Still not found, despite specifically looking with the user's new fact in hand**:
+- The boot-time code that reads the REMOTE jack pins (`P6_9`/`P6_10`/`P7_11`) as raw GPIO to detect a short,
+  and/or the MENU+FUNCTION-held report from the front panel over SCIF3, and combines them into a "enter
+  service mode" decision. Checked the cold-boot dispatcher (`FUN_2002b29c`, decides between
+  `FUN_2002b1c8`/cold-boot-init and `FUN_20029ca4`/power-state-loop) and its own condition functions
+  (`FUN_20029224`/`FUN_20029270`/`FUN_200291d8`) — these turned out to be ordinary EEPROM regional-setting
+  checks (parameter IDs `16000`/`16000`/`0x3fc0`), not GPIO/key reads; not the right place.
+  `references_to`/string search for "SERVICE"/"TEST MODE"/"FACTORY"/"ADJUST" found only the factory-file
+  path (useful) and ordinary menu-string-table hits (not useful) — no smoking-gun boot-time check located.
+- Who sets `DAT_20027840+0x44` (`sd_menu_dispatch_task`'s own command-ID field) to `0x26`/`0x27`/`0x28` —
+  same "genuine dead end" class as `DAT_2002a158`'s writer: `references_to` on the containing struct's base
+  address returns only reads clustered inside `sd_menu_dispatch_task` itself, no external poster found. This
+  would be the natural place to find whether these 3 menu cases are UI-gated behind a "service mode active"
+  check, or freely reachable — not resolved.
+- Whether the front-panel MCU (`IC501`) itself detects the key-hold condition and reports a distinct status
+  to the main CPU, versus the main CPU polling ordinary key-state and combining it with GPIO itself — not
+  determined; would need the front-panel SCIF3 packet format decoded (33-byte packets, framing already
+  confirmed in [[ic7300-signal-chain]], key-code table not yet extracted).
+
+**Resume point if this thread continues**: decode the front-panel SCIF3 33-byte packet's key-code field
+(would let all boot-time "held key" checks be searched for directly by value, likely the single highest-
+leverage next step); trace `factory_file_case28_report`'s output destination (display buffer vs. log file)
+to settle its exact purpose; check whether `sd_menu_dispatch_task`'s case `0x26`-`0x28` are reachable from
+the *ordinary* SD-card menu UI or only from a separate, service-mode-only menu screen (would need the
+SD-menu's own item-visibility table, not yet located — likely separate from the 216-item general menu table
+already documented); live JTAG would very plausibly resolve the actual boot-condition check in minutes by
+just watching GPIO/SCIF3 traffic during a real service-mode entry.
