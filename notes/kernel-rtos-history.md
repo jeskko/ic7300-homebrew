@@ -1742,3 +1742,58 @@ two halves of one feature, not independently-uncertain guesses anymore. Not yet 
 direct call/queue link between the two subsystems has been traced) — a good next step if this thread is
 picked up again: check whether `audio_buffer_task`'s ring buffer and this task's queue messages share a
 common producer, which would nail the connection directly.
+
+**Correction (2026-08-30, next session — see the `voice_tx_memory_*` section below)**: this "two halves of
+one feature" reading turned out to be wrong. `audio_buffer_task_2006bb58`/`2006c2c4` read from a *different*
+SD-card folder (`C:\IC-7300\VoiceTx`) than this task's own `C:\IC-7300\Voice` — they're sibling features
+(TX voice-message playback vs. this task's own recording) sharing the same file-RPC plumbing, not two
+halves of one feature. Recorded here rather than silently edited away, per how this project tracks
+corrections.
+
+## `audio_buffer_task` pair fully resolved: TX Voice Memory playback, not the record-side counterpart (2026-08-30)
+
+User's ask, continuing the task-catalog triage: dig into the `audio_buffer_task` pair next.
+
+**Renamed `voice_tx_memory_control_task`/`voice_tx_memory_stream_task`.** Decompiled both task entry points
+fresh — each is a state machine reading its own state byte from a shared control struct (`DAT_2006c3d4`,
+offsets `+4`/`+5`), dispatching to a distinct set of sub-handlers, confirming the existing "sibling state
+machines sharing state" read from the 26th session. The real identity, again, came from a literal path
+string rather than the control flow:
+
+- **`"C:\IC-7300\VoiceTx"`** (`0x2006b39a`) sits inside `voice_tx_list_messages` (renamed from
+  `FUN_2006b2c4`, `voice_tx_memory_control_task`'s state-5 handler) — **note: `VoiceTx`, not `Voice`** — a
+  different SD-card folder from `voice_recording_file_task`'s own `C:\IC-7300\Voice`. This one function does
+  a real directory listing: builds the path, calls `FUN_200bc8b4` (which posts file-RPC command `0x17`,
+  "list"), then for each returned entry builds a full path and calls `FUN_2002232c` with two fields from a
+  per-entry struct — populating some kind of message index.
+- **`voice_tx_resolve_message_slot`** (renamed from `FUN_2006ad30`, reached from `voice_tx_memory_control_task`'s
+  state 1 via `FUN_2006b99c`): converts an ASCII numeric string to packed nibbles, then **binary-searches a
+  sorted lookup table** (`DAT_2006a560`-based) to resolve that number to a specific file — exactly the shape
+  you'd expect for "resolve TX Voice Memory slot N (1-8, the IC-7300's real documented feature) to its
+  backing file."
+- **`voice_tx_read_block`** (renamed from `FUN_2006af28`, called from **`voice_tx_memory_stream_task`**'s
+  states 1 and 5 — confirming task B, not task A, is the actual data-reader): wraps `FUN_200bc754`, which
+  posts file-RPC command `0x13` ("read at offset"). The "ring-buffer wraparound" shape the 26th session
+  originally flagged (position math against a size field at `DAT_2006c404+0x30`) is fully explained by this
+  — it's buffered file-read position tracking (how far into the file the next read should start), not a raw
+  PCM/hardware ring buffer.
+
+**This also rounds out the file-RPC service's command map**, previously only partially known: `6` = open
+(seen from `voice_recording_file_task`), `9` = a second write/append-shaped op, `0x13` = read-at-offset,
+`0x17` = list directory. Individual field semantics within each command's payload still not decoded.
+
+**Correction to last session's own speculation** (see the correction note added just above, in the
+`voice_recording_file_task` section): this pair is **not** the ring-buffer/audio-hardware half of that
+task's recording feature — it reads a *different* folder entirely. The real relationship: two sibling
+features (TX voice-message **playback** vs. voice **recording**) that happen to share the same underlying
+SD-card file-RPC infrastructure, not two halves of one feature. Good general lesson for this thread: a
+shared mechanism (same RPC service, same "audio + SD card" flavor) doesn't imply the same feature — the
+actual folder path settled it immediately once found, where the control-flow shape alone was ambiguous.
+
+**Still open, not chased this session**: neither task's own code touches SSIF/DAC hardware directly
+(consistent with the already-established pattern that hardware access happens only in the ISR/event-handler
+layer below the task layer — see this file's "does any catalogued task touch the DSP or `DRESD` directly"
+section) — so the actual "decoded WAV samples out to the transmit audio chain" step happens somewhere below
+these two tasks, not found here. Also not decoded: the individual field layout of file-RPC commands `6`/`9`/
+`0x13`/`0x17`'s payload structs, or exactly what `FUN_2002232c` (called per listed message) does with each
+entry.

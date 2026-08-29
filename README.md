@@ -160,8 +160,11 @@ by but not built on top of the prior work there.
   task that had sat at "purpose not identified" since the 26th session**: `voice_recording_file_task`
   (renamed from `queue_driven_task_2001745c`, notable for having the catalog's largest stack) manages
   recording audio to the SD card's `C:\IC-7300\Voice` folder, confirmed as a real client of the
-  already-known SD-card file-RPC service — and directly strengthens the long-standing "`audio_buffer_task`
-  pair = WAV record/playback" hypothesis as its likely file-I/O counterpart. See `notes/kernel-rtos.md`.
+  already-known SD-card file-RPC service. **Follow-up (2026-08-30)**: also resolved the
+  `audio_buffer_task` pair, renamed `voice_tx_memory_control_task`/`voice_tx_memory_stream_task` — a
+  **sibling** feature (TX Voice Memory pre-recorded message playback, reading a *different* folder,
+  `C:\IC-7300\VoiceTx`), correcting last entry's guess that it was the same feature's other half. See
+  `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2
