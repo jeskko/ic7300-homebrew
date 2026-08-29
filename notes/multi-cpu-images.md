@@ -939,6 +939,63 @@ flash during programming" line, in which case the DSP might come out of reset fa
 assumed, or via a mechanism that doesn't route through `P2` at all. Not guessed further; flagged for either
 a fresh angle or live JTAG (watch `P2`/`PPR2` bit 6 directly while the radio boots).
 
+## The "chunk 0 = Front CPU" label is now actively doubtful — no per-chunk SCIF3 path exists (2026-08-29)
+
+Picked up the "next steps (2)" item from the 13th session's section above directly: "re-examine
+`FUN_20025044`'s RAM-buffer destinations ... to see which component goes out over SCIF3 (front panel) vs.
+whatever channel reaches the DSP." Answer, now confirmed at the code level rather than inferred: **none of
+them go out over SCIF3. All three chunk indices — 0, 1, and 2 — are transported by the exact same code
+path, and that path is 100% SCIF5.**
+
+Traced the full call chain under `chunk_transport_send_data` (`FUN_20025044`) with no branch on chunk index
+anywhere in it:
+- `chunk_transport_send_data` → `dsp_page_transfer_verify` — its own header comment (this session) already
+  frames this as a page-write acknowledgment protocol addressed *at the DSP*: it validates a checksum and
+  an echoed-back destination address against the DSP's reply, and calls `scif5_send_and_wait_reply()`
+  directly.
+- The ring-buffer push helpers (`FUN_200b3040`, `FUN_200b304c`) both call `scif5_ring_push_word()` directly,
+  tagging words with DSP command-class nibbles (`0xe2000000`/`0xe3000000`) — not a peripheral selector, a
+  DSP-side command tag.
+- `chunk_transport_send_reload_cmd` (the same-transport reload trigger, cmd `0x87`, sent specifically when
+  chunk 0 or chunk 2 changed) uses the identical `scif5_ring_push_word`/handshake primitives.
+
+No conditional anywhere in this chain picks a different UART for chunk index 0. The per-chunk-index value
+threaded through as `param_2`/`page_addr` (from `DAT_200264b4[index]`, the runtime-populated pointer table
+already flagged as unresolvable via static analysis in the correction above) is used purely as a
+destination address *within whatever the DSP-side protocol addresses* — never as a code-path selector.
+
+**This retracts the load-bearing part of the 13th session's "confirms the front-panel link is real
+infrastructure for this" reasoning** (the paragraph right after the version-screen evidence): the existence
+of a real SCIF3 driver elsewhere in the firmware was never actually wired to this transport — it was a
+plausibility argument, not a traced connection, and it doesn't survive contact with the actual code. The
+5-field version-label evidence (`Main CPU`/`Front CPU`/`DSP Program`/`DSP Data`/`FPGA`, and the ordering
+argument built on it) is unaffected by this — that part stands on its own string/struct evidence — but the
+assumption that "Front CPU" therefore travels to `IC501` over its own known link is now actively
+contradicted, not just unconfirmed.
+
+**Converges with an independent line of evidence from the same day**: the front-panel (RL78) firmware
+thread ([[front-panel-firmware]]) found that `front_cpu.bin` (component0's decompressed payload) is
+~134 KB of actual content — over 4x `R5F104LCAFB`'s Renesas-confirmed 32 KB code flash — and that its
+byte-entropy profile sits much closer to `dsp_program.bin`'s dense, uniform VLIW-code profile than to
+confirmed-real ARM code in `body.bin`. Two independently-derived findings (this session, different
+methods — one from the update-mechanism's code, one from raw forensics on the extracted file) now point the
+same direction.
+
+**Best-supported reading now**: `component0` is very likely **not** Front CPU firmware at all — more
+plausibly a third piece of DSP-side data, e.g. a second partition of the DSP's own external SPI boot flash
+(`IC902`, already established as something the DSP reprograms on the main CPU's behalf during updates).
+`R5F104LCAFB`'s 64-pin package almost certainly has no external memory bus to execute from such a shared
+flash directly (RL78/G14's external-bus-capable variants are the larger pin-count packages), so a
+"front panel boots from the same shared flash" rescue of the original hypothesis looks unlikely too —
+not chased further this session, flagged as worth a datasheet check if it matters later.
+
+**Genuinely open**: what `component0` actually is, if not Front CPU firmware. Not established this session.
+The `FUN_200a94c8` version-field/label evidence still needs reconciling with this — either the
+label-to-chunk-index correspondence itself is wrong (maybe the natural "ascending offset order" assumption
+between the two independent orderings doesn't hold), or "Front CPU" firmware really does exist somewhere in
+this update file under a different mechanism entirely, not part of the "3 extra chunks" loop at all. Worth
+a fresh look before trusting either surviving half of the original hypothesis.
+
 ## Handoff: DSP comms/firmware thread, continuing in a new session (2026-08-29)
 
 Picking this thread back up — start here, don't re-derive the sections above. Quick orientation first, then

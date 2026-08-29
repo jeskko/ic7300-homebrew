@@ -145,3 +145,42 @@ Both toolability questions from the handoff are resolved, and better than expect
    against what a genuine RL78 vector table / reset handler should look like once the datasheet is read.
 3. Only then resume the original steps 4-6 (SCIF3 cross-reference, the two ASCII-fragment follow-ups, reset
    handler / button-scan hunting) — those all still stand as written above.
+
+## 2026-08-29, same day — this file's entire premise is now in doubt, don't build further on it yet
+
+Two independent lines of evidence from the same day both point away from `front_cpu.bin` actually being
+`IC501`'s firmware:
+
+1. **The datasheet number checks out, and it's a real contradiction, not a rounding error.** Renesas's own
+   part page for `R5F104LCAFB` confirms 32 KB code flash / 4 KB data flash / 4 KB RAM. `front_cpu.bin`'s
+   actual content (past the ~34-byte header, before the trailing `0xFF` pad) runs to `0x20c80` —
+   **134,272 bytes, over 4x the entire chip's flash capacity.** Byte-entropy profiling and a zoomed 1bpp
+   bitmap render (prompted by the user spotting visible periodicity in GIMP) ruled out "it's actually
+   graphics/font assets" as the explanation — no recognizable local image content anywhere, just a genuine
+   ~16-32 byte statistical periodicity sustained across the whole content region, more consistent with
+   dense code/data than a picture. The entropy profile itself sits closer to `dsp_program.bin`'s dense,
+   uniform VLIW-code signature than to confirmed-real ARM code in `body.bin`.
+2. **The main-CPU update mechanism itself doesn't support the label.** Traced `chunk_transport_send_data`
+   (the function that sends this exact chunk, index 0, during a firmware update) all the way down through
+   `dsp_page_transfer_verify` and the ring-buffer push helpers — every one of them is hard-wired to the
+   `SCIF5`/DSP transport (`scif5_send_and_wait_reply`, `scif5_ring_push_word`), with **no branch anywhere
+   that picks the front-panel `SCIF3` link for chunk 0**. See [[multi-cpu-images]]'s "The 'chunk 0 = Front
+   CPU' label is now actively doubtful" section for the full trace — this is the same finding from the
+   main-firmware side that independently corroborates the forensic finding above.
+
+**Working conclusion**: `front_cpu.bin` is very likely **not** `IC501`'s firmware. It's more plausibly a
+third piece of DSP-side data (perhaps a second partition of the DSP's own external SPI boot flash,
+`IC902`). The RL78 tooling stood up in the first half of this file (Ghidra `xyzz/ghidra-rl78` module,
+`rl78-objdump` from stock binutils) is still sound and reusable — but **don't keep pointing it at
+`front_cpu.bin` expecting front-panel firmware** until this is resolved. The plausible-looking RL78
+disassembly patterns found earlier in this file (call-target convergence, sane branch offsets) are real but
+weak evidence next to this — a sufficiently dense binary blob run through a permissive variable-length CISC
+decoder can produce locally-plausible-looking sequences by chance over an 8 KB sample; they don't outweigh
+two independent, code-level/datasheet-level findings.
+
+**Genuinely open, not resolved**: whether real `IC501` firmware exists anywhere in the update container
+under a different mechanism, or whether it's provisioned some other way entirely (factory-programmed once,
+never updated over this path?). Worth checking whether the update file's "Front CPU" version field
+(`FUN_200a94c8`'s `+0xa4`) is ever compared against anything read from `IC501` itself (e.g. over `SCIF3`)
+rather than assumed — that would be the natural next thread, not a continuation of the RL78-disassembly
+work done above.
