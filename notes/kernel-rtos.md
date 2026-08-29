@@ -919,3 +919,85 @@ listed as open items below, not urgent.
 3. Two exact-duplicate table entries found (`0x0d`≡`0x04` both `vfs_rename`; `0x0e`≡`0x05` the
    read-modify-write pair; `0x10`≡`0x07` both `vfs_close`) — plausibly just compiler/linker artifacts from
    two source call sites sharing a common small wrapper, not investigated further.
+
+## SCIF1 service-mode protocol — a second, parallel CI-V-shaped bus, not CI-V itself (2026-08-29, 30th session)
+
+Follow-up to the retraction above: while chasing which physical pin SCIF1 (`0xE8007800`, found servicing
+alongside SCIF0 in `main_idle_loop`) is wired to, the user asked to look at the *behavior* of whatever
+services it instead of the pin. That turned into a real, substantial finding — not the pin, but a second
+CI-V-shaped protocol running on this second channel, structurally similar to real CI-V but functionally a
+calibration/self-test handshake, not a remote-control link. Kept separate from `civ_frame_rx_statemachine`/
+SCIF0 throughout — nothing here changes that section's conclusions.
+
+**Structurally, SCIF1's driver is a parallel CI-V implementation.** `scif1_svc_build_frame_header`
+(`0x200122c0`) writes the exact same `0xFE 0xFE <dst> <src> <cmd>` preamble as real CI-V — but with its own
+"own address" byte read from a *different* config offset than SCIF0's, i.e. a separately-addressed bus, not
+a mirror of the same one. `scif1_svc_frame_rx_statemachine` (`0x20012594`, renamed from `FUN_20012594`) is a
+near line-for-line structural duplicate of `civ_frame_rx_statemachine`. `scif1_svc_driver_init`
+(`0x20011df4`) registers **4** interrupt IDs (`0xe1`-`0xe4`) versus SCIF0's 3 — one extra, not yet
+individually chased. Servicing runs from `main_idle_loop` exactly like SCIF0 (`scif1_svc_rx_service`,
+`0x20012854`, called right after `civ_frame_rx_statemachine`'s own servicer in the same loop body) — so at
+the *driver* level this looked, at first, like it might just be a second physical CI-V-capable port. It
+isn't, per the command-level behavior below.
+
+**The command set is calibration-shaped, not remote-control-shaped.** `scif1_svc_command_dispatch`
+(`0x20012f5c`, renamed from `FUN_20012f5c`) range-switches a command byte `0x00`-`0x32` into 6 sub-handlers.
+Decompiled all of them (`scif1_svc_status_field_switch`/`0x20012ddc` plus `FUN_20012ba4`/`c00`/`c5c`/`ce8`/
+`d34`/`d84`) — every single one is a **threshold or bit-flag comparator**: read a "measured" byte or 16-bit
+field from the received frame's own payload (`DAT_20013088`, offsets `0x18`-`0x1f`) and compare it against
+a target value carried in the outgoing command (`DAT_20013080+2`/`+4`), returning pass/fail or a small
+enum, sometimes testing specific status bits instead of a numeric threshold
+(`FUN_20012d34` tests two individual bits of a 16-bit status word). Nothing here resembles frequency/mode/
+level get-or-set — this is the shape of a calibration or self-test handshake with whatever's connected,
+not a documented-or-undocumented CI-V *command*. `DAT_20013088`'s "measured" fields are read-only
+everywhere in `body.bin` outside this cluster — never written by any other traced function — consistent
+with them being populated by real received frames from the wire, not synthesized internally.
+
+**When it runs is gated behind a system-wide "service mode."** Traced the trigger back to
+`system_mode_request_dispatch` (`0x2002a6b8`, renamed from `FUN_2002a6b8`), which runs every iteration of
+`sys_monitor_task`'s own polling loop (via `FUN_2002b1c8` — the same function chain that holds the DSP in
+reset at boot, see the "DRESD" sections above). It reads a "mode request" byte (`DAT_2002a158`, values seen:
+`1`-`5`, `6`-`9` as a group, `0xb`) and switches `DAT_2002a4a4`, which selects which of several idle-loop
+variants runs next (`0`=`main_idle_loop`, `1`=`FUN_20053154`, `4`=`svc_mode_idle_loop`/`0x20053270`,
+`5`=`FUN_20053418`). **Request values `6`/`7`/`8` all select mode `4`** (`svc_mode_idle_loop`, which
+services *only* SCIF1, not SCIF0/CI-V) **and inject a synthetic starting command** (`0x00`/`0x1a`/`0x28`
+respectively) into SCIF1's dispatcher via `scif1_svc_post_synthetic_command` (`0x2001305c`) — so those three
+request values look like three distinct sub-operations of the same service mode (a `2001302c`/`13048`/
+`1306c` triple of call sites, one per starting command, already found earlier). Entering this state is
+heavyweight: it also re-activates essentially the entire task set (`sdcard_file_rpc_dispatch_task`,
+`sd_menu_dispatch_task`, the `audio_buffer_task` pair, `periodic_poll_task`, `queue_driven_task`, etc.) and
+reopens *both* SCIF0 and SCIF1 — a full subsystem restart, not a lightweight feature toggle.
+
+**Genuine dead end, not pushed further this session**: who writes `DAT_2002a158` to actually request modes
+6/7/8 (i.e. what triggers this service mode) was not found. Checked two ways: `references_to` on the
+address returns only 5 hits, all reads, all inside `system_mode_request_dispatch`'s own small cluster; and a
+full-image `objdump` ARM disassembly grepped for any `movw`/`movt` pair or literal-pool word building
+`0x2002a158` anywhere in `body.bin` — zero hits. Same class of static-analysis wall this project has hit
+before on "what activates task X" questions (e.g. `sys_monitor_task_entry`'s own activator, still unresolved
+per the "Chasing the two remaining loose ends" section above) — most likely populated through a message/
+event mechanism rather than a direct memory write, not traced this session.
+
+**Working hypothesis, not confirmed**: given the CI-V-shaped framing + own address + calibration/threshold
+comparator command set + full-system reinit + reached only through what looks like a deliberate, rarely-used
+mode, the most likely explanation is a **factory/service test or calibration link** — either to an internal
+test point or an external factory jig — rather than anything end-user-facing (no evidence tying it to the
+documented `1A 05 00 73` "CI-V Output for ANT" tuner feature, or to anything else in the public manual).
+Not settled; flagged as a hypothesis, not fact, per this project's usual standard.
+
+**Also still unresolved from the prior session's thread**: which physical pin(s) SCIF1's `RxD1`/`TxD1`
+alt-function actually uses. All RZ/A1H datasheet candidate pin pairs (`P9_3`/`P9_4`, `P2_5`/`P2_6`,
+`P6_12`/`P6_13`, `P4_12`/`P4_13`, `P7_3`/`P7_4`) are already claimed by other confirmed nets in the existing
+CPU pinout table (boot flash QSPI, `DRESD`/`PSTB`, USB, SD-card, tuner respectively) — a real, unreconciled
+conflict. The firmware's own driver init doesn't set the pin-mux itself (checked); it would live in the
+generic `port_bulk_gpio_init_pass1`/`pass2` bulk-config functions, which use pointer-index arithmetic off a
+single base rather than per-register literals, so a literal-pool search (which worked for the dead end above)
+doesn't apply here either — resolving this needs the same kind of manual per-port pointer-offset decode that
+the `DRESD`/`P2` trace took real, dedicated effort to do, or the schematic.
+
+**Resume point if this thread continues**: (a) decompile `scif1_svc_command_dispatch`'s remaining 4-interrupt
+detail (the extra `0xe4` ID vs. SCIF0's 3) for a possible clue about what's on the other end; (b) try tracing
+`DAT_2002a158` via the RTOS event/message primitives instead of direct memory writes (check which
+`register_event_handler` IDs feed into structures near this cluster); (c) do the SCIF1 pin-mux decode or ask
+the user to check the schematic for any unlabeled/secondary alt-function silkscreen on the 5 candidate pins;
+(d) live JTAG, once available, would likely resolve both the trigger and the pin question quickly by simply
+watching `DAT_2002a158` and the SCIF1 register block during radio operation.
