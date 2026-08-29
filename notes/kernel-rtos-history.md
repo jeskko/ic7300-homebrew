@@ -1902,3 +1902,20 @@ Renamed in Ghidra: `native_resource_dispatch`, `native_pixmap_alloc`, `native_wi
 `FUN_2007d050` (what `native_display_attach_window` forwards each per-display attach/detach to — the next
 candidate if this thread is picked up again, on the chance it reaches down toward real `VDC5`/hardware
 register territory).
+
+## Quick follow-up: does the BMP screen-capture feature use the 960x552 pixmap? No. (2026-08-30)
+
+User's question, following the multi-display/pixmap trace above: does `bmp_capture_task` (the
+already-resolved screen-capture-to-SD-card feature) draw from the 960×552 off-screen pixmap surface?
+
+**Checked directly and conclusively — it doesn't.** `bmp_capture_write_file`'s `BITMAPINFOHEADER`
+construction uses a width constant that decodes to exactly `480` (`0x1e0`, `egl_create_window_surface`'s own
+width). More directly: `bmp_capture_convert_pixels_to_bgr24` (renamed from `FUN_200aa2e4`, the actual
+32bpp→24-bit-BGR pixel converter) iterates a fixed pixel count, `DAT_200aa62c`, which reads as `130,560`
+decimal — **exactly `480 × 272`**, not `960 × 552` (`529,920`). The screen-capture feature captures the real
+window/touchscreen resolution, full stop; it has no connection to the pixmap surface at all.
+
+This is one more data point against the pixmap being anything other than what it already looked like: an
+internal render-side detail of `ui_graphics_lifecycle_task`'s own presentation pipeline, not a resource any
+other examined subsystem (display-attach code, screen capture) treats as a second, higher-resolution "real"
+canvas.
