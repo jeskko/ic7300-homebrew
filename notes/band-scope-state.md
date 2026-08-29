@@ -250,8 +250,10 @@ Went through the remaining uncharacterized pockets from the previous section's p
   replaces it with a much better-supported reading**:
   - `FUN_20047754` does an **interrupt-protected read of a live 7-byte struct** at `0x2039027c`
     (`DAT_20047500`) — the disable/enable-IRQ bracketing is the standard idiom for a torn-read-safe
-    RTC access, and this is very likely a **RAM shadow copy of the real-time clock** (`IC351`, see
-    [[ic7300-hardware]]), not previously pinned to an exact address elsewhere in this project.
+    RTC access, and this is very likely a **RAM shadow copy of the real-time clock** (`IC381`,
+    `RX-8803LC`, on its own dedicated `RTC_IRQ`/`RTC_SCL`/`RTC_SDA` pins — see [[ic7300-hardware]]
+    and [[ic7300-signal-chain]]; **not** `IC351`, which is the separate EEPROM on its own I2C pair),
+    not previously pinned to an exact RAM address elsewhere in this project.
   - `FUN_20016ae0` formats 3 of those clock bytes into **decimal** two-digit pairs (confirmed via
     its own helper, `FUN_200064d0`, which does `÷10`/`+'0'` digit extraction, clamped to 0-99 —
     unambiguously decimal, not hex) and builds a literal string: `"\20"` + 6 decimal digits +

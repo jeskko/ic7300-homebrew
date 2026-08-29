@@ -103,8 +103,10 @@ unmapped memory.
 - **IC391**: 64 MB SPI flash — pins `SFLCK`/`SFLSS`/`SFLD0-3` on
   `P9_2`–`P9_7` (`SPBCLK_0`/`SPBSSL_0`/`SPBIO{0,1,2,3}0_0`).
 - **IC902**: 32 MB flash, physically next to the DSP.
-- **IC351**: RTC + EEPROM, I2C: `RTC_IRQ`/`RTC_SCL`/`RTC_SDA` on
-  `P1_1`–`P1_3` (RIIC0/1), EEPROM `ECK`/`EDT` on `P1_4`–`P1_5` (RIIC2).
+- **IC351**/**IC381**: two separate chips on separate I2C pairs, not one combined RTC+EEPROM part
+  as originally guessed here — **corrected, see [[ic7300-hardware]]**: `IC381` (`RX-8803LC`) is the
+  RTC, `RTC_IRQ`/`RTC_SCL`/`RTC_SDA` on `P1_1`–`P1_3` (RIIC0/1); `IC351` (`GT24C128B`) is the
+  EEPROM, `ECK`/`EDT` on `P1_4`–`P1_5` (RIIC2).
 - A UART link between the main board and a secondary board: main unit
   `LRXD`(pin 37)/`LTXD`(pin 36) ↔ secondary board `TOOLTxD`/`TOOLRxD`
   (pins 34/33) — likely the debug/programming path to the companion chip
