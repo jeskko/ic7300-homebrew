@@ -146,6 +146,10 @@ separately memcmps — if `component2` really is the FPGA image, that comparison
 attributed to "FPGA") and whatever feeds `component2`'s own version tag would need to reconcile, not yet
 checked.
 
+**`component0` ("Front CPU") is a separate, freshly-opened thread of its own now** — see
+[[front-panel-firmware]] for the full handoff (not started yet, just planned): unlike the DSP, real
+Ghidra RL78 support exists as a community extension, not yet installed/tried in this environment.
+
 ## Headline finding: `tunk3.py` silently drops ~1.46 MB of the container
 
 Built and ran a from-scratch decoder (`tools/icom_fw/`, see

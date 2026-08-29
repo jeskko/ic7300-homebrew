@@ -111,7 +111,16 @@ by but not built on top of the prior work there.
   support exists anywhere for this architecture; a custom disassembler or
   Ghidra SLEIGH module would be a real, standalone project. See
   `notes/multi-cpu-images.md`'s "DSP firmware precisely located and
-  unpacked" section.
+  unpacked" section. Re-examined `dsp_data.bin`'s whole-file byte histogram
+  and its size against the real FPGA (`EP4CE55`)'s published bitstream size —
+  both now favor "compressed FPGA bitstream, relayed by the DSP" over the
+  original "DSP Data" naming guess, not proven either way.
+- 🔜 **Next thread, not yet started**: front-panel MCU (`IC501`,
+  `R5F104LCAFB`, Renesas RL78/G14) firmware — now extracted
+  (`front_cpu.bin`) alongside the DSP images above. Unlike the DSP, real
+  (if unofficial) Ghidra RL78 support exists (`xyzz/ghidra-rl78`,
+  `hedgeberg/RL78_sleigh`) — not yet installed or tried. Full handoff plan
+  in `notes/front-panel-firmware.md`.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is
