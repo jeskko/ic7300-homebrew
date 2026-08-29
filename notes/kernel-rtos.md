@@ -1144,7 +1144,11 @@ previously-unidentified cases in `sd_menu_dispatch_task`'s existing 42-case swit
 - **case `0x26`** → `factory_file_load` (renamed from `FUN_200253f4`): opens the file via the same
   open/read/seek/close file-RPC primitives `sdcard_file_rpc_dispatch_task` exposes, reads a 3-field header
   (4 bytes each, `+0`/`+0xd`/`+0x1a` stride) and compares each field against a fixed reference table,
-  recording a pass/fail byte per field.
+  recording a pass/fail byte per field. **Confirmed 2026-08-29 (DSP comms thread)**: that "fixed reference
+  table" is actually the DSP's own currently-queried identity/version records (`DAT_200b1ca0`, populated by
+  `dsp_identity_query_record0`/`1`/`2` at every boot) — the exact same `+0`/`+0xd`/`+0x1a` offsets are the 3
+  identity records' own layout. So this file's header really is checked against the DSP's live identity —
+  see `notes/multi-cpu-images.md`'s "DSP command API, continued" section for the full trace.
 - **case `0x27`** → `factory_file_verify_md5` (renamed from `FUN_20025650`): a full, real **MD5 checksum
   validator** over the file's 3 segments — reads each segment in up to `0x8000`-byte chunks through
   `md5_init`/`md5_update`/`md5_final`, compares the computed digest against a stored 16-byte MD5 per

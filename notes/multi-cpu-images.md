@@ -977,12 +977,52 @@ it two ways against the reply: the checksum's two's-complement must match the re
 page's destination address (`+0x100`) must match a 20-bit field the DSP echoes back in the reply — i.e. the
 DSP confirms both data integrity and correct placement for every page it receives during an update.
 
-**Remaining open, not yet characterized**: the other 6 of the 14 `scif5_send_and_wait_reply` callers (not
-part of the identity-query family or `dsp_page_transfer_verify`) — worth a follow-up pass if this thread
-continues, along with the direct-xref check on `FUN_200a94c8` mentioned above and the original ~30
-`scif5_ring_push_word` callers (the separate, slower, MTU2-paced path). No reset-related command surfaced
-in this pass — the identity query and page-verify functions are both read-mostly/verification in nature, so
-the original "does releasing DRESD show up in the DSP command API" question is still open.
+**Correction**: the "6 remaining `scif5_send_and_wait_reply` callers" flagged above was a miscount — the 14
+call sites split as 6 pairs (identity query, 2 call sites each) + 1 pair (`dsp_page_transfer_verify`) = 14
+exactly. **All 14 are now characterized; none remain.**
+
+## DSP command API, continued: `factory_file_load` confirmed as a real consumer of the identity records; `dsp_param_sync_tick` fully mapped (2026-08-29, next session, continuing straight on)
+
+Did the two follow-ups from the prior entry — the direct-xref check on whether anything reads
+`DAT_200b1ca0`'s 3 identity records, and the ~30 `scif5_ring_push_word` callers — and both paid off, though
+not exactly where expected.
+
+**The identity records feed a real "does this file match the current DSP" gate — in `factory_file_load`,
+not `FUN_200a94c8`.** A raw hex search for `DAT_200b1ca0`'s resolved struct address (`0x203DEF00`) as a
+literal anywhere in `body.bin` turned up `factory_file_load` (the `"C:\IC-7300\IC-7300_factory"`
+mechanism from the earlier "Factory/service mode" thread, see `notes/kernel-rtos.md`) — **not**
+`FUN_200a94c8` (that hypothesis is retracted; `DAT_200a9ba4`'s struct, `0x203ff76c`, is a completely
+different, far more widely-referenced address with no literal-pool co-reference to `0x203DEF00` anywhere).
+`factory_file_load`'s own decompile has `local_58[0..2] = DAT_20025644 + {0, 0xd, 0x1a}` — **exactly** the
+3 identity-record offsets found in the prior entry — and compares each against a 4-byte field read from
+the factory file, storing a pass/fail byte. **This directly confirms the user's own hypothesis this
+session**: the DSP identity/version query is used to gate whether a stored file (here, the factory
+data/calibration file specifically, not the general firmware-update path) matches what's currently
+installed. Corrected `factory_file_load`'s Ghidra plate comment, which had previously described this
+compare as against "a fixed reference table" without realizing one of the two checks in that loop is
+against the live DSP identity struct.
+
+**`dsp_param_sync_tick`'s full structure is now mapped**: it's a "diff current against last-synced
+shadow" loop over `dsp_cmd_table_init`'s 24-entry table — for slots 1-22 (the header slot, index 0, is
+handled by a sibling function, `dsp_param_sync_slot0`, same pattern; slot 23 isn't live-synced at all,
+init-only), each slot's current value sits at table-offset `N`, its shadow copy at `N+0x60`; any mismatch
+updates the shadow and pushes the new value via `scif5_ring_push_word`. **Exhaustively confirmed** (raw
+hex search for the table's resolved base address, `0x20414c88`) that this literal appears **exactly once**
+anywhere in the 3.7MB image — shared only by `dsp_cmd_table_init` and `dsp_param_sync_tick` themselves.
+So no other function writes these 22 live parameter slots by referencing the table directly; whatever
+actually changes a parameter between sync ticks does so through some other indirection (possibly the same
+`DAT_200b1cd0`-style pointers `dsp_cmd_table_init` used for 6 of the slots' initial values, now suspected
+to be live pointers into elsewhere rather than one-shot copies — not confirmed). **This is the natural next
+step for individually naming the ~22 DSP parameters** (mode/filter/AGC/volume-shaped, per the working
+hypothesis) — tracing each slot's real data source rather than the table itself, since the table's own
+address is a dead end for that specific question.
+
+**Net effect**: item 2 (the DSP command API) is now fully mapped at the *mechanism* level — the 3 command
+families (identity query, page-transfer-verify, param-sync) and their respective transports
+(`scif5_send_and_wait_reply`/`scif5_ring_push_word`) are all understood — but naming each of the ~22
+individual live parameters is a separate, sizable task, not started. Renamed/commented 4 more functions in
+Ghidra (`dsp_param_sync_slot0`, plus plate updates on `dsp_param_sync_tick`, `scif5_ring_push_word`,
+`factory_file_load`); committed.
 
 ## `IC902` identity, corrected again: it's the DSP's own SPI boot flash, at the pin level (2026-08-29)
 
