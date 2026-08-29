@@ -187,9 +187,13 @@ by but not built on top of the prior work there.
   (renamed `spectrum_scope_fft_task`) turned out to be a genuine **512-point FFT spectrum analyzer**
   — double-buffered against a sample producer, computing dB-scaled per-bin magnitude bytes that are
   very likely the band-scope display's actual "bar height" data, complementing
-  `notes/band-scope-state.md`'s already-documented frequency-axis/"bar position" state. Every task
-  in the 12-entry catalog now has a fully resolved body and purpose except the two confirmed,
-  JTAG-only dead ends. See `notes/kernel-rtos.md`.
+  `notes/band-scope-state.md`'s already-documented frequency-axis/"bar position" state. **Correction,
+  same day**: that "triage entirely closed" claim was premature — `periodic_poll_task_20014384`
+  (renamed `rtty_decode_log_poll_task`) had been marked "confirmed" on body-shape alone, purpose
+  never actually chased, caught only because its name was still generic. It's the IC-7300's real
+  RTTY digital-mode decode-to-SD-card logging feature (writes to `C:\IC-7300\Decode\Rtty` as `.txt`
+  or `.htm`). *Now* every task in the 12-entry catalog has a fully resolved body and purpose except
+  the two confirmed, JTAG-only dead ends. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

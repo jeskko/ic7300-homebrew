@@ -2017,3 +2017,38 @@ session tracing whether they share a producer/trigger, but not asserted as the s
 now has both a fully-characterized body and a resolved real-world purpose, except the two genuine,
 independently-reconfirmed static-analysis dead ends (`kernel_start`'s own descriptor,
 `thunk_FUN_2007ea68`'s peripheral identity) that need live JTAG, not more static reading.
+
+## `periodic_poll_task_20014384` fully resolved: it's the RTTY decode-log task, a real gap in the "triage complete" claim (2026-08-30)
+
+User's prompt: `periodic_poll_task`'s name was still generic despite being marked "confirmed" — is there
+something unverified there? Checked, and yes: the previous session's plate comment on this task literally
+said "`FUN_20015628`'s exact purpose not chased" — "confirmed" only ever meant "the body is real code, not
+garbage," never "the purpose is known." This slipped through the task-catalog triage's earlier "every task
+now fully resolved" claim, which was premature.
+
+**Renamed `rtty_decode_log_poll_task`.** The loop itself is trivial (`itron_trampoline_delay(5)` → call →
+store one byte), so the real content is in what it calls, `rtty_decode_log_service` (renamed from
+`FUN_20015628`) — a small state machine gating on a "done" flag, dispatching on a mode byte to one of two
+handlers. Followed the mode-1 handler, **`rtty_decode_log_write`** (renamed from `FUN_20015358`), which
+settled it immediately: builds a path under a literal string, `"C:\IC-7300\Decode\Rtty"`, appends a
+per-format filename suffix from a small table, and does FatFS-shaped open/write/close calls (the same
+`0x2003bXXX` helper cluster and `0x44`/`0x46` command-ID family already seen in `bmp_capture_write_file`) to
+write a decoded-text log file.
+
+**Checked the format-suffix table directly rather than guessing**: its two populated entries resolve to
+literal `".txt"` and `".htm"` strings — confirms the RTTY decoder can log to either a plain-text or an HTML
+file (the mode byte selects output *format*, not a different digital mode as first guessed from the shape
+alone).
+
+**This is the IC-7300's real, documented RTTY-decode-to-SD-card logging feature.** Every 5 ticks, this task
+services the decode log state machine and records whether work happened; the actual file write only fires
+when the log service's internal conditions are met (new decoded content ready, presumably signaled by
+whatever runs the actual RTTY demodulation — not traced this session, a natural next thread if this general
+area is revisited).
+
+**Correction to last session's own "triage complete" claim**, recorded rather than silently fixed: the
+bottom-line summary in `notes/kernel-rtos.md` previously stated every task had a resolved purpose once
+`spectrum_scope_fft_task` was done — this task was the miss, caught only because its name was still
+generic and the user asked about it specifically. Good general lesson for this thread: a task marked
+"confirmed" purely because its *body* decompiles cleanly is not the same claim as its *purpose* being
+known — worth checking generic-looking names even after a triage is declared complete.
