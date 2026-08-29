@@ -583,7 +583,7 @@ reading an old copy of this file, the version that follows is the one to trust.
 | `cold_boot_hw_init` (`0x2002b02c`, renamed from `FUN_2002afc0`) | `0x2019889c` | `FUN_2007ef5c` (the UI/display task — entry point itself never renamed) | — | — | ✅ examined — allocates screen objects, runs a message loop |
 | `FUN_2006c4a8` (`0x2006c584`) | `0x201988cc` | `audio_buffer_task_2006bb58` | 0 | 0x800 | ✅ confirmed real state machine — ring-buffer wraparound arithmetic found; leaning circular audio buffer manager (plausibly SD-card WAV record/playback), not fully confirmed |
 | `FUN_2006c4a8` (`0x2006c594`, **same caller as above — spawns 2 tasks together**) | `0x201988dc` | `audio_buffer_task_2006c2c4` | 0 | 0x800 | ✅ confirmed real state machine — same subsystem as above, shares state at `0x2006c3d4` |
-| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | ❌ still unresolved — no static caller of the thunk found either |
+| `thunk_FUN_2007ea68` (`0x2007ea84`) | *dynamic, caller-supplied* | *unresolved* | — | — | 🟡 **traced to the USB subsystem, 2026-08-29 (much later session)** — see the new section below; still not a fully pinned-down task identity, but no longer a total dead end |
 | `FUN_200aa5d4` (`0x200aa5c8`) | `0x2019890c` | `bmp_capture_task` | **-1** | 0x1000 | ✅ **fully resolved** — the BMP screen-capture-to-SD-card feature (real `BITMAPFILEHEADER`/`BITMAPINFOHEADER` construction) |
 | `FUN_200b995c` (`0x200b999c`) | `0x201988ac` | `sdcard_file_rpc_dispatch_task` (renamed **twice**: `task_probe_200b9c00` → `civ_command_dispatch_task` (wrong guess) → `sdcard_file_rpc_dispatch_task`, see the 2026-08-29 "civ_command_dispatch_task retraction" section) | 1 (highest priority in the catalog) | 0x1800 | ✅ **fully resolved, then corrected** — **not** CI-V; a generic internal SD-card file-access RPC service (open/read/write/close/rename/list), dispatched through a function-pointer table by command ID |
 | *(no direct call site found — genuine static-analysis dead end, not yet fixed)* | `0x20361318` | `sys_monitor_task_entry` (`0x200b94e8`) | 3 | 0x800 | ✅ examined — runs the `cold_boot_hw_init` chain (`DRESD`/GPIO init); its own **caller**, `sys_monitor_task_loop` (`0x2003bb70`), *is* known — called unconditionally every iteration by `FUN_2002b29c` — but what activates `sys_monitor_task_entry` itself remains unresolved |
@@ -1530,3 +1530,68 @@ Status update, no need to re-derive:
 - The rest of the older "Session handoff" section above (mode5_combo, `factory_file_case28_report`, SCIF3
   packet types, the real CI-V dispatcher, older standing candidates, JTAG-dependent items) is untouched —
   still accurate, still the list to work from once the two items above are resolved.
+
+## Chased the two remaining mystery tasks without JTAG (2026-08-29, much later session)
+
+User's ask: with only 2 genuinely unresolved task identities left in the whole catalog (`kernel_start`'s
+own descriptor at `0x203907c4`, and the dynamic `thunk_FUN_2007ea68` case), and the total task count being
+small, is there more to find via a wider static sweep before conceding both need live JTAG? Checked both
+properly, with a real result on one of them.
+
+**A genuine, previously-undocumented finding along the way: most of the catalog's task descriptors sit in
+one compiled array.** Laying out all known descriptor addresses and sorting them revealed 9 of them —
+`FUN_2007ef5c` (UI/display), `sdcard_file_rpc_dispatch_task`, `sd_menu_dispatch_task`,
+`audio_buffer_task_2006bb58`/`2006c2c4`, `status_poll_task_200095d8`, `periodic_poll_task_20014384`,
+`bmp_capture_task`, and `queue_driven_task_2001745c` — packed into a single 16-byte-stride array,
+`0x2019889c`-`0x2019891c` (9 × 16 bytes), immediately followed by an unrelated data table that reads as a
+literal HF **band-plan/frequency table** (`3500000`/`3580000`, `7000000`/`7200000`, `14000000`/`14350000`,
+`21000000`/`21450000`, `28000000`/`29700000` — the 80/40/20/15/10m band edges in Hz), cleanly bounding the
+array with no room for a hidden extra descriptor. Read the whole thing directly via `memory.read` and
+parsed it in Python rather than trusting `references_to` alone — a useful confirmation that the "descriptor
+per task" model this project has used throughout is accurate, but this specific array held no surprises:
+every slot matched an already-known task, none pointed at either mystery.
+
+**`kernel_start`'s own mystery task (`0x203907c4`) — re-confirmed as a genuine dead end, more rigorously
+than before.** `kernel_start` calls `itron_act_tsk` with this address as a **plain literal**, not a computed
+value (`itron_act_tsk(DAT_200052b0, 0)`, where `DAT_200052b0`'s own value is `0x203907c4`) — so a literal
+search really should be exhaustive here, unlike some of today's earlier RAM-sweep surprises. Checked two
+independent ways: a fresh `references_to` on `0x203907c4` (finds exactly the one reader, `kernel_start`
+itself, no writer) and a raw 4-byte literal scan of the whole `body.bin` image (also exactly one match, the
+same address). The surrounding 128 bytes are uniformly `0xFF` — not a compact table with one gap the way the
+9-task array's "missing" slot first looked, just a genuinely blank reserved region. **This is about as
+thoroughly re-confirmed as a static-analysis dead end can be** — there is no writer anywhere in the compiled
+image; the real value only exists at runtime. Still needs live JTAG.
+
+**`thunk_FUN_2007ea68` — actually resolved to a subsystem, not just "dynamic and unresolved."** This one
+paid off. `FUN_2007ea68` itself is a generic "activate whatever task descriptor the caller hands me" helper
+(`itron_act_tsk(*param_1, param_1)`), unlike every other task's fixed-literal activation — explaining why it
+looked like a dead end to begin with. Its caller isn't found by a normal reference lookup because it's
+reached through a **chain of ARM/Thumb interworking veneers** (`bx pc` + `b <target>` pairs, the standard
+linker-generated pattern for cross-mode calls — several links deep, each auto-named `thunk_FUN_2007ea68` by
+Ghidra, which is why they all look identical at a glance). Walked the chain (`0x20184950` →`0x2015824c`
+→ two further branches) down to 3 genuine, non-veneer call sites:
+- **`usb_controller_configure`** (renamed from `FUN_2014ee46`) — touches `USB_CTRL_BASE` (`0xe8100000`,
+  confirmed as the exact documented RZ/A1H I/O region from [[memory-map]]) with register offsets
+  `0x4004`/`0x4010`/`0x4014`/`0x4018`/`0x401c` and endpoint sizes `0x20`/`0x40` (32/64 bytes — the classic
+  USB max-packet sizes) — a real USB controller init/configure routine.
+- **`usb_connect_disconnect_handler`** (renamed from `FUN_201009d2`) — wraps `usb_controller_configure`
+  inside a connect/disconnect-shaped state machine, with sibling thunk calls
+  (`thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8`) that read as the deactivate/queue-teardown counterparts —
+  not examined yet.
+- **`FUN_2014d146`** — a retry/completion-callback handler that lazily activates a task only once a retry
+  queue becomes non-empty, the same "activate on demand" shape.
+
+**Working conclusion: the dynamic task-activation case belongs to the USB device/host controller
+subsystem** — a worker/handler task spun up only when USB is actually connected, which is exactly why no
+fixed literal descriptor for it ever existed to find. This connects to the already-established USB hardware
+in [[ic7300-signal-chain]] (the HUB+BRIDGE+CODEC pinout, `CP2102GMR` bridge carrying CI-V-over-USB). Not
+fully closed out: the task's exact purpose (endpoint transfer processing? a USB CDC/serial handler feeding
+the CI-V-over-USB path specifically?) still isn't pinned down — `thunk_FUN_2007ea28`/`thunk_FUN_2007e0f8`
+and the earlier stages of `usb_connect_disconnect_handler` are the natural next stop. Renamed/commented in
+Ghidra (`usb_controller_configure`, `usb_connect_disconnect_handler`, `USB_CTRL_BASE`, and a full plate
+comment on `FUN_2007ea68` itself recording the whole veneer-chain trace).
+
+**Net effect on the "2 mystery tasks" framing**: down to 1 genuine, thoroughly-reconfirmed JTAG-only dead
+end (`kernel_start`'s own descriptor), and 1 that's no longer really a mystery — just an unclosed loose end
+within a now-identified subsystem (USB), a qualitatively different and much better position than "fully
+unresolved."
