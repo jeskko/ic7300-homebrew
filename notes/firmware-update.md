@@ -355,6 +355,59 @@ where the front-panel reload actually happens (a real SCIF3 command, given the c
 this file's front-panel section) and treat that, not `P1_6`, as the lead for "what actually restarts after
 an update."**
 
+## A real, strong candidate found: the `"Fup_AutoEnd_3765"` top-of-RAM marker (2026-08-29, new session)
+
+Found by extending Ghidra's memory map to cover the RZ/A1H's full, documented 10 MB on-chip RAM range
+(`0x20000000`-`0x209fffff`, see [[memory-map]]) — previously only `body.bin`'s own ~3.7 MB static image was
+mapped, leaving everything above it (including this marker, which sits in the last 16 bytes of the entire
+range) invisible to Ghidra. User specifically asked about xrefs to the top-of-RAM addresses after doing
+this; tracing them led directly here.
+
+**The mechanism, fully traced on both the write and read side**:
+- **`fup_autoend_marker_write`** (`0x2005ddb4`, renamed from `FUN_2005ddb4`): if `g_fup_autoend_trigger_flag`
+  (RAM byte `0x20390307`) `== 2`, writes the literal 16-byte string `"Fup_AutoEnd_3765"` — "Fup" matching
+  this codebase's own `firmware_update_main` naming, "3765" being the already-established internal model
+  codename (the "SX3765" mystery resolved in an early session) — to `g_fup_autoend_marker_ram` (`0x209ffff0`,
+  literally the last 16 bytes of the whole 10 MB on-chip RAM window). Otherwise it clears those same 16
+  bytes to zero.
+- **This is called unconditionally from `FUN_20029ca4`** (the power-state main loop, reached via
+  `sys_monitor_task_loop → FUN_2002b29c → FUN_20029ca4`, `FUN_2002b29c` already established in the 20th
+  session as running on *every* `sys_monitor_task_loop` iteration) — right before that same function arms
+  the exact same watchdog-forced-reset register sequence already confirmed above as this firmware's restart
+  primitive: identical `0xFCFE0000`-based writes, identical values `0x5a5f`/`0x5afe`/`0xa57f`. **This is a
+  second, independent path into the same watchdog-reset mechanism**, not the `P1_6`-gated one in
+  `main_idle_loop` — the marker gets written right before this path resets the system.
+- **`fup_autoend_marker_check_and_clear`** (`0x2005ddfc`, renamed from `FUN_2005ddfc`) is the read/consume
+  side: called from `FUN_2002b29c` itself (near its start, i.e. on every boot and every normal running
+  cycle) with a wake/mode-source byte. If bit `0x80` of that byte is set **and** the marker RAM currently
+  matches `"Fup_AutoEnd_3765"` exactly, it sets two flags (`DAT_2005dfdc`/`DAT_2005dfe0`) to `1`. Either way,
+  it **always clears the marker RAM back to zero afterward** — a textbook one-shot "detect once, then rearm"
+  idiom.
+
+**Working hypothesis, not yet fully confirmed**: this is the "how does the radio know to do something
+special right after a firmware-update reboot" mechanism this thread has been looking for since the
+27th session. The shape fits well: on-chip RAM plausibly survives a watchdog-triggered warm reset (unlike a
+full power cycle), so a marker written just before triggering that exact reset would still be readable on
+the very next boot — precisely what `fup_autoend_marker_check_and_clear` looks for.
+
+**Two concrete gaps left, both good next steps**:
+1. **Who sets `g_fup_autoend_trigger_flag` (`0x20390307`) to `2`?** Not yet traced — presumably
+   `firmware_update_main` or something it calls on success. This is the missing link connecting the
+   already-fully-understood update mechanism to this newly-found restart marker.
+2. **Who reads `DAT_2005dfdc`/`DAT_2005dfe0` after a successful marker match?** No reader found anywhere in
+   `body.bin`'s static call graph — consistent with this project's established pattern of generic/indirect
+   (message- or task-based) consumption defeating direct xref tracing (see [[kernel-rtos]]'s task-activation
+   dead ends). Whatever shows an "update complete" state (or similar) almost certainly reads one of these
+   flags several layers removed from any single traceable literal reference.
+
+**Methodological note, worth remembering for future sessions**: extending Ghidra's memory map to the chip's
+real, datasheet-confirmed RAM extent (rather than just what's covered by a static image dump) is not purely
+cosmetic — this specific, substantial finding was invisible until that was done, simply because the address
+in question happened to sit outside the previously-mapped range. Cross-reference discovery for *code that
+computes/uses* an address doesn't strictly require the destination to be mapped, but in practice this
+turned out to be exactly where an embedded firmware convention (a persistent marker at a fixed edge of RAM)
+would live — worth checking the memory map's edges specifically, not just extending coverage generically.
+
 **Side finding, same session — the JTAG-disable question**: searched both `body.bin` and `base.dat` for any
 reference to the RZ/A1H's CPU debug-enable control register (`ICEREGJTTRCSEL`, `0xFC00F004` — holds
 `DBGEN_CPU0`/`NIDEN_CPU0`, per the hardware manual §56.4.2) — **zero references in either image**. Neither

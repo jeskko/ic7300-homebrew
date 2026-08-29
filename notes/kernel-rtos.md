@@ -504,6 +504,14 @@ the hand-derived reading exactly, no surprises:
 own small, dedicated, statically-activated **system monitor task**, not via the message-dispatch loop
 `first_task_entry` implements.
 
+**Update, 2026-08-29 (new session)**: `FUN_2002b29c` turns out to be more central than this entry's own
+Ghidra plate comment (still saying "which message ID reaches it isn't found yet" — stale, not updated after
+this session resolved it) suggests. It's also the direct caller of both halves of a newly-found
+firmware-update-restart marker mechanism — `fup_autoend_marker_check_and_clear` near its start,
+`fup_autoend_marker_write` (via `FUN_20029ca4`) near its end — found by extending Ghidra's memory map to the
+RZ/A1H's real 10 MB on-chip RAM extent. Full writeup, since it's really a firmware-update-thread finding,
+in [[firmware-update]]'s new `"Fup_AutoEnd_3765"` section.
+
 ## Chasing the two remaining loose ends (21st session)
 
 **Loose end 2 resolved at the mechanism level: `FUN_200b9490` is a generic, ~50-call-site-wide event/ISR
