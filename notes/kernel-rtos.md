@@ -152,7 +152,7 @@ retraction, etc.) — see the history file for the full derivation and narrative
 
 | Caller | Descriptor | Entry point (current name) | Priority | Stack | Status |
 |---|---|---|---|---|---|
-| `FUN_20188574` (kernel bootstrap, direct inner-function call, **not** a trampoline call — see history's 24th-session correction) | `0x2033605c` | `first_task_entry` (`0x201871f0`) | 2 | 0x320 | ✅ generic ITRON/RTOS message-dispatch loop |
+| `FUN_20188574` (kernel bootstrap, direct inner-function call, **not** a trampoline call — see history's 24th-session correction) | `0x2033605c` | `first_task_entry` (`0x201871f0`) | 2 | 0x320 | 🟡 **deepened, 2026-08-30, but genuinely kernel-internal — not a nameable feature the way most other tasks were**: its two callees (`resolve_and_invoke_msg_callback`, `ready_list_requeue_by_priority`) are real FreeRTOS/ITRON-shaped scheduler bookkeeping (priority-indexed ready-list manipulation), not application-level callback dispatch — plausibly analogous to FreeRTOS's own Timer/Daemon service task, not confirmed as literally that. **Corrected** a specific claim from the 24th session along the way: `resolve_and_invoke_msg_callback` only ever returns small status codes, never a function pointer, so it can't be what the loop's `SWI(0)` trampoline resolves to — what that trampoline actually invokes remains genuinely unresolved (same standing "how does `SWI(0)` dispatch" open question below), and the old "`FUN_2002b29c` is reached through this mechanism" hypothesis is weaker now, not confirmed |
 | `kernel_start` (`0x200052a4`) | `0x203907c4` — **still genuinely unidentified**, still blank/`0xFF` in the static image | ? | ? | ? | ❌ open — real task, unknown identity, needs live JTAG |
 | `FUN_200096c8` (`0x200096f0`) | `0x201988ec` | `spectrum_scope_fft_task` (renamed from `status_poll_task_200095d8`) | **-2** | 0x400 | ✅ **fully resolved** (2026-08-30) — the real-time band-scope/spectrum-scope FFT computation task: double-buffered against a sample producer, runs a genuine 512-point FFT (`spectrum_scope_fft_and_dbscale`) then converts per-bin magnitude to a dB-scaled byte (0-255) against a per-mode threshold pair — the actual "bar height" data behind the scope display, complementing [[band-scope-state]]'s already-documented frequency-axis/mapping logic |
 | `FUN_2001439c` (`0x200143b8`) | `0x201988fc` | `rtty_decode_log_poll_task` (renamed from `periodic_poll_task_20014384`) | 0 | 0x800 | ✅ **fully resolved** (2026-08-30) — drives the RTTY digital-mode decode-to-SD-card logging feature every 5 ticks: writes the decoded text to `C:\IC-7300\Decode\Rtty` as either a `.txt` or `.htm` file (format selected by a mode byte). Previously marked "confirmed" on body-shape alone despite its generic name — a real gap in the earlier triage, since the loop's own sample/store call was never actually chased |
@@ -182,6 +182,13 @@ triage was complete at this point — wrong. `rtty_decode_log_poll_task` (rename
 `periodic_poll_task_20014384`) had been marked "confirmed" on body-shape alone, but its actual
 sample/store call was never chased, and its still-generic name should have flagged it as an
 oversight. It's now resolved too (see its table row above) — every task in the catalog genuinely
-has both a fully-characterized body *and* a resolved real-world purpose now, except the two genuine
-static-analysis dead ends noted above (`kernel_start`'s own descriptor and `thunk_FUN_2007ea68`'s
-peripheral identity) — this closes out the task-catalog triage entirely.
+has a fully-characterized body now. **One more nuance, same day**: `first_task_entry` was looked at
+again too, at the user's prompt — its "generic message-dispatch loop" description undersold real
+depth underneath (genuine FreeRTOS/ITRON-shaped scheduler-internal bookkeeping, not an application
+feature), but that depth doesn't resolve into a nameable *purpose* the way the other tasks did, and
+along the way corrected a specific wrong claim from the 24th session (see its table row above). So
+the honest final count: every task has a resolved, characterized body; all but three have a clean,
+nameable real-world purpose; `kernel_start`'s own descriptor and `thunk_FUN_2007ea68`'s peripheral
+identity remain genuine static-analysis dead ends needing live JTAG; `first_task_entry` is
+genuinely kernel-internal machinery rather than an unresolved mystery — a different, third category,
+not a loose end.

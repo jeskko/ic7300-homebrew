@@ -192,8 +192,16 @@ by but not built on top of the prior work there.
   (renamed `rtty_decode_log_poll_task`) had been marked "confirmed" on body-shape alone, purpose
   never actually chased, caught only because its name was still generic. It's the IC-7300's real
   RTTY digital-mode decode-to-SD-card logging feature (writes to `C:\IC-7300\Decode\Rtty` as `.txt`
-  or `.htm`). *Now* every task in the 12-entry catalog has a fully resolved body and purpose except
-  the two confirmed, JTAG-only dead ends. See `notes/kernel-rtos.md`.
+  or `.htm`). **One more nuance, same day**: looked at `first_task_entry` too (its "generic
+  message-dispatch loop" description was the vaguest left standing) — genuinely deepened (its two
+  callees are real FreeRTOS/ITRON-shaped scheduler-internal bookkeeping, not an application
+  feature), and along the way **corrected a wrong 24th-session claim**: the function it names as the
+  loop's callback source only ever returns status codes, never a function pointer, so that specific
+  attribution doesn't hold up — what the loop's `SWI(0)` trap actually invokes remains genuinely
+  unresolved, the same standing "how does `SWI(0)` dispatch" open question. Final honest count:
+  every task has a resolved body; all but three have a clean, nameable purpose; two are confirmed
+  JTAG-only dead ends; `first_task_entry` is real kernel-internal machinery, a distinct third
+  category rather than a loose end. See `notes/kernel-rtos.md`.
 - ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
   a patched community loader script — saves datasheet lookups on any future peripheral-register work.
   A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2

@@ -2052,3 +2052,48 @@ bottom-line summary in `notes/kernel-rtos.md` previously stated every task had a
 generic and the user asked about it specifically. Good general lesson for this thread: a task marked
 "confirmed" purely because its *body* decompiles cleanly is not the same claim as its *purpose* being
 known — worth checking generic-looking names even after a triage is declared complete.
+
+## `first_task_entry` looked at again: deepened, a wrong 24th-session claim corrected, but genuinely kernel-internal (2026-08-30)
+
+User's prompt: `first_task_entry`'s status ("generic ITRON/RTOS message-dispatch loop") is the vaguest
+description left in the catalog — worth a closer look too?
+
+**Yes, and it turned up a real correction, not just more depth.** The 24th session's plate comment already
+had a fairly deep read of this task (queue-receive loop, looks up a handler via
+`msg_dispatch_lookup_trampoline` → `SWI(0)`, calls it) and named the trap's target
+`resolve_and_invoke_msg_callback`, plus flagged a good, concrete open question: `FUN_2002b29c` (the
+cold-boot/power-state dispatcher with zero direct callers anywhere) might be reached as a registered
+callback through this exact mechanism.
+
+**Followed that thread and found the specific attribution doesn't hold up.** `resolve_and_invoke_msg_callback`
+only ever returns small integer status codes (`0`/`0x80`/`0x81`) — never anything resembling a function
+pointer. `first_task_entry`'s own loop treats the trampoline's return value as a callable code pointer
+(`(*pcVar2)(...)`) — calling through a raw `0x80` or `0x81` as a code address would crash immediately at
+boot, which this task evidently doesn't do. So the specific claim "`msg_dispatch_lookup_trampoline` resolves
+to `resolve_and_invoke_msg_callback`" is wrong, or at minimum unproven — the real answer needs the same
+"how does `SWI(0)` select which kernel operation to run" question this file's own "Open questions" section
+already lists as project-wide unresolved, not something newly broken here.
+
+**What the re-examination did establish solidly**: `resolve_and_invoke_msg_callback` and
+**`ready_list_requeue_by_priority`** (renamed from `FUN_201881d0`, which it calls) are genuine
+FreeRTOS/ITRON-shaped **scheduler-internal bookkeeping** — validates a "message record" struct, then walks
+and requeues linked-list nodes across a priority-indexed table (`DAT_20188344`, bounded by a max-priority
+constant), using the same `0x20187xxx` kernel-internals helper cluster `itron_act_tsk`'s own real
+implementation (`FUN_201888f4`) lives in. This is real, low-level kernel service-task machinery — plausibly
+analogous to FreeRTOS's own Timer/Daemon service task (a dedicated task that waits on a queue and executes
+deferred kernel-level work per message, exactly matching this task's own shape), though not confirmed to
+literally be that same mechanism.
+
+**Net effect on the open `FUN_2002b29c` caller question**: weaker, not stronger. The dispatch mechanism
+doesn't look like a generic "register any function pointer as a callback here" table on closer inspection —
+it looks like fixed, specific scheduler bookkeeping (priority/ready-list management), which makes "an
+arbitrary hardware-init dispatcher gets invoked through this same path" a less natural fit than the 24th
+session's comment assumed. Still a live open question; just without the concrete path to an answer that
+comment implied.
+
+**Where this leaves `first_task_entry`, honestly**: genuinely deepened — this project now understands its
+two real callees far better than "a generic message-dispatch loop" suggested — but what's underneath is
+real kernel-internal machinery, not a nameable application feature the way `voice_recording_file_task` or
+`spectrum_scope_fft_task` turned out to be. Recording this as a distinct, legitimate category (kernel-internal,
+not mystery, not a feature) rather than forcing it into "fully resolved" or leaving the old "generic loop"
+description standing uncorrected.
