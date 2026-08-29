@@ -290,6 +290,53 @@ checked.
 [[front-panel-firmware]] for the full handoff (not started yet, just planned): unlike the DSP, real
 Ghidra RL78 support exists as a community extension, not yet installed/tried in this environment.
 
+## Pointed the DSP disassemblers at `dsp_data.bin` too — no code hit, and a new, more specific piece of evidence for the FPGA bitstream reading (2026-08-29, same day, after the disassembler work above)
+
+With `tic6x-objdump`/Capstone/`dis6x` all now cross-validated as genuinely reading `dsp_program.bin` and
+`front_cpu.bin` correctly (see the "Third independent confirmation" section above), ran the same treatment
+on `dsp_data.bin` to settle this section's open question one way or the other.
+
+**No code hit.** Checked several dense/high-entropy offsets (`0x2c000`, `0x35000`, `0x40000`, `0x60000`,
+`0x90000`) with `tic6x-objdump -EL`. The qualitative markers that made the other two files convincing are
+absent here:
+- **No coherent floating-point computation chains.** Found exactly one floating-point-shaped instruction
+  (`cmpgtdp` at `0x90020`) in the whole sample — sitting completely isolated between unrelated instructions
+  (`packlh2`, `set`, `mpyh`, several undefined words), no supporting `mvk`/`mvkh`/`spdp`/`absdp` sequence
+  around it at all. Direct contrast with `front_cpu.bin`'s `0x1030`-`0x1070`, a complete, textbook
+  double-precision comparison routine (build constant → `spdp` → build constant → `absdp` → delay-slot
+  `nop` → build two more constants → `cmpltdp`) — real code produces *chains*, not isolated occurrences.
+- **Branch targets are frequently wildly out of range** — `b .S2 0x284908`, `b .S1 0x27e108`,
+  `b .S2 0x2bd858`, `b .S1 0x260420`, `b .S2 0x1a6270`, `b .S1 0x215180` all decode to addresses several
+  times larger than the file itself (`0xd1d14` = 858,388 bytes) — the signature of a permissive decoder
+  finding coincidental valid-looking encodings in non-code bytes, not real position-dependent branches.
+  (An earlier quantitative attempt at this same check, matching `mvk`→`mvkh` pairs in a fixed instruction
+  window, turned out to be an unreliable metric — even `dsp_program.bin` itself scores near-zero on it,
+  since a VLIW compiler is free to schedule a 32-bit constant's two halves far apart with no adjacency
+  requirement. Discarded in favor of the chain/context read above, which doesn't have that problem.)
+
+**New, more specific evidence for the FPGA-bitstream reading, beyond the whole-file byte histogram already
+in this section**: checked one of the extreme near-zero blocks the original whole-file entropy scan flagged
+(`0xa5000`-`0xa9000`, ~0.2 bits/byte, 97.9% zero bytes) for internal structure rather than treating it as
+undifferentiated padding. Found a specific 2-byte value (`0xb6d8`) recurring with a **perfectly regular
+235-byte period, 70 times in a row with zero deviation**, buried in the otherwise all-zero stretch. This
+period isn't global across the whole file (checked: occurrences of the same 2 bytes elsewhere in the file
+show scattered, non-uniform spacing) — but a locally perfect, non-round period is exactly the shape of an
+FPGA configuration bitstream's fixed-size per-frame structure (different regions of a real fabric layout
+naturally have different frame lengths depending on what they configure), and is a genuinely odd thing for
+a calibration/coefficient table to produce — there's no reason sparse tuning constants would recur at an
+exact byte cadence for 16KB straight. This doesn't prove the bitstream hypothesis by itself, but it's a new,
+specific, structural data point in its favor, on top of the byte-histogram and size-ratio arguments already
+recorded above.
+
+**Where this leaves the three-component picture**: `dsp_program.bin` and `front_cpu.bin` are now
+cross-validated genuine TMS320C674x code (two separate DSP-side programs/overlays, identity of the second
+one still unexplained — see the section above). `dsp_data.bin` is confirmed **not** code of the same kind —
+consistent with, and now more specifically supportive of, the FPGA-bitstream reading over the original
+"DSP calibration data" guess. If asked to bet: **FPGA bitstream is the better-supported guess at this
+point**, though "not compiled DSP code" alone doesn't fully distinguish it from an as-yet-unconsidered third
+option — the periodic-marker finding is the first piece of evidence in this project specific enough to favor
+bitstream over generic non-code data, not just favor non-code over code.
+
 ## Headline finding: `tunk3.py` silently drops ~1.46 MB of the container
 
 Built and ran a from-scratch decoder (`tools/icom_fw/`, see
