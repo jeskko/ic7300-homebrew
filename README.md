@@ -59,6 +59,25 @@ by but not built on top of the prior work there.
   investigation, the IC-9700 (`notes/ic9700-hardware.md`), plus the
   IC-7300's complete SDR signal chain and a 17-page schematic sheet map
   (`notes/ic7300-signal-chain.md`).
+- ✅ **Full boot-time RTOS task catalog**: all tasks the scheduler ever activates identified,
+  named, and disassembly-confirmed (SD-card menu, screen capture, audio buffering, a generic
+  file-access RPC service, system monitor/DRESD-init, several small poll/queue tasks) — see
+  `notes/kernel-rtos.md`'s task catalog and the "Full boot-time task catalog" section.
+- ✅ **CI-V transport confirmed at the code level** (not just pins): SCIF0's driver implements
+  real `FE`/`FE`/dst/src/cmd CI-V framing with destination-address filtering. **Open**: the
+  actual frequency/mode command dispatcher consuming those frames hasn't been located.
+- ✅ **Real service/factory mode fully decoded, end to end**: entry condition (front-panel
+  MENU+FUNCTION held **and** the REMOTE/CI-V jack's contacts shorted, detected via a raw GPIO
+  pin-read of the CI-V receive pin), the boot-time code that checks it, and the reduced-
+  functionality mode it enters (only CI-V and a second, parallel calibration-shaped protocol
+  on a separate UART channel stay active) — see `notes/kernel-rtos.md`'s "Factory/service
+  mode" section. A structurally similar internal file-RPC service (mistakenly named
+  `civ_command_dispatch_task` in an earlier session — retracted) was found along the way.
+- ✅ **Hardware JTAG debug access** identified and a connector confirmed populated on the
+  board — see `notes/hardware-debug-access.md`. Adapter hardware ordered, not yet arrived;
+  once available, several open items above (the real CI-V dispatcher, some task-activation
+  and mode-2/pin-mux questions) are flagged as better resolved live than by continued static
+  guessing.
 - 🔎 **Open**: user-flagged raw/uncompressed bitmap material not yet pinned
   down to a specific offset (`notes/bitmaps.md`).
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate

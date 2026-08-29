@@ -1184,3 +1184,58 @@ reference data (`DAT_2002a0ec+0x70`) isn't readable statically — it's plain un
 (confirmed: a direct read attempt at that computed address failed as inaccessible), consistent with it
 being populated at runtime (EEPROM or similar) rather than a firmware-embedded constant, but not confirmed
 further.
+
+## Session handoff (2026-08-29, end of 30th session) — candidates for next session, static-analysis-first
+
+This 3-part session (`civ_command_dispatch_task` retraction → SCIF1 → factory/service mode) is now closed
+out end to end. JTAG hardware is still not in hand, so the list below is deliberately ordered
+**static-analysis-tractable first**, saving the JTAG-only items for last.
+
+**Good static-analysis candidates, roughly this session's own leftover threads**:
+1. **`boot_check_mode5_combo`'s own role** — its trigger condition is known (bit 3 of front-panel offset
+   `0xd` = MENU, AND bit 4 of offset `0xe` — a *different* status byte, not yet identified against the
+   front-panel pinout) but `svc_mode5_idle_loop`'s own behavior beyond "services SCIF0+SCIF1, posts a
+   `FUN_2002b818(0xb)` request under one more condition" wasn't characterized as deeply as mode 1's.
+2. **A handful of the 27 file-RPC handlers** (table entries `0x08`, `0x11`-`0x14`, `0x17`-`0x1a` in
+   `sdcard_file_rpc_dispatch_task`'s table) — only their immediate call targets were identified from raw
+   ARM ground-truth, not fully decompiled (this whole table region had never been examined before this
+   session, all hit the known ARM/Thumb Ghidra bug — see "Known Ghidra project quirk" above — worth a GUI
+   force-ARM pass over `0x200bb1cc`-`0x200bc044` and `0x200bbc68`-`0x200bbd58` if picked up).
+3. **`factory_file_case28_report`'s exact purpose** — least-characterized of the three `IC-7300_factory`
+   file cases; traces the same path string and per-segment pass/fail bytes but its output destination
+   (display buffer? log file? something else?) wasn't traced.
+4. **Whether `sd_menu_dispatch_task`'s cases `0x26`-`0x28`** (the factory-file load/verify/report trio) are
+   reachable from the *ordinary* SD-card menu UI, or gated behind service mode — would need the SD-menu's
+   own item-visibility/label table (separate from the already-documented 216-item general menu table),
+   not yet located.
+5. **The front-panel SCIF3 packet's full type→field mapping** — `scif3_frame_dispatch_by_type`'s dispatch
+   mechanism is understood, but only 2 of up to 32 message types (`0xd`/MENU+FUNCTION-adjacent, used this
+   session) have any field meaning attached. Decoding more of this table would likely resolve
+   `boot_check_mode5_combo`'s second bit and other loose ends fast.
+6. **The real CI-V command dispatcher** (frequency/mode/etc. — the actual documented feature) is still
+   unfound. `civ_frame_rx_statemachine` proves SCIF0 parses real CI-V frames and stores them at
+   `DAT_200115c8`, but nothing that reads that flag was found to forward the parsed command byte onward.
+   Only the 4 direct readers (all inside `0x20010xxx`-`0x20012xxx`) were checked at the top level — their
+   own callers weren't individually walked. Plausibly the single highest-value item on this list if picked
+   up, since it's the one piece of the original "undocumented CI-V commands" question genuinely still open.
+
+**Older standing candidates, not touched this session, still open** (see [[ic7300-signal-chain]]/
+[[multi-cpu-images]]/[[diode-matrix]] for detail): the firmware-update restart trigger (check the SCIF3
+front-panel driver for a reload/reset command); settling the `audio_buffer_task` pair's exact purpose
+(leaning WAV record/playback, not confirmed); re-checking `HSK0`/`FRWT`/`RTD` against the `PPRn` family now
+that `HSK1`/the REMOTE-short bit both turned up there — worth a systematic PPRn sweep of the remaining
+signal-chain unknowns while this register family is fresh; identifying `kernel_start`'s own mystery task
+(descriptor `0x203907C4`, activated but never matched to a real function); `chunk4`/`chunk5`'s real
+consumer in the multi-CPU-image update mechanism; D408/D411/D414/D417 (4 of 19 diode-matrix positions,
+exhaustively searched across all 10 firmware versions already, genuinely no consumer found — would need a
+fresh angle, not more of the same search).
+
+**JTAG-dependent, deliberately last** — static analysis has hit genuine, well-documented walls on these,
+confirmed dead ends via `references_to` and whole-image literal/`objdump` searches, not just "not found
+yet": exact bit-to-button mapping beyond MENU/FUNCTION (would need the front-panel MCU's own firmware, not
+dumped, or watching `DAT_2002b4d8` live while pressing buttons); SCIF1's physical pin (every RZ/A1H
+candidate already claimed by another confirmed net — a real conflict, resolvable by watching the SCIF1
+register block live, or by the user checking the schematic for an unlabeled secondary alt-function);
+`DAT_2002a158`'s writer and other task-activation questions (`sys_monitor_task_entry`'s own activator,
+`kernel_start`'s mystery task); confirming `boot_check_challenge_response`'s 10-byte reference data's
+runtime source.
