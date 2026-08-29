@@ -178,6 +178,59 @@ natural next question if this thread continues (is this a second overlay/segment
 loaded to a different memory region? a completely separate DSP-side subsystem?) — not resolved this
 session.
 
+## Third independent confirmation: TI's own official `dis6x`, installed safely, agrees with both open tools (2026-08-29, same day)
+
+User had a Linux installer for the latest TI Code Generation Tools (`ti_cgt_c6000_8.3.1_linux_installer_x86.bin`,
+44MB, a BitRock/InstallBuilder-style native ELF installer) sitting in `scratch/`. Confirmed it supports a
+fully self-contained silent install: `--mode unattended --prefix <dir>` requires no root and made **zero**
+system-level changes (checked the installer's own log for any `sudo`/`/usr/`/`/etc/`/`PATH=` touches — none
+found). Installed to `~/.local/ti-cgt-c6000/` (outside the repo, not committed, easily removable via the
+bundled `ti_cgt_c6000_8.3.1_uninstaller.run`). The 32-bit installer stub needed `lib32-glibc` (already
+present on this machine); the installed tools themselves (`bin/dis6x` etc.) are statically-linked x86-64
+binaries with zero further dependencies.
+
+**Non-obvious engineering needed to actually use it on a raw flash dump**: `dis6x` doesn't take raw binary
+input the way `objdump -b binary`/Capstone do — it expects a real TI ELF object with section headers. Wrapping
+the raw bytes with GNU `objcopy -I binary -O elf32-tic6x-le` gets most of the way there, but `dis6x` then
+prints `Unknown C6x Si version` on every fetch packet and silently refuses to decode the C674x-specific
+floating-point opcodes — it ignores the `--silicon_version`/`-mv` command-line flag entirely and only trusts
+a `.c6xabi.attributes` ELF **build-attributes section** (the C6x equivalent of ARM's `.ARM.attributes`),
+which `objcopy` has no flag to generate. Had to hand-construct one from the format in binutils'
+`bfd/elf-attrs.c`/`include/elf/tic6x{,-attrs}.h`:
+
+```
+byte 'A'
+uint32-LE vendor_subsection_size            (= 4 + len("c6xabi\0") + 1 + 4 + payload_len)
+"c6xabi\0"
+byte 1                                      (Tag_File)
+uint32-LE tag_file_length                   (= 1 + 4 + payload_len)
+ULEB128(4) ULEB128(8)                       (Tag_ISA=4, value=C674X=8, both fit in 1 byte each)
+```
+— 19 bytes total, added via `objcopy --add-section .c6xabi.attributes=<file>`, then the new section's
+`sh_type` field hand-patched from `PROGBITS` to `SHT_C6000_ATTRIBUTES` (`0x70000003`) directly in the raw
+ELF bytes (`objcopy` has no `--set-section-type` flag in this binutils version). Confirmed correct via
+`readelf -A` showing `Tag_ISA: C674x` before trusting `dis6x`'s output. Reusable recipe for any future raw
+C6x binary through this specific tool.
+
+**Result, run against both `dsp_program.bin` and `front_cpu.bin`**: once properly tagged, `dis6x` produces
+near-identical decode to `tic6x-objdump -EL` at the same addresses — e.g. `front_cpu.bin`'s `0x1048-0x1064`
+floating-point sequence (`SPDP`/`ABSDP`/`MVK`/`MVKH`/`CMPLTDP`) decodes character-for-character the same
+way in both tools, and both files show the **same ~30-31% "undefined instruction"/`.word` rate**
+(`dsp_program.bin`: 30.8%, `front_cpu.bin`: 30.6%) as the community `tic6x-dis.c` port. **This is genuinely
+informative, not just a repeat of the earlier result**: since the vendor's own reference disassembler — the
+one tool that can't have an ISA-coverage gap — lands on the same ~30% figure, that rate is very likely
+**real interleaved data (jump tables, literal pools) within what's being treated as one flat code section**,
+not a decoder limitation of either open-source tool. Combined with the `spdp`/`absdp`/`cmpltdp` agreement,
+this is now a three-way cross-validated confirmation (`tic6x-objdump`, Capstone `TMS320C64X`, TI's own
+`dis6x`) that both files are genuine TMS320C674x object code.
+
+**Practical upshot for future work on this thread**: `dis6x` is now a fully working, more authoritative
+option alongside the two open tools (better register/mnemonic formatting, e.g. spelled-out control
+registers like `TSR` where `tic6x-objdump` would print a raw immediate) — worth reaching for when reading
+code closely, while `tic6x-objdump`/Capstone remain fine for quick greps and scripting. The ~30%
+undefined-word ceiling should now be treated as a data/code-boundary problem to solve (find where the real
+`.text` ends and literal pools/tables begin), not a "wait for a better disassembler" problem.
+
 ## Is `dsp_data.bin` (component2) actually the FPGA bitstream? Genuinely plausible, re-examined the evidence (2026-08-29, same session)
 
 User's question, prompted by re-reading this file's own `IC902` history: the *current* model has `IC901`
