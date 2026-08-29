@@ -116,6 +116,57 @@ time, but each one looks like a similarly-sized side quest to the two found so f
 scoping deliberately (which specific radio feature to chase next) rather than continuing a blind
 sweep.
 
+## Broader sweep, mapping the "hot window" rather than the whole 6.7 MB (2026-08-29, same day)
+
+Continued the hotspot sweep further out in both directions to scope how large a job "check
+everything" actually is, before committing to it. Findings, from cheapest/broadest to most
+targeted:
+
+- **The vast majority of the newly-mapped RAM is confirmed empty of static-code cross-references.**
+  A 256 KB-stride sweep across essentially the entire remaining ~5.9 MB (`0x20408000`-`0x209c8000`,
+  24 samples) came back with **zero** hits anywhere. This makes sense architecturally: only
+  addresses baked in as compile-time literal-pool constants can show up as `references_to` hits at
+  all — genuine heap/stack allocations (computed at runtime) never will, regardless of how much of
+  the address space is mapped. So this region is very unlikely to reward further blind sweeping;
+  anything there would need a different technique (live JTAG, or tracing a specific allocator).
+- **`g_radio_ui_state_base`'s own extended range is also empty beyond what's already found.**
+  20 samples from `+0x1000` to `+0x3600` (its span past the two known hotspots) all came back
+  empty — the struct's genuinely dense content appears to be the roughly 0-0xf00 byte span already
+  documented above, not a much larger structure.
+- **The real "hot window" is a ~80 KB stretch *before* `g_radio_ui_state_base`**, roughly
+  `0x203f0000`-`0x20404770`, sitting in the 58 KB gap between `body.bin`'s own static image end
+  (`0x20395b18`) and `g_radio_ui_state_base` (`0x2040376c`). Everything checked *before* this
+  window (most of that 58 KB gap, sampled at 1-16 KB strides) came back empty; everything checked
+  *after* it (the 6.7 MB+ heap/stack territory above) came back empty too. This is very plausibly
+  the linker's actual BSS section for this firmware's application-level global state — radio
+  settings, UI, live parameters — bounded on both sides by genuinely inert memory.
+- **Two more real pockets found inside that window, not yet characterized**:
+  - **`0x203fc000`** (6 refs: `2005facc` WRITE, `2005fadc`/`2005faec`/`2005fb34`/`2005fb6c` READ,
+    `2005fb5c` WRITE) — a distinct function cluster (`0x2005fxxx`) unrelated to anything decompiled
+    so far this session.
+  - **`0x20403fec`** (`g_radio_ui_state_base+0x880`, 3 refs: `2003b0bc` WRITE, `20099b8c`/`20099c9c`
+    READ) — close to (80 bytes past) the settings-menu-item flags, possibly a related field.
+  - Also unconfirmed: **`0x2040466c`** (`g_radio_ui_state_base+0xf00`, 3 refs, all in the
+    `0x200a9xxx` range near `FUN_200a94c8`'s own neighborhood — possibly related to the firmware
+    version-check screen, not confirmed).
+
+**Current map of confirmed pockets, most to least referenced** (for prioritizing a future focused
+pass):
+
+| Address | Refs | Status |
+|---|---|---|
+| `g_settings_menu_active_flag`/`_item_id` region (`0x20403f6c`+) | 44 | Characterized — `settings_menu_item_data_builder`, 13 menu-item cases |
+| `g_scope_state_mode` region (`0x20404570`+) | 20 | Characterized — band-scope frequency-axis state |
+| `0x203fa170` | 6 | Characterized — scope's own "live radio state" source struct |
+| `0x203fc000` | 6 | **Not yet characterized** |
+| `0x20403fec` | 3 | **Not yet characterized** |
+| `0x2040466c` | 3 | **Not yet characterized** |
+
+**Suggested next step if this continues**: an exhaustive fine sweep (every 0x100-0x200 bytes,
+a few hundred samples) of just the ~80 KB hot window (`0x203f0000`-`0x20404770`) would very likely
+be the highest-value remaining broad-sweep work — narrower and much more likely to pay off than
+continuing to sample the confirmed-empty regions on either side.
+
 ## Methodological note
 
 This is the **second** substantial finding in one session that was invisible until Ghidra's
