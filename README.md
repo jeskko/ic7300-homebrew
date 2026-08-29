@@ -151,6 +151,14 @@ by but not built on top of the prior work there.
   again. Also brought `notes/kernel-rtos.md`'s task-catalog table current with several
   session-old renames that had never made it back into the table itself. See
   `notes/kernel-rtos.md`.
+- ✅ **RZ/A1H peripheral SVD imported into Ghidra** (70 peripherals, real register names/structs) via
+  a patched community loader script — saves datasheet lookups on any future peripheral-register work.
+  A cross-reference sweep against all 70 bases turned up one genuinely new finding (the RIIC1/RIIC2
+  I2C driver functions, narrowing the RTC/EEPROM I2C-bus assignment in `notes/memory-map.md`) and
+  surfaced an important tooling gotcha (the `ghidra` MCP's `references_to` can misattribute a hit by
+  one peripheral bank when code reaches a register through an indirect pointer rather than a direct
+  literal — always confirm via a raw memory read before trusting one). See `notes/memory-map.md`'s
+  "Peripheral SVD import + xref sweep" section.
 - 🔎 **Open, side investigation**: IC-9700 (different radio, separate
   firmware format) — container structure mapped and compared across all
   37 known releases, but the compression/encryption scheme itself is
