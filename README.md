@@ -10,6 +10,15 @@ Nothing under `/data/misc/icom/7300/` is ever modified — this repo holds
 our own notes, tooling, and (once created) a fresh Ghidra project, informed
 by but not built on top of the prior work there.
 
+## Ultimate goal
+
+**Stated 2026-08-30**: beyond documentation for its own sake, the end goal is the ability to write and
+run our own code ("apps") on the radio. See `notes/custom-custom-code loading-roadmap.md` for the survey and
+phased plan — the short version: the firmware-update mechanism's only integrity check is an unkeyed MD5
+with no signature verification anywhere in the traced boot or update chain, so the path forward is more
+"build the tooling and do it" than "find a Bug" — flash one small SD-card app-loader hook via
+the already-unauthenticated update path, then load/run apps from SD card with no further reflashing.
+
 ## Status
 
 - ✅ Container format understood well enough to account for **100%** of
