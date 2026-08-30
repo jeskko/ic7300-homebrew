@@ -155,12 +155,17 @@ radio's firmware at all. This track now has a genuinely promising, actively-bein
   (confirmed reachable from `vfs_close`, the public file-close API) detects a reference count going
   negative (an over-release), **logs it, but does not prevent the cleanup path from running anyway** —
   a genuine double-free/use-after-free shape, visible directly in the decompiled logic. **Confirmed
-  systemic**: the block buffer-cache layer has the identical bug (`fs_buffer_release_ref_UNSAFE_NEGATIVE`,
-  16 call sites vs. 1) — sampled 6, all individually careful, no single-function double-release found yet.
-  **A genuinely promising concurrency lead**: one buffer-cache caller explicitly drops the global FS lock
-  during a hardware DMA transfer — exactly the shape of window a real over-release trigger could hide in,
-  if another concurrently-running task reaches the release path on the same object meanwhile. Not
-  confirmed, but a concrete next step (or a good live-JTAG test once hardware arrives).
+  systemic** (the block buffer-cache layer has the identical shape), then **fully audited the buffer-cache
+  side** (11 of 16 call sites) and found **no bypass anywhere** — that function defends itself by
+  unconditionally clearing the caller's own handle variable before touching the refcount, which defeats
+  same-variable double-release by construction. **But the file-object version has no such defense** — it
+  operates on the raw object pointer directly, protected only by its caller (`fs_close_fd`) invalidating
+  *that specific fd struct's* own field, which does nothing against two *different* fd structs sharing one
+  underlying object. Sharpened the whole investigation to one concrete question: does opening the same
+  file twice correctly find-and-share the existing object with a proper refcount increment, or can it
+  yield two independently-closable handles on one under-refcounted object? Traced as far as a
+  vtable-dispatched per-device "open" implementation not yet located — the next concrete target, or a good
+  live-JTAG test once hardware arrives (breakpoint the release function during real overlapping SD use).
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command

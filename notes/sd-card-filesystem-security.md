@@ -306,6 +306,55 @@ could be hit) into one coherent hypothesis rather than two separate loose ends.
    recording voice memory while browsing the SD menu) — would settle reachability far faster than
    continuing static tracing.
 
+## Audit complete on the buffer-cache side; a sharper question on the file-object side (2026-08-30, same day)
+
+Continued auditing the remaining `fs_buffer_release_ref_UNSAFE_NEGATIVE` call sites (11 of 16 distinct
+call-site functions now individually examined: `FUN_200bd470`, `FUN_200bd5b8`, `FUN_200bd7a8`,
+`FUN_200be08c`, `FUN_200be464`, `FUN_200beb04`, `FUN_200bfd68`, `FUN_200bf4e4`, `FUN_200bff0c`,
+`FUN_200c01f0`, `FUN_200c9030`). **No bypass found anywhere in this sweep.**
+
+The key reason turned out to be architectural, not luck: `fs_buffer_release_ref_UNSAFE_NEGATIVE` takes a
+**pointer to the caller's own handle variable**, and unconditionally clears that variable to `0`
+*before* touching the refcount — a real, effective defense. A second call through the same (now-zeroed)
+local variable is a guaranteed no-op, regardless of what the refcount is doing internally. This
+concretely defeated one plausible-looking candidate bug in `FUN_200be464` (a release inside a loop,
+followed by a possible re-acquire-failure that jumps to a cleanup label which also releases the same
+variable) — traced the intermediate `FUN_200bd4ec`/`FUN_200bd470` calls and confirmed the handle is
+already zeroed by the time the cleanup label's own check runs, so no double-release actually happens
+there. Good, concrete verification work, not just a hopeful assumption.
+
+**But the file-object sibling doesn't have this defense.** Re-examined `fs_object_release_ref_UNSAFE_NEGATIVE`
+(the one reachable from `vfs_close`) closely and found it operates on the **raw object pointer directly**
+— no handle indirection, no clearing. Its only real protection comes from its caller, `fs_close_fd`,
+which repurposes the *fd struct's own* reference field after use (taking a new value off a free-list) —
+this prevents re-closing the *same* fd struct twice, but does **nothing** to prevent two *different* fd
+structs that both end up referencing the same underlying file object from each independently triggering
+the release path.
+
+**This sharpens the whole investigation to one concrete question**: does opening the same file a second
+time correctly *find and share* the existing file object (properly incrementing its reference count,
+matching the pattern `vfs_open_ex` already does at the device level — `*(int*)(local_2c+8) += 1`), or
+could two `vfs_open`/`vfs_open_ex` calls targeting what the filesystem considers "the same file" return
+two independently-closable handles pointing at one under-refcounted object? Started tracing this —
+`vfs_open_ex` → `FUN_200c9f68` (renamed **`fs_open_follow_redirects`**, a symlink/mount-point redirect-
+following loop that does correctly adjust the refcount as it walks) → a **vtable-dispatched per-device
+"open" implementation** (`(*(iVar1+0x10)+0xc)`) that hasn't been located/decompiled yet — that vtable
+target is where the real "find existing vs. allocate new" logic must live, and is the next concrete
+target.
+
+### Next steps, in order
+1. Find and decompile the vtable's `+0xc` "open" implementation (the actual per-device file-object
+   allocator/lookup) — does it check for an already-open file with the same identity before allocating,
+   and if so, does it correctly increment the existing object's refcount rather than creating a second,
+   independent reference?
+2. If that logic is sound, the concurrency angle (two tasks racing on the DMA-path's lock-drop window,
+   see the earlier section) remains the best remaining hypothesis — would need enumerating which other
+   RTOS tasks/features can reach this filesystem layer concurrently.
+3. Both of the above are static-analysis-hard and JTAG-easy: once hardware arrives, breakpointing
+   `fs_object_release_ref_UNSAFE_NEGATIVE` and watching the refcount during real overlapping SD-card
+   operations (e.g. start a large file copy, then try to close/reopen something else) would settle
+   reachability far faster than continuing this trace statically.
+
 ## Caveat
 
 None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag
