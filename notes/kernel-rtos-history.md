@@ -2242,3 +2242,68 @@ Doesn't add new information about what `0x2A` *does* (wfview's own command *name
 `0x21` RIT/`Δ`TX, `0x25`/`0x26` selected-VFO freq/mode, `0x27` scope — don't suggest a family that `0x2A`
 would naturally extend), so the open item from the previous section (trace `DAT_2001f50c`/`DAT_2001f510`
 to their real hardware sink, or test live via JTAG) is still the only way forward on "what does it do".
+
+### Continued tracing of undocumented command 0x2A — converges on the antenna tuner engage hardware (2026-08-30, same day)
+
+User's ask: continue tracing what `0x2A 01` actually does. Picked up from the previous section's open
+item #1 (trace `DAT_2001f50c`/`DAT_2001f510` to their real sink).
+
+**Found the frequency ceiling's real value**: `DAT_200108ac+0x300` (the u32 `civ_cmd_2a_handler_UNDOCUMENTED`
+compares the current operating frequency against, via `FUN_200623bc` — confirmed to be a genuine
+"read current VFO/operating frequency" helper, not something unrelated) is `0x03938700` =
+**60,000,000 — 60 MHz exactly.** Notable: this sits *above* the IC-7300's normal 54 MHz TX ceiling but
+*below* its 74.8 MHz RX ceiling — not a match for either documented band edge, consistent with a
+generic "somewhere in the HF+6m coverage range" sanity check rather than a TX-specific limit.
+
+**The real find**: traced `civ_cmd_2a_handler_UNDOCUMENTED`'s callees one level further and found they
+converge on the exact same low-level primitives used by the **real, documented `1C 01`** command
+(antenna tuner OFF/ON/tuning — manual p.19-7). Renamed the documented side's chain to make the parallel
+explicit: **`civ_cmd_1c01_tuner_handler`** (`0x2000e318`, `g_civ_handler_table[113]`'s function pointer,
+confirmed by computing the real table index for cmd `0x1C` subcommand `0x01`) → **`civ_cmd_1c01_tuner_dispatch`**
+(`0x2000e0f4`) → on its own param==2 ("start tuning") path: **`tuner_freq_and_txstate_precheck`**
+(renamed from `FUN_2001344c` — checks two status bits plus a band-edge-lookup pair,
+`FUN_20013348`/`FUN_200133d8`, against the current frequency) then **`tuner_start_tuning_sequence`**
+(renamed from `FUN_20066454`), which calls `FUN_200663d8()` (the same 9-function RF-subsystem re-sync
+`civ_cmd_2a_handler_UNDOCUMENTED` also calls) and **`tuner_engage_gpio_toggle(1)`** (renamed from
+`FUN_2001e720` — the function that bit-twiddles `DAT_2001f50c`/`DAT_2001f510` in tandem).
+
+`civ_cmd_2a_handler_UNDOCUMENTED` reaches **the identical `tuner_engage_gpio_toggle(1)` call**, just
+through its own shorter chain: data byte `2` → `civ_2a_state_engage_or_abort(1)` (renamed from
+`FUN_20066c38`) → `tuner_engage_gpio_toggle(1)` directly — skipping `civ_cmd_1c01_tuner_dispatch`'s own
+TX-state/split/mode gating (`DAT_2000e260`/`DAT_2000d240`/`DAT_2000f070` checks) entirely. Its data byte
+`1` ("arm") independently calls `tuner_freq_and_txstate_precheck()` plus the frequency-ceiling and
+`FUN_20062b3c()` checks — a *lighter* version of the same precondition `civ_cmd_1c01_tuner_dispatch`
+applies before it will start tuning.
+
+**Full 4-value semantics of `0x2A 01`'s data byte** (own private 4-byte state, `g_civ_2a_state`, renamed
+from `DAT_20066eac` — NOT the same state var the documented `1C 01` path uses, this is a fully parallel,
+independently-tracked state machine):
+- `0` → `civ_2a_state_set(0)` (renamed from `FUN_20066c14`) — unconditional "off"
+- `1` → if not already on: validates (freq < 60 MHz, `tuner_freq_and_txstate_precheck()==0`,
+  `FUN_20062b3c()==0`) then `FUN_200663d8()` (RF resync) + `civ_2a_state_set(1)` — "arm". If *already*
+  on: instead calls `civ_2a_state_engage_or_abort(0)` → `tuner_engage_gpio_toggle(0)` — a disable, not a
+  re-arm (asymmetric, worth remembering if this is ever tested live)
+- `2` → only accepted once armed: `civ_2a_state_engage_or_abort(1)` → **`tuner_engage_gpio_toggle(1)`** —
+  the actual hardware assert, bit-identical to the real tuner's own engage call
+- `3` → only accepted once armed: `civ_2a_state_engage_or_abort(2)` — sets an abort/cancel flag
+  (`g_civ_2a_state+2`) only, no direct hardware touch — "abort"
+
+**Conclusion, not yet 100% confirmed but well-evidenced**: `0x2A 01` is very likely an **alternate/bypass
+trigger for the IC-7300's internal antenna tuner engage hardware**, reusing the tuner's own low-level
+primitives (`tuner_engage_gpio_toggle`, the RF-resync call, `tuner_freq_and_txstate_precheck`) through an
+independently-coded, more lightly-gated path that skips the documented command's TX-state/mode checks.
+Plausibly a factory/production-test shortcut for exercising the tuner motor/relay hardware without
+going through the front-panel- or `1C 01`-driven state machine and its safety interlocks — consistent
+with (but not proof of) the "factory/test-only, never meant for end users" reading from the wfview
+cross-check. Not the *same* command as `1C 01` (independent state, independent — lighter — gating), so
+calling it simply "an alias for the tuner command" would overstate the finding; the accurate claim is
+"reaches the identical tuner-engage hardware primitive by a different, undocumented, less-guarded path."
+
+**Still open**: `DAT_2001f50c`/`DAT_2001f510`'s real hardware sink (RAM-shadowed, matches the
+schematic-confirmed `TCLK`/`TDAT`/`TSTB1`-`4`/`TCON`/`IMPI`/`PHASEI` tuner-interface signal group from
+`notes/ic7300-signal-chain.md`'s P7_1-6/P7_8/P7_9/P0_4/P6_2/P6_3 pins, but the write-back path from RAM
+shadow to real MMIO/serial-shift-out hasn't been traced — would need either that trace or live JTAG to
+turn "shares the tuner's engage primitive" into "confirmed to physically move the tuner network").
+Renamed in Ghidra this session: `tuner_engage_gpio_toggle`, `tuner_start_tuning_sequence`,
+`civ_cmd_1c01_tuner_dispatch`, `civ_cmd_1c01_tuner_handler`, `tuner_freq_and_txstate_precheck`,
+`civ_2a_state_set`, `civ_2a_state_engage_or_abort`, `g_civ_2a_state`.

@@ -160,12 +160,21 @@ confirmed" section — summary:
   (open-source multi-model CI-V control suite, github.com/wf-group/wfview): **zero knowledge of `0x2A`
   across all ~40 of its supported Icom models**, not just the IC-7300 — no third-party implementation
   anywhere in that project's rig database has ever encountered it either. Handler:
-  **`civ_cmd_2a_handler_UNDOCUMENTED`** (`0x20010710`). Takes one further data byte (0-3): `0`=disable,
-  `1`=validate (incl. a frequency-ceiling check) then enable + trigger a 9-function subsystem re-sync,
-  `2`/`3`=set flags on a sibling state machine. The "enable" path bit-twiddles two registers
-  (`DAT_2001f50c`/`DAT_2001f510`) in tandem — a real guarded hardware toggle, not a no-op. **What it
-  physically controls is not yet identified** — those two addresses are RAM-shadowed, not raw MMIO, so the
-  real sink needs tracing (or JTAG). See the history file for the full open-items list.
+  **`civ_cmd_2a_handler_UNDOCUMENTED`** (`0x20010710`).
+- **Continued tracing (same day) — converges on the antenna tuner engage hardware.** The frequency
+  ceiling is `60,000,000` (60 MHz) exactly. Far more significantly: the handler's data byte `2`
+  ("engage") reaches **`tuner_engage_gpio_toggle(1)`** (renamed `FUN_2001e720`, bit-twiddles
+  `DAT_2001f50c`/`DAT_2001f510` in tandem) — the *identical* call the real, documented `1C 01` tuner
+  command's own "start tuning" path (`civ_cmd_1c01_tuner_handler` → `civ_cmd_1c01_tuner_dispatch` →
+  `tuner_start_tuning_sequence`) makes, and data byte `1` ("arm") shares `tuner_freq_and_txstate_precheck`
+  with that same documented path. Reads as an **alternate/bypass trigger for the tuner engage hardware**,
+  independently coded with lighter gating (skips the documented path's TX-state/split/mode checks) —
+  plausibly a factory/production-test shortcut, not confirmed as literally "the tuner command" since its
+  own state machine (`g_civ_2a_state`) is fully independent. **Still open**: `DAT_2001f50c`/`DAT_2001f510`'s
+  real hardware sink — RAM-shadowed, matches the schematic-confirmed tuner-interface signal group
+  (`TCLK`/`TDAT`/`TSTB1`-`4`/`TCON`/`IMPI`/`PHASEI`, see `notes/ic7300-signal-chain.md`) but the write-back
+  to real MMIO/serial-shift-out isn't traced yet — needs that trace or live JTAG to go from "shares the
+  primitive" to "confirmed to move the tuner network". See the history file for full derivation.
 
 ## Living reference: full boot-time task catalog
 

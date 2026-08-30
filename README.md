@@ -75,8 +75,12 @@ by but not built on top of the prior work there.
   absent from `wfview`'s command set for every one of its ~40 supported Icom models, not just this one
   (github.com/wf-group/wfview). Its
   handler (`civ_cmd_2a_handler_UNDOCUMENTED`) gates a real hardware enable/disable toggle behind a
-  frequency-ceiling check and a subsystem re-sync; the exact pin/peripheral it controls is still
-  unidentified (RAM-shadowed registers, not raw MMIO — needs further tracing or JTAG). See
+  60 MHz frequency-ceiling check and a subsystem re-sync. **Traced further the same day: it converges
+  on the exact same hardware-engage call (`tuner_engage_gpio_toggle`) as the real, documented `1C 01`
+  antenna-tuner command's own "start tuning" path** — reads as an independently-coded, more lightly
+  gated alternate/bypass trigger for the tuner engage hardware, plausibly a factory/test shortcut. The
+  underlying registers' real physical pins are still unidentified (RAM-shadowed, not raw MMIO — needs
+  further tracing or JTAG to fully confirm). See
   `notes/kernel-rtos.md`'s "CI-V command dispatcher" section.
 - ✅ **Real service/factory mode fully decoded, end to end**: entry condition (front-panel
   MENU+FUNCTION held **and** the REMOTE/CI-V jack's contacts shorted, detected via a raw GPIO
