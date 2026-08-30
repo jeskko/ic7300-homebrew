@@ -83,7 +83,10 @@ by but not built on top of the prior work there.
   byte pair (60+ unrelated call sites), not tuner-specific GPIO state as first guessed — the real
   relay-shift-out code driving the tuner's schematic-confirmed relay network (user-supplied parts/net
   map now in `notes/ic7300-hardware.md`) hasn't been located yet (the raw port register it would use
-  has only the generic one-time boot-init reference). See `notes/kernel-rtos.md`'s "CI-V command
+  has only the generic one-time boot-init reference). **First real hardware-pin confirmation**: two
+  sibling functions independently read the `[TUNER]` jack's `TCON`/`EKEY` pins via the real GPIO
+  pin-read register and, on `EKEY` plus a frequency/TX-state check, trigger the *same* engage call —
+  a third independent path in, alongside documented CI-V and undocumented CI-V. See `notes/kernel-rtos.md`'s "CI-V command
   dispatcher" section.
 - ✅ **Real service/factory mode fully decoded, end to end**: entry condition (front-panel
   MENU+FUNCTION held **and** the REMOTE/CI-V jack's contacts shorted, detected via a raw GPIO

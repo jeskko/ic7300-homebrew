@@ -2354,3 +2354,62 @@ both `civ_cmd_2a_handler_UNDOCUMENTED` and `tuner_engage_gpio_toggle` to state t
 status-flags byte pair, not a GPIO shadow; real relay-drive code still unlocated). Open item updated
 accordingly: find the actual `TDAT`/`TCLK`/`TSTBn` shift-out code (check `g_ppr_register_base`'s other
 uses first) to close this out, or fall back to live JTAG once hardware arrives.
+
+### Following the user's EKEY/PHASEI/IMPI/SWRL/TPWRL hint — found a third, hardware-triggered path into the tuner engage primitive (2026-08-30, same day)
+
+User's tip: `IMPI`/`PHASEI` (the tuner interface's own phase/impedance-bridge feedback pins, also on `P7`)
+and `SWRL`/`TPWRL` (`P1_15`/`P1_14`, PA-level SWR/TX-power sense) are plausible things the real tuner
+control code would poll, worth checking directly.
+
+**Checked `g_ppr_register_base`** (`0x2002a0d0`, already named from earlier signal-chain work — holds the
+literal `0xFCFE3200`, the RZ/A1H's `PPRn` port-pin-READ register family base) and found the same literal
+constant duplicated in ~22 separate global slots across the image (a `memory.search` hex hit list) — this
+project's established "small per-subsystem private copy of a shared base pointer" pattern, same as the
+CI-V RX buffer pointer earlier. One of those copies, `g_ppr_register_base_copy_tuner` (renamed from
+`DAT_20066e74`), sits right in the middle of the tuner/`0x2A` cluster already being traced (`DAT_20066e6c`-
+`DAT_20066eb8`) and has exactly 2 readers:
+
+- **`tuner_jack_signal_precheck`** (renamed `FUN_20066154`): reads `*g_ppr_register_base_copy_tuner`
+  (offset `+0`, `PPR0`) bit `0x10` = **`P0_4` = `TCON`**, and `g_ppr_register_base_copy_tuner[0xc]`
+  (ushort-indexed, byte offset `0x18` = `PPR6`) bit `4` = **`P6_2` = `EKEY`** — both real `[TUNER]`-jack
+  signals, both read via the genuine hardware pin-read register, not a software flag.
+- **`tuner_jack_poll_and_autotrigger`** (renamed `FUN_2006672c`, called every idle-loop tick right after
+  the tuner housekeeping function `0x2001f168`): re-checks the same `EKEY` bit (`PPR6` bit 2) as one of
+  several gating conditions (alongside `tuner_freq_and_txstate_precheck()`), and on success calls
+  **`tuner_engage_from_jack_trigger`** (renamed `FUN_20066474`) → **`tuner_engage_gpio_toggle`** — the
+  *same* primitive both the documented `1C 01` command (`tuner_start_tuning_sequence`) and the
+  undocumented `0x2A` command (`civ_2a_state_engage_or_abort`) already reach.
+
+**This is the first real, hardware-pin-level confirmation tying this whole code cluster to the tuner** —
+previously the only evidence was "these functions call the same primitive as each other," now one of them
+independently reads a real, schematic-named tuner signal (`EKEY`) as its own trigger condition, with no
+dependency on CI-V at all. Three independent paths into `tuner_engage_gpio_toggle` are now confirmed:
+documented CI-V (`1C 01`), undocumented CI-V (`0x2A`), and hardware/jack-triggered (`EKEY`, i.e. plausibly
+"external tuner accessory requests engage" or a physical tuner-key input). Added to
+`notes/ic7300-signal-chain.md`'s port table (`P0_4`/`P6_2` rows) as the first code-level confirmation of
+`TCON`/`EKEY`, alongside the already-schematic-confirmed pin identity.
+
+**Open refinement, not yet resolved**: `TCON`/`EKEY`/`ESTA` are the *external* `[TUNER]` accessory jack's
+own coordination signals, per the schematic — not confirmed to be the *internal* relay network's own
+`TSTB1`-`4`/`TCLK`/`TDAT` bus (the `BU2092FV-E2` shift-register chain documented in
+`notes/ic7300-hardware.md`). Plausible reading: this code level coordinates with whichever tuner (internal
+or an external accessory on the jack) is currently active/selected, while the actual internal
+relay-pattern shift-out (if the internal tuner also goes through this same code, which seems likely given
+IC-7300 has a built-in tuner and doesn't obviously need a jack signal to drive its own relays) is a lower
+level not yet located — worth deliberately separating "coordinates with the tuner subsystem" from
+"physically drives the internal relay network" as two different, not-yet-equally-confirmed claims.
+
+**The `SWRL`/`TPWRL` hint specifically didn't pan out on this pass**: `tuner_jack_poll_and_autotrigger`'s
+own two threshold-check locals (`DAT_20066eb0`/`DAT_20066eb4`) were traced one hop further (their pointer
+values, `0x203901f3`/`0x203903be`) and turned out to be, respectively, a very heavily-shared generic status
+byte (50+ unrelated call sites, not tuner-specific) and a smaller but still not obviously power/SWR-shaped
+counter (a handful of call sites near `main_idle_loop` and the frequency-read cluster) — an honest
+non-finding for *this specific pair*, not a refutation of the user's underlying hypothesis. Also checked
+`tuner_freq_and_txstate_precheck`'s own callees (`FUN_20013348`/`FUN_200133d8`) — these turned out to be
+regional/band-plan validity checks (adjacent to the diode-matrix/region-gating code, `0x2003cxxx`-
+`0x2003dxxx`), not SWR/power sensing either. **Still open, best next lead**: check `0x2001f168` (the
+tuner housekeeping function paired with `tuner_jack_poll_and_autotrigger` in `main_idle_loop`, already
+suspected of running an SWR-minimization-shaped search loop from its decay-timer structure) for a direct
+`PPR1` (`0xFCFE3204`, carries `SWRL`/`TPWRL`) read — checked its own referenced globals
+(`DAT_2001f558`/`560`/`564`/`568`) for a direct MMIO-range pointer value and found none, so if it reads
+`SWRL`/`TPWRL` at all it's through yet another indirection hop not yet unwound.

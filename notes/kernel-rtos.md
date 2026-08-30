@@ -179,10 +179,22 @@ confirmed" section — summary:
   — full relay map now in `notes/ic7300-hardware.md`), but the raw P7 port data register
   (`0xFCFE301C`) that would carry those signals has exactly one reference in the whole image — the
   generic one-time boot GPIO init, same signature as the already-solved `DRESD`/`P2_6` case — so the
-  real runtime relay-shift-out code goes through some other, not-yet-found indirection. **Still open**:
-  find that code (check `g_ppr_register_base`, `0x2002a0d0`, an already-named but unexplored lead from
-  earlier signal-chain work) or fall back to live JTAG, to go from "shares the tuner's call-site
-  identity" to "confirmed to physically move the relay network". See the history file for full
+  real runtime relay-shift-out code goes through some other, not-yet-found indirection.
+- **First real hardware-pin-level confirmation, same day**: following up the user's `EKEY`/`PHASEI`/
+  `IMPI`/`SWRL`/`TPWRL` hint found **`tuner_jack_poll_and_autotrigger`** (renamed `FUN_2006672c`, runs
+  every idle-loop tick) and **`tuner_jack_signal_precheck`** (renamed `FUN_20066154`) — both read the
+  `[TUNER]` jack's `TCON`/`EKEY` pins (`P0_4`/`P6_2`) directly via the real port-pin-read register
+  (`g_ppr_register_base`, `0xFCFE3200` family), the first genuine GPIO-level tie of this code cluster to
+  a real, schematic-named signal (see `notes/ic7300-signal-chain.md`'s `P0_4`/`P6_2` rows). On a
+  successful `EKEY` + frequency/TX-state check, `tuner_jack_poll_and_autotrigger` calls
+  **`tuner_engage_from_jack_trigger`** → `tuner_engage_gpio_toggle` — a **third independent trigger path**
+  into the same primitive, alongside documented CI-V (`1C 01`) and undocumented CI-V (`0x2A`).
+  **Open refinement**: `TCON`/`EKEY`/`ESTA` are the *external* tuner-accessory jack's own signals — not
+  confirmed to be the *internal* relay network's own `TSTB`/`TCLK`/`TDAT` bus, so "coordinates with the
+  tuner subsystem" and "physically drives the internal relay network" remain two separately-unconfirmed
+  claims. The `SWRL`/`TPWRL` hint didn't pan out on this function's own threshold locals (traced to
+  generic shared state, not power/SWR samples) — best remaining lead is checking `0x2001f168` (the
+  paired tuner housekeeping function) for a `PPR1` read, not yet done. See the history file for full
   derivation.
 
 ## Living reference: full boot-time task catalog
