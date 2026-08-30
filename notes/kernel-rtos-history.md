@@ -2456,20 +2456,30 @@ established pattern that hardware access in this firmware tends to live below th
 inside it — see `voice_recording_file_task`'s own unresolved audio-source question, which has the same
 shape).
 
-**A promising but Ghidra-tooling-blocked lead**: found a much larger function (nominal entry `0x2005d234`,
-but real start `0x20058d78` — spans roughly 18 KB, an implausible size for one real function, and a strong
-match for this project's already-documented ARM/Thumb disassembly-context bug rather than a genuine
-finding) that also manipulates a sibling struct (`DAT_20390064`, referenced via `DAT_2005cbc4`/
+**A promising lead, with a retracted diagnosis (see correction below)**: found a much larger function
+(nominal entry `0x2005d234`, but real start `0x20058d78` — spans roughly 18 KB, an implausible size for
+one real function) that also manipulates a sibling struct (`DAT_20390064`, referenced via `DAT_2005cbc4`/
 `DAT_2005cbc0`/`DAT_2005d9c0`, all resolving into the same RAM neighborhood as the RTTY struct at
 `0x2039bfc4`) and dispatches on a mode-identity byte with values `'R'` (very plausibly "RTTY"), `'a'`,
 `'\\'`, `']'` — reads like a shared **digital-text-mode manager** covering RTTY plus at least 2-3 sibling
 modes, not RTTY-specific code. Confirmed called from 5 sites clustered near the power-state main loop
 (`0x20029f90`, two near `0x2002b654`/`0x2002b6d8` adjacent to `cold_boot_hw_init`, `0x20052c50`/
 `0x20052f98`) — consistent with the same "serviced every idle-loop tick" pattern already established for
-CI-V dispatch and tuner-jack polling, not a dedicated task. **Didn't decompile further** given the size
-anomaly — this is exactly the kind of address that needs the user's manual ARM-vs-Thumb GUI fix before
-trusting Ghidra's own function-boundary detection here (see `notes/icom-ic7300-re-project.md`'s tooling-
-gotchas section) rather than more MCP-side tracing into a likely-corrupted decompilation.
+CI-V dispatch and tuner-jack polling, not a dedicated task.
+
+**Correction, 2026-08-31 — the "known ARM/Thumb disassembly bug" diagnosis for this function was wrong,
+user caught it.** The original reasoning cited a cluster of 16 `annotate.list_bookmarks` "Bad Instruction"
+markers inside this function's address range (`0x2005d0fc`-`0x2005dcb0`) as evidence, without cross-
+checking them against the live disassembly first. When the user spot-checked the first 3 in the Ghidra GUI
+they looked completely fine; re-verifying 5 of the 16 directly (`0x2005d0fc`/`0x2005d2f4`/`0x2005d440`/
+`0x2005d924`/`0x2005dcb0`) confirmed all show clean, valid ARM instructions — **the bookmarks are stale
+leftovers from before this project's own already-documented 2026-08-29 Bad-Instruction sweep/fix, not a
+current problem.** `notes/icom-ic7300-re-project.md`'s tooling-gotchas section already recorded that sweep
+as closed ("only re-sweep if newly-analyzed code shows it") — this session should have applied that and
+didn't. The oversized-function anomaly itself (`entry_point`/`start_address` mismatch, implausible size)
+is still real and still unexplained, but **not attributable to the ARM/Thumb bug** — that link is retracted.
+Whatever's actually going on with this function's boundary is an open question again, not a known-blocked
+one; worth a fresh, direct decompile/read of the region rather than assuming a GUI fix is needed.
 
 **Bottom line for the SSTV question this was chasing**: RTTY's own "where do decoded characters actually
 come from" gap has the *same shape* as SSTV's "where do demodulated audio samples come from" gap — both
