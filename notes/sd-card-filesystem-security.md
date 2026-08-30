@@ -93,13 +93,57 @@ plate comment on `vfs_read_dir_entry` itself, for whoever picks this up next.
    a disclosed FatFs bug's exFAT volume-label overflow are two more candidate shapes to search for in the same
    region (mount-time code and volume-label-reading code respectively), not yet looked at here at all.
 
+## Version/identity check (2026-08-30, same day)
+
+User's ask: is it easy to pin down the actual FatFs version this firmware uses, before digging further?
+No embedded runtime version *string* was found (`strings` on `body.bin` turns up zero hits for
+`ChaN`/`FatFs`/`R0.`/`exFAT` etc. — expected, since FatFs's `R0.13a`-style version marker is a source
+comment, not a compiled string, so its absence proves nothing either way). But this project already has
+something better sitting in `scratch/` from the earlier FreeRTOS-identification work: the **full Renesas
+RZ/A1H reference source**, including its FatFs middleware —
+`scratch/r01an5093ej0170-rza1-swpkg/.../RZA1H_Sample/src/renesas/middleware/fatfs/` (`ff.c`/`ff.h` = real
+ChaN FatFs **R0.13a**, well before the R0.16 cutoff so all 7 disclosed CVEs' version range covers it,
+plus Renesas's own `r_fatfs_abstraction.c` wrapper).
+
+**Found the exact a disclosed FatFs bug pattern in the reference source itself**:
+`r_fatfs_abstraction.c`'s `map_filinfo_to_fatentry()` does `strcpy(p_fat_entry->FileName, info->fname)`
+— literally the bug the advisory describes, sitting in Renesas's own official sample wrapper code. If Icom's
+firmware derives from this (plausible, not proven — this project's kernel work already independently
+confirmed the FreeRTOS *port* itself matches this exact software package via direct source comparison,
+which is real precedent for the SD/FatFs side deriving from it too), this is the literal, named function
+to look for compiled into `body.bin`.
+
+**But a feature-flag check narrows things down significantly, using this reference `ffconf.h` as a map
+of what to search for in the binary**:
+
+| Feature | Reference default (`ffconf.h`) | Found in `body.bin`? | Verdict |
+|---|---|---|---|
+| Long filenames (`FF_USE_LFN`) | `0` (disabled) | **No** — FatFs's `LfnOfs[]` table (`{1,3,5,7,9,14,16,18,20,22,24,28,30}`), a distinctive 13-byte fingerprint stable across FatFs versions, was searched for as a literal byte sequence across the whole image and **not found anywhere** | Long filenames very likely **compiled out** — `FILINFO.fname` would be capped at 12+1 bytes (8.3 short name only), which fits trivially in any reasonably-sized destination buffer. **This means a disclosed FatFs bug as literally described (LFN overflow) most likely does NOT apply** — a real, honest negative result, not just an assumption |
+| exFAT (`FF_FS_EXFAT`) | `0` (disabled) | **No** — searched for the `"EXFAT"` boot-sector label string, zero hits (only plain `"FAT32"`/`"FAT12"`/`"FAT16"` found, at `0x200c5238`, inside a boot-sector-*building* function, `FUN_200c4d84` — this firmware can format FAT12/16/32 volumes, consistent with genuine FatFs, but this specific function constructs Icom's *own* valid boot sector rather than parsing an The owner-supplied one, so it's not itself the target) | exFAT compiled out too — **rules out a disclosed FatFs bug and a disclosed FatFs bug** (both exFAT-specific) entirely |
+
+**Net effect**: this firmware's SD/FAT support looks consistent with Renesas's reference `ffconf.h`
+defaults essentially unmodified (LFN off, exFAT off, plain FAT12/16/32 only) — a real, useful narrowing.
+Of the 7 disclosed CVEs, the ones that *don't* depend on an optional feature flag are now the better
+targets: **a disclosed FatFs bug** (FAT32 mount integer overflow — core mounting logic, always compiled in),
+**a disclosed FatFs bug** (math wrap in cluster cache on fragmented volumes — core), and **a disclosed FatFs bug** (info
+leak on files extended past end — core). a disclosed FatFs bug (GPT hang) needs `FF_MULTI_PARTITION`/GPT
+handling, also `0` in the reference config, so likely inapplicable too, same reasoning as exFAT.
+
+**Concrete next step, sharpened by this**: find the actual *mount-time* volume-parsing function (reads
+an existing, potentially The owner-crafted boot sector and computes sector/cluster/FAT-size counts from
+its fields — this is where a disclosed FatFs bug's integer overflow lives, in FatFs's `f_mount`/`find_volume`
+equivalent) rather than continuing to chase the long-filename angle in `vfs_read_dir_entry` — that specific
+function's own risk just dropped substantially given LFN appears to be off. The boot-sector-*building*
+function (`FUN_200c4d84`) just found is in the right neighborhood; the parsing counterpart is very
+likely nearby in the same `0x200c4000`-`0x200c8000` region (not yet located).
+
 ## Caveat
 
-None of this confirms the IC-7300 is actually FatFs-derived — that's an inference from Renesas's known
-RZ/A-series middleware offerings, not yet verified against this specific driver's binary. Even if it
-isn't literally FatFs, the *bug class* (wrapper code trusting an on-disk-controlled length against a
-fixed buffer) is general enough that `vfs_read_dir_entry`'s own shape is worth finishing the trace on
-regardless of whether it turns out to share literal code with upstream FatFs.
+None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag
+matches are circumstantial (consistent with, not proof of, derivation from this exact source), and the
+`LfnOfs`/`"EXFAT"` searches are absence-of-evidence, which is suggestive but not airtight (a sufficiently
+different FatFs fork or a compiler that fully unrolled/inlined the LFN offset table could in principle
+hide it). Treat "LFN and exFAT are off" as the working assumption to build on, not a closed question.
 
 Sources: [The Hacker News](https://thehackernews.com/2026/07/unpatched-flaws-disclosed-in-filesystem.html),
 [Rescana technical summary](https://www.rescana.com/post/critical-fatfs-advisory-Bugs-expose-millions-of-embedded-devices-to-a robustness bug-and-custom-code loading-risks).

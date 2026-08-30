@@ -145,14 +145,17 @@ fallback — a no-reflash trigger on stock firmware is more valuable than the "f
 though that approach is already confirmed feasible, because it doesn't require ever modifying the
 radio's firmware at all. This track now has a genuinely promising, actively-being-traced lead:
 
-- **The SD-card filesystem driver — now the most promising lead, see [[sd-card-filesystem-security]]**.
-  `"RENESAS RZ/A1 SD Driver Ver4.01"` (`notes/kernel-rtos.md`) is plausibly FatFs-derived (Renesas ships
-  FatFs-based middleware for the RZ/A series); a **real, current (July 2026) public disclosure of 7 FatFs
-  CVEs** includes a long-filename buffer overflow in typical *wrapper* code (a disclosed FatFs bug) that matches
-  the shape of Icom's own `vfs_read_dir_entry` (`0x200cbcf0`) closely enough to warrant a full trace —
-  in progress, not yet confirmed reachable. See the dedicated note for the full derivation and the
-  precise next steps (find the vtable-dispatched low-level directory reader and check whether it bounds
-  its writes to the caller's 128-byte stack buffer).
+- **The SD-card filesystem driver — an active lead, see [[sd-card-filesystem-security]]**. Confirmed this
+  project already has the real Renesas RZ/A1H reference FatFs source locally (`scratch/r01an5093ej0170-
+  rza1-swpkg/`, real ChaN FatFs R0.13a + Renesas's own wrapper) from earlier kernel work, and found the
+  exact a disclosed FatFs bug `strcpy(fno.fname)` pattern sitting in that reference wrapper's own source. But a
+  feature-flag fingerprint check (searching for FatFs's distinctive `LfnOfs[]` table and the `"EXFAT"`
+  boot-sector string) found neither anywhere in `body.bin` — long filenames and exFAT both look compiled
+  out, matching the reference's own defaults, which **most likely rules out a disclosed FatFs bug specifically**
+  (it needs LFN enabled). The better remaining candidate is **a disclosed FatFs bug** (FAT32 mount integer
+  overflow — core logic, not gated by a feature flag); the boot-sector-*building* function was found and
+  ruled out as itself not The owner-reachable (it constructs Icom's own valid sectors, doesn't parse
+  untrusted ones) but pinpoints the right neighborhood to find the real mount-time parser next.
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command
