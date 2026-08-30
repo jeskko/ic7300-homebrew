@@ -122,7 +122,13 @@ Builds on App 2's display access; the substantial new area is getting at live re
   CI-V table capture) confirm Icom has a real, configurable "which audio to record" feature at the
   protocol level, meaning a single shared audio-sample subsystem plausibly exists and is a good next
   place to look for a tappable RX-audio buffer. This is genuinely the load-bearing question for this app
-  — everything else follows once real audio samples are reachable.
+  — everything else follows once real audio samples are reachable. **Same shape found elsewhere,
+  2026-08-30**: chasing the RTTY decoder (the closest already-working digital-mode feature) hit the
+  identical blind spot — decode-to-SD-card logging is fully traced, but who actually produces the decoded
+  characters wasn't found either, and confirmed not to touch the DSP link directly at that layer. See
+  `sdk/api/audio.md` and `notes/kernel-rtos-history.md`'s "Tracing the RTTY decoder" section — doesn't
+  answer this question, but is a useful data point that this is a recurring structural gap, not something
+  specific to voice recording.
 - ✅ **The SSTV decode algorithm itself needs no Icom-specific research** — detecting the ~1200 Hz sync
   pulse, mapping the 1500–2300 Hz tone range to per-pixel luminance, and handling the timing for common
   modes (Robot36, Martin, Scottie) is standard, publicly documented ham-radio DSP technique, independent

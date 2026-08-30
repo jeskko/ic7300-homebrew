@@ -25,6 +25,16 @@ recorder"/audio-source-select commands confirm a real, configurable "which audio
 at the protocol level, meaning a single shared audio-sample subsystem plausibly exists — a good next place
 to look for a tappable RX-audio buffer.
 
+**A same-shaped gap found chasing the RTTY decoder (2026-08-30, `notes/kernel-rtos-history.md`)**: RTTY
+decode-to-SD-card logging (the closest already-working digital-mode feature) has the identical blind spot
+— traced its file-write path all the way down to a shared struct with a "pending decoded record" field,
+but who actually writes the *decoded characters* into that struct wasn't found, and confirmed that cluster
+never touches the `SCIF5` DSP-link register directly either. Doesn't resolve this question, but confirms
+it's a recurring structural boundary in this project's tracing so far (feature-level code is fully
+understood; whatever produces the real content — demodulated audio or decoded text — consistently isn't
+yet found for *any* traced feature). Worth remembering if either thread is picked back up: progress on one
+likely generalizes to the other.
+
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 
 Not yet assessed whether a task on the *main* CPU (as opposed to the DSP, which is already busy doing the

@@ -2413,3 +2413,69 @@ suspected of running an SWR-minimization-shaped search loop from its decay-timer
 `PPR1` (`0xFCFE3204`, carries `SWRL`/`TPWRL`) read — checked its own referenced globals
 (`DAT_2001f558`/`560`/`564`/`568`) for a direct MMIO-range pointer value and found none, so if it reads
 `SWRL`/`TPWRL` at all it's through yet another indirection hop not yet unwound.
+
+## Tracing the RTTY decoder, for SSTV-app relevance (2026-08-30)
+
+User's ask: `rtty_decode_log_poll_task` (`notes/kernel-rtos.md`'s task catalog) was previously marked
+"fully resolved" only for its SD-card-logging half — the note itself flagged that the loop's own
+sample/store call was never chased. Since App 4 (SSTV) in `sdk/app-requirements.md` has an open "where do
+decoded/demodulated samples come from" question, and RTTY is architecturally the closest already-working
+feature, picked this thread back up specifically to see what it reveals about the answer.
+
+**Traced one level deeper into `rtty_decode_log_service` (`0x20015628`) and its callees, `rtty_decode_log_write`
+(`0x20015358`) and `FUN_20014d18`.** Both write/close a log file through the same `0x2003bXXX`
+VFS-adjacent cluster already known from other file-I/O work (`FUN_2003b9b0`/`FUN_2003bae4`/`FUN_2003ba64`/
+`FUN_2003baac`/`FUN_2003ba94`, command bytes `0x44`/`0x46` — the same family `bmp_capture_write_file` uses)
+— confirms this logging path is a real, if generic, file-write client, nothing more.
+
+**Found the actual data-movement step**: `FUN_20014d18`, under an `disableIRQinterrupts()`/
+`enableIRQinterrupts()` bracket, calls `FUN_2017c710(pbVar1 + 0x2d, DAT_200155ec, 0x13)` — a 19-byte copy
+from `DAT_200155ec` (resolves to `0x2039bfdc`, i.e. offset `+0x18` of the same shared struct, base
+`0x2039bfc4`) into the struct's own `+0x2d` "pending record" field, which `rtty_decode_log_service` later
+clears (its own `FUN_2017c766(pbVar2 + 0x2d, 0x14)` call turned out to be a 2-arg helper —
+`FUN_2017c758(param1, param2, 0)` — i.e. a **clear/zero** helper, not a copy, correcting an initial
+misreading of that line). So the real shape is: something writes decoded text into the struct's own
+`+0x18` "staging" area, `FUN_20014d18` promotes 19 bytes of it to `+0x2d` under a real IRQ-disabled
+critical section (strongly suggesting the *staging* write itself happens from interrupt context, and this
+critical section exists specifically to avoid tearing against that ISR), and `rtty_decode_log_service`'s
+own poll loop (every 5 ticks) picks up and logs whatever's pending, then clears it.
+
+**Genuine open item, not resolved**: **who writes the `+0x18` staging area itself** — the actual
+character-by-character (or record-by-record) RTTY decoder — wasn't found. `references_to` on the
+`DAT_200155ec` pointer variable itself only surfaced the two "promote" call sites already covered above,
+both internal to this same `0x20014xxx`-`0x20016xxx` cluster; no external writer surfaced via that specific
+search.
+
+**One clean, useful negative result**: this entire cluster (`0x20014000`-`0x20016000`) **never references
+the `SCIF5` DSP-link register base (`0xE8009800`) anywhere** — searched as a 4-byte literal across all of
+`body.bin`, only the two already-known `SCIF5`-driver-init sites (`notes/multi-cpu-images.md`) show up,
+nowhere near this cluster. So whatever demodulates RTTY tones into characters isn't reading a DSP-link
+register directly *at this layer* — either it's further upstream through an indirection this sweep didn't
+chase, or the DSP-side result reaches here through a RAM mailbox set up once elsewhere (matching the
+established pattern that hardware access in this firmware tends to live below the task/feature layer, not
+inside it — see `voice_recording_file_task`'s own unresolved audio-source question, which has the same
+shape).
+
+**A promising but Ghidra-tooling-blocked lead**: found a much larger function (nominal entry `0x2005d234`,
+but real start `0x20058d78` — spans roughly 18 KB, an implausible size for one real function, and a strong
+match for this project's already-documented ARM/Thumb disassembly-context bug rather than a genuine
+finding) that also manipulates a sibling struct (`DAT_20390064`, referenced via `DAT_2005cbc4`/
+`DAT_2005cbc0`/`DAT_2005d9c0`, all resolving into the same RAM neighborhood as the RTTY struct at
+`0x2039bfc4`) and dispatches on a mode-identity byte with values `'R'` (very plausibly "RTTY"), `'a'`,
+`'\\'`, `']'` — reads like a shared **digital-text-mode manager** covering RTTY plus at least 2-3 sibling
+modes, not RTTY-specific code. Confirmed called from 5 sites clustered near the power-state main loop
+(`0x20029f90`, two near `0x2002b654`/`0x2002b6d8` adjacent to `cold_boot_hw_init`, `0x20052c50`/
+`0x20052f98`) — consistent with the same "serviced every idle-loop tick" pattern already established for
+CI-V dispatch and tuner-jack polling, not a dedicated task. **Didn't decompile further** given the size
+anomaly — this is exactly the kind of address that needs the user's manual ARM-vs-Thumb GUI fix before
+trusting Ghidra's own function-boundary detection here (see `notes/icom-ic7300-re-project.md`'s tooling-
+gotchas section) rather than more MCP-side tracing into a likely-corrupted decompilation.
+
+**Bottom line for the SSTV question this was chasing**: RTTY's own "where do decoded characters actually
+come from" gap has the *same shape* as SSTV's "where do demodulated audio samples come from" gap — both
+dead-end at a boundary between the feature-level code (fully traced, generic file-I/O) and whatever
+produces the real content (not yet found for either). Doesn't answer the SSTV question directly, but does
+confirm it's a recurring, structural blind spot in this project's tracing so far — real progress on either
+one (finding what interrupt handler or DSP-mailbox actually delivers decoded/demodulated data into a
+shared RAM struct) would likely establish a pattern applicable to both. The size-anomaly function above is
+the concrete next lead if this thread is picked back up, once its disassembly-context is fixed.
