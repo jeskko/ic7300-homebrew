@@ -38,3 +38,13 @@ once they actually get long). As this grows, plausible additions:
 Keep new SDK-design material here, not in `notes/` — if something is a confirmed fact about the real
 firmware, it belongs in `notes/` (and `sdk/` docs should cite it from there); if it's a plan, a design
 choice, or an open question about what to build, it belongs here.
+
+## Keep this in sync with ordinary RE work
+
+`app-requirements.md` and `roadmap.md` each list open questions that ordinary `notes/`-side investigation
+can answer incidentally, without anyone specifically going looking for them — e.g. confirming what buffer
+`icon_blit_by_id_v1`/`_v2` writes into, decoding more `scif3_frame_dispatch_by_type` message types,
+tracing `voice_recording_file_task`'s audio source back to its producer. **When a session's RE work
+happens to resolve (or bear on) one of these, update the relevant `sdk/` doc's open-question status at
+the same time as recording the finding in `notes/`** — don't leave it to a dedicated "check the SDK docs"
+pass, since one may not happen for a long time otherwise.
