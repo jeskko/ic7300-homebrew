@@ -7,6 +7,11 @@ mechanism and memory placement (Phase 2's own open questions), since that's expe
 once a full live-device memory dump is available via JTAG. Ordered roughly by dependency (each app builds
 on the previous one's requirements).
 
+**See also `sdk/api/`** (added 2026-08-30, a synthesis sweep of `notes/*.md` into per-subsystem reference
+docs) — `task-model.md`, `serial-civ.md`, `display.md`, `input.md`, `filesystem.md`, `audio.md`,
+`settings.md`. Each open question below has a matching, more detailed writeup there with verified function
+addresses; this file stays the per-app view, `api/` is the per-subsystem view of the same underlying facts.
+
 ## Shared infrastructure every app needs
 
 - ✅ **Task creation**: fully understood. `itron_act_tsk` trampolines activate a task from a

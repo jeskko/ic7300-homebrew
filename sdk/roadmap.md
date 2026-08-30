@@ -117,7 +117,10 @@ Concrete open design questions, needing a firm answer before writing the loader 
   engineered (CI-V TX via the confirmed `civ_frame_rx_statemachine`/TX-buffer mechanism, display/EGL
   surface per the graphics-stack findings, SD-card file I/O via `vfs_open`/`vfs_read_record`/etc. already
   named from the file-RPC investigation, frequency/mode read via `FUN_200623bc`-style helpers) — so writing
-  an app doesn't require re-deriving the whole firmware's internals from scratch each time.
+  an app doesn't require re-deriving the whole firmware's internals from scratch each time. **A first pass
+  at exactly this now exists**: `sdk/api/` (2026-08-30 sweep) — `task-model.md`, `serial-civ.md`,
+  `display.md`, `input.md`, `filesystem.md`, `audio.md`, `settings.md`, each with verified addresses and
+  open questions per subsystem.
 - **Safety valve**: given this permanently modifies the running firmware, the loader itself should
   fail closed (missing/corrupt app file → do nothing, don't hang or crash normal radio operation) — this
   is a real design requirement, not an afterthought, given the radio is presumably still used as a radio.

@@ -23,17 +23,23 @@ for why this whole effort exists.
   hello-world, a simple game, an SSTV receiver), what's already known vs. what still needs researching,
   deliberately excluding the app-launching/memory-placement question (expected to get much easier once a
   live-device memory dump exists via JTAG).
+- **`api/`** — per-subsystem reference docs (started 2026-08-30, a synthesis pass over `notes/*.md`, not
+  new RE work): `task-model.md`, `serial-civ.md`, `display.md`, `input.md`, `filesystem.md`, `audio.md`,
+  `settings.md`. Each cites back to the underlying `notes/` evidence and marks open questions ✅/🔎 in the
+  same style as `app-requirements.md`. Scope is deliberately "what can an app call/use once it's running,"
+  not "how does it start" (still `roadmap.md` Phase 2's open question). Addresses cited in these files were
+  verified against the live Ghidra project as of the date each file was written — re-verify before trusting
+  one blindly if picking this up much later, since renames happen across sessions.
 
 ## Expected growth
 
 No fixed structure imposed up front — following this project's own established pattern in `notes/`
 (files start flat, split into a lean "current state" file plus a `-history.md` narrative companion only
-once they actually get long). As this grows, plausible additions:
-- Per-subsystem API reference docs, once an interface is confirmed stable enough to call it part of the
-  SDK surface (e.g. `serial.md`, `display.md`, `input.md`, `audio.md`) — promoted out of `notes/` findings
-  once they're being relied on rather than just documented.
+once they actually get long). `api/` (above) is the first structured addition. Further plausible growth:
 - `examples/` — eventually real source for the four apps in `app-requirements.md`, not just design notes.
 - A toolchain/build doc once the cross-compiler and linker setup is worked out.
+- Splitting an `api/*.md` file into a `-history.md` companion if/when one of them grows past the point of
+  being a quick reference, same pattern as `notes/`.
 
 Keep new SDK-design material here, not in `notes/` — if something is a confirmed fact about the real
 firmware, it belongs in `notes/` (and `sdk/` docs should cite it from there); if it's a plan, a design
