@@ -145,17 +145,17 @@ fallback — a no-reflash trigger on stock firmware is more valuable than the "f
 though that approach is already confirmed feasible, because it doesn't require ever modifying the
 radio's firmware at all. This track now has a genuinely promising, actively-being-traced lead:
 
-- **The SD-card filesystem driver — an active lead, see [[sd-card-filesystem-security]]**. Confirmed this
-  project already has the real Renesas RZ/A1H reference FatFs source locally (`scratch/r01an5093ej0170-
-  rza1-swpkg/`, real ChaN FatFs R0.13a + Renesas's own wrapper) from earlier kernel work, and found the
-  exact a disclosed FatFs bug `strcpy(fno.fname)` pattern sitting in that reference wrapper's own source. But a
-  feature-flag fingerprint check (searching for FatFs's distinctive `LfnOfs[]` table and the `"EXFAT"`
-  boot-sector string) found neither anywhere in `body.bin` — long filenames and exFAT both look compiled
-  out, matching the reference's own defaults, which **most likely rules out a disclosed FatFs bug specifically**
-  (it needs LFN enabled). The better remaining candidate is **a disclosed FatFs bug** (FAT32 mount integer
-  overflow — core logic, not gated by a feature flag); the boot-sector-*building* function was found and
-  ruled out as itself not The owner-reachable (it constructs Icom's own valid sectors, doesn't parse
-  untrusted ones) but pinpoints the right neighborhood to find the real mount-time parser next.
+- **The SD-card filesystem driver — a real, confirmed bug found, see [[sd-card-filesystem-security]]**.
+  This started as a ChaN-FatFs advisory-matching effort (a real local reference source was found, and the
+  exact `a disclosed FatFs bug` `strcpy(fno.fname)` pattern turned up in it) but a fingerprint check while
+  chasing `a disclosed FatFs bug` **disproved the FatFs premise entirely** — a family of `"GRP_FS: ..."`
+  debug/assert strings (reference-counted buffer cache, per-file-descriptor open counts) showed this is
+  a different, more OS-grade VFS, not ChaN's simple FatFs. Pivoted to auditing the actual code directly
+  and found a **real bug, not a advisory-database match**: `fs_object_release_ref_UNSAFE_NEGATIVE`
+  (confirmed reachable from `vfs_close`, the public file-close API) detects a reference count going
+  negative (an over-release), **logs it, but does not prevent the cleanup path from running anyway** —
+  a genuine double-free/use-after-free shape, visible directly in the decompiled logic. Still open: a
+  concrete trigger (some call path that releases a file handle one extra, unbalanced time).
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command

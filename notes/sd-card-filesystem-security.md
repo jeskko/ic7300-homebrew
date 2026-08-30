@@ -137,6 +137,104 @@ function's own risk just dropped substantially given LFN appears to be off. The 
 function (`FUN_200c4d84`) just found is in the right neighborhood; the parsing counterpart is very
 likely nearby in the same `0x200c4000`-`0x200c8000` region (not yet located).
 
+## Correction, 2026-08-30, same day — this is NOT ChaN's FatFs
+
+Tried to trace a disclosed FatFs bug (FAT32 mount integer overflow) by fingerprinting `find_volume`'s distinctive
+`MAX_FAT16`/`MAX_FAT32` constants (`0xFFF5`/`0x0FFFFFF5`, stable across FatFs's entire history) — searched
+for both as raw literals and as ARM/Thumb `movw`/`movt`-encoded immediates across the *entire* 3.7 MB
+image. **Zero hits, anywhere.** That alone was suspicious given how distinctive these values are; tracing
+`vfs_open_ex`'s actual callees (rather than guessing at constants) turned up something conclusive: a
+family of internal debug/assert strings—
+
+- `"GRP_FS: negative buf ref(dev:0x%x blk:0x%lx ref:%d)\n"` (`0x200c8be4`)
+- `"GRP_FS: negative file ref dev:0x%x fid:0x%lx st:0x%x ref:%d\n"` (`0x200c8128`)
+- `"GRP_FS: negative FS open dev:0x%x open:%ld\n"` (`0x200c81d4`)
+- `"GRP_FS: file still busy dev:0x%x fid:0x%lx st:0x%x\n"` (`0x200c8168`)
+- `"GRP_FS: file not blocked dev:0x%x fid:0x%lx st:0x%x\n"` (`0x200c819c`)
+- `"GRP_FS: no task environment(%lu)\n"` (`0x200c7cc8`)
+- `"GRP_FS: %s failed(dev:0x%x blk:0x%lx blk_shift:%d cnt:%ld)\n"` (`0x200c95ec`)
+
+**This rules out ChaN's FatFs for this layer.** FatFs has no reference-counted buffer cache, no
+per-file-descriptor open-count tracking, and nothing resembling this `"GRP_FS: <condition> dev:%x
+fid:%x ref:%d"` categorized-assert convention — it's a much simpler, uncached, direct-sector-I/O design.
+What's actually here reads like a real, OS-grade VFS: a block-device abstraction (`dev`), a buffer cache
+with reference counts (`blk`/`ref`), and file descriptors with their own open-counts and state
+(`fid`/`st`/`open`) — structurally far closer to something like eSOL's commercial **PrFILE2** (a
+real, widely-used embedded FAT/exFAT middleware — used on the Nintendo Switch among others) or an
+in-house Renesas/Icom VFS layer than to the open-source reference this session had been comparing
+against. No public source or string match for "PrFILE2"/"GRP_FS" specifically turned up in a web search,
+so the exact vendor/product is **not confirmed** — but the negative a disclosed FatFs bug fingerprint result is
+solid on its own regardless of naming it: **the FatFs-advisory-matching approach for the mount-time path does
+not apply here**, and the earlier a disclosed FatFs bug (LFN) reasoning, while methodologically sound (the
+feature-flag check was real), was built on the same now-doubtful FatFs premise.
+
+**What this doesn't undo**: `vfs_read_dir_entry`'s own structural shape (128-byte stack buffer, filled
+via a dynamically-dispatched call, whose bounds-respecting behavior is still unconfirmed) is unaffected —
+it's still a real, un-closed question, just no longer backed by a named public advisory. What changes is the
+strategy: **this is a proprietary/unidentified codebase, so the productive path is now direct auditing
+of the actual compiled functions for real bugs, not matching against public FatFs bug-hunting.**
+
+**A new, concrete, self-supplied lead from these very strings**: the developers explicitly instrumented
+against reference-count *underflow* ("negative buf ref", "negative file ref", "negative FS open") — i.e.
+they were worried about exactly this bug class, which means it's plausible one exists (or existed) in
+practice. The real question these asserts don't answer: in a release build, does hitting one of these
+conditions actually **deny the operation**, or does it just **log and continue** with an already-corrupted
+reference count? If the latter, a ref-count reaching zero/negative while a stale handle is still in use
+is the classic shape of a use-after-free — a genuinely different, and in some ways more promising, bug
+class than the buffer-overflow angle this session started with. Worth checking the actual `if` branch
+around each of these debug-print call sites for whether an error is actually returned/enforced.
+
+## A real bug, not just a hypothesis: unenforced reference-count underflow (2026-08-30, same day)
+
+Followed up the "log-but-continue" question the correction above raised, on the most directly
+The owner-reachable of the `GRP_FS` strings: `"negative file ref"`. Traced its one call site
+(`FUN_200c7f10`, renamed **`fs_object_release_ref_UNSAFE_NEGATIVE`**) and confirmed a real bug, visible
+directly in the decompiled logic — not speculation:
+
+```c
+iVar1 = *(param_1+8) - 1;      // decrement the object's reference count
+*(param_1+8) = iVar1;          // stored even if it goes negative
+if (iVar1 < 1) {
+    if (iVar1 < 0) {
+        fs_debug_log("GRP_FS: negative file ref dev:0x%x fid:0x%lx st:0x%x ref:%d\n", ...);
+        // no return, no error propagated, no abort
+    }
+    *(param_1+8) = 0;          // clamped only AFTER logging
+    // ... unconditionally proceeds with full "last reference released" cleanup:
+    //     unlinks the object from a doubly-linked active-object list,
+    //     calls its release vtable slot, decrements a second, outer
+    //     "FS open count" (which has the exact same log-but-continue
+    //     pattern for its own "negative FS open" case) ...
+}
+```
+
+**The bug**: an over-release (this function invoked one more time than the object was ever genuinely
+referenced) is detected and logged, but not prevented. The code still runs the *entire* "final reference
+gone" cleanup path every time it's called again on an already-zero-or-negative count — including
+unlinking the object from an active-object linked list and calling a release/free vtable slot. Repeated
+unlinking of the same node from a linked list is a classic a robustness bug primitive (the node's
+neighbor pointers get overwritten based on already-stale/The owner-influenceable data); combined with the
+vtable release call being invoked more than once, this is a genuine **double-free/use-after-free shape**,
+confirmed at the code level, not inferred from a advisory database.
+
+**Confirmed reachable from the public API**: `vfs_close` (`0x200cb98c`) → **`fs_close_fd`**
+(renamed `FUN_200c7724`) → `fs_object_release_ref_UNSAFE_NEGATIVE`. `vfs_close` is exactly the kind of
+function every SD-card file operation in this firmware (voice memory, RTTY logs, firmware-update staging,
+the SD menu, the factory-file loader) ultimately calls when done with a file handle.
+
+**What's still open — the concrete next step**: a *trigger*. This bug needs the release path invoked one
+extra, unbalanced time relative to a matching acquire. Candidates, not yet individually checked:
+- A double-close bug in Icom's own calling code somewhere (closing the same handle twice on an error path,
+  a classic and common real-world bug pattern in C).
+- A bug in this filesystem layer's own open/alias/hard-link-style handling that lets two different
+  "opens" resolve to the same underlying object without both being counted, so one real close() over-releases.
+- The shared `"negative buf ref"` sibling (block-cache buffer ref count, 13 call sites across this same
+  cluster — not yet individually traced) might have an easier-to-reach trigger than the file-level one.
+
+This is now the most concrete, best-evidenced lead in this whole investigation — a real logic bug found
+by reading the actual code, independent of any external advisory database, in a function directly reachable
+from ordinary SD-card file operations.
+
 ## Caveat
 
 None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag
