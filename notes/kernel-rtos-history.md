@@ -2209,3 +2209,36 @@ Also worth noting for anyone revisiting this: the manual PDF's real path is
 28th/29th sessions apparently had a temporary copy that wasn't saved anywhere locatable — future sessions
 needing the CI-V command table, or any other section of the full manual, should read directly from here
 rather than re-deriving from notes).
+
+### Cross-check against wfview (open-source multi-model CI-V control suite) — command 0x2A confirmed unknown there too (2026-08-30, same day)
+
+User's ask: check whether `wfview` (github.com/wf-group/wfview — an actively-maintained, community-driven
+CI-V rig-control application supporting ~40 Icom models, whose per-model command sets are hand-authored
+against official manuals and community reverse-engineering, not auto-generated) knows about command
+`0x2A`, and if not, see what its own command handling suggests.
+
+Cloned the repo and found its real command definitions live in `rigs/*.rig` (INI-format files parsed by
+`icomCommander::parseCommand`/rig-loading code in `src/radio/icomcommander.cpp`), not hardcoded in the C++
+source — each model's supported CI-V commands are individually listed with hex command strings.
+`rigs/IC-7300.rig`'s command set: `0x00`-`0x08`, `0x0B`, `0x0E`-`0x11`, `0x13`-`0x1C`, `0x21`, `0x25`-`0x27`
+(plus the `FA`/`FB` NG/OK reply codes) — **no `0x28`, `0x29`, or `0x2A` at all** (`0x28`, real per the
+manual, is apparently just a feature wfview hasn't implemented client-side; `0x29`/`0x2A` match this
+firmware's own "not implemented for this model" findings, `0x2A` included). `IC-7300MK2.rig` (the newer
+hardware revision) has the identical command set, same gap.
+
+**Widened the check across all ~40 of wfview's supported Icom models' `.rig` files** (every model from the
+1984 IC-R71 to the 2023 IC-905): grepped every file for a command string starting with byte `0x2A` —
+**zero matches, on any model, anywhere in the whole rig database.** (The one incidental `0x2A` hit in the
+repo, `CI-V.md`'s per-model bus-address reference table, is the IC-R9000's default *CI-V address*, an
+unrelated 1989-vintage coincidence — not a command byte.)
+
+**Conclusion**: this isn't a case of "third-party software just hasn't caught up yet" for one model — the
+most complete open-source Icom CI-V implementation that exists, covering the entire modern CI-V-capable
+lineup and built from official manuals plus years of community reverse-engineering across many radios,
+has no record of command `0x2A` on *any* Icom radio it supports. Reinforces (doesn't newly prove, since the
+official manual gap was already conclusive) that `0x2A` is genuinely obscure — consistent with, though not
+proof of, a factory/test-only command never meant for end-user or third-party control-software consumption.
+Doesn't add new information about what `0x2A` *does* (wfview's own command *names/domains* near it —
+`0x21` RIT/`Δ`TX, `0x25`/`0x26` selected-VFO freq/mode, `0x27` scope — don't suggest a family that `0x2A`
+would naturally extend), so the open item from the previous section (trace `DAT_2001f50c`/`DAT_2001f510`
+to their real hardware sink, or test live via JTAG) is still the only way forward on "what does it do".

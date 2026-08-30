@@ -156,7 +156,10 @@ confirmed" section — summary:
   `0x23`/`0x24`/`0x29`) matches a real gap in the manual's own command list — strong confirmation this
   table really is CI-V's (unlike the retracted `sdcard_file_rpc_dispatch_task` false lead below).
 - **Command `0x2A`, subcommand `0x01` is real, fully implemented, and completely absent from the manual**
-  (whose table ends at `28 00`) — **the undocumented CI-V command**. Handler:
+  (whose table ends at `28 00`) — **the undocumented CI-V command**. Cross-checked against `wfview`
+  (open-source multi-model CI-V control suite, github.com/wf-group/wfview): **zero knowledge of `0x2A`
+  across all ~40 of its supported Icom models**, not just the IC-7300 — no third-party implementation
+  anywhere in that project's rig database has ever encountered it either. Handler:
   **`civ_cmd_2a_handler_UNDOCUMENTED`** (`0x20010710`). Takes one further data byte (0-3): `0`=disable,
   `1`=validate (incl. a frequency-ceiling check) then enable + trigger a 9-function subsystem re-sync,
   `2`/`3`=set flags on a sibling state machine. The "enable" path bit-twiddles two registers

@@ -71,7 +71,9 @@ by but not built on top of the prior work there.
   pointer + permission/length-bound fields), cross-checked entry-by-entry against the official manual
   (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`, pp.19-2–19-13) — every unimplemented slot matches
   a real gap in the manual. **Command `0x2A` sub `0x01` is real and fully implemented but has no manual
-  entry at all** (the manual's table ends at `28 00`) — a confirmed undocumented CI-V command. Its
+  entry at all** (the manual's table ends at `28 00`) — a confirmed undocumented CI-V command, also
+  absent from `wfview`'s command set for every one of its ~40 supported Icom models, not just this one
+  (github.com/wf-group/wfview). Its
   handler (`civ_cmd_2a_handler_UNDOCUMENTED`) gates a real hardware enable/disable toggle behind a
   frequency-ceiling check and a subsystem re-sync; the exact pin/peripheral it controls is still
   unidentified (RAM-shadowed registers, not raw MMIO — needs further tracing or JTAG). See
