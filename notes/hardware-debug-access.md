@@ -114,7 +114,7 @@ radios** (pins referenced from the IC-9700's schematic, checked as "similar on I
 | 1 | `3.3V` | — | — |
 | 2 | `RES1` | 10k to 3.3V | `RES` |
 | 3 | `MTDO` | 10k to 3.3V | `JP0_1` |
-| 4 | *(unlabeled)* | 10k to GND | — |
+| 4 | *(unused)* | 10k to GND, no other connection | confirmed genuinely unconnected, not `BSCANP` — see below |
 | 5 | `MTCK` | 10k to GND | `TCK` |
 | 6 | `MTMS` | 10k to 3.3V | `TMS` |
 | 7 | `MTDI` | 10k to 3.3V | `JP0_0` |
@@ -126,12 +126,15 @@ Confirms several things this file's earlier "next steps" had flagged as unconfir
 voltage is 3.3V** (pin 1, directly on the connector — matches the SoC's expected level, no separate
 verification against the power rail needed), and the RZ/A1H's own `MTCK`/`MTMS`/`MTDI`/`MTDO`/`MTRST`
 naming confirms standard ARM JTAG (not a Renesas-proprietary protocol), consistent with the schematic
-read in the "Found instead" section above. The `M`-prefixed names and the `JP0_0`/`JP0_1` alt-names on
+read in the "Found instead" section above. ~~The `M`-prefixed names and the `JP0_0`/`JP0_1` alt-names on
 `MTDI`/`MTDO` indicate these are muxed pins shared with GPIO port 0 bits 0/1 — the chip likely needs a
 mode/boot-strap configuration to actually route them to the JTAG function rather than plain GPIO (not
 yet confirmed which strap, if any, controls this — worth checking before assuming the interface is
 "live" without configuration). Pin 4's role is unclear (no signal name given, just pulled to GND) —
-possibly a debug-enable strap, not confirmed.
+possibly a debug-enable strap, not confirmed.~~ **Both retracted, 2026-08-30** — see the "Firmware
+readiness check" section below for the real picture: `JP0_0`/`JP0_1` are a separate pin group from GPIO
+Port 0 (not muxed with it), default to JTAG mode with no strap needed, and pin 4 is just an unconnected
+pulldown, not a debug-enable strap.
 
 **Practical implication**: the FT2232H adapter + FFC breakout already ordered for the IC-7300
 ([[icom-ic7300-re-project]]) should now work for both radios as-is — pinout is confirmed identical,
@@ -223,5 +226,7 @@ kind needed on either the firmware or hardware side.
    defaults, both boot stages never touch the relevant registers.
 7. ~~Confirm `BSCANP`'s physical net~~ — done, user read it directly off the schematic: hardwired low via
    `R311`, no connector involvement. See above.
-8. New: connector pin 4's own identity is still unresolved (ruled out as `BSCANP`, see above) — no lead on
-   what it actually is; low priority, doesn't block using the debug connector as-is.
+8. ~~Connector pin 4's own identity~~ — done, user read the schematic: pin 4 goes only to a 10 kΩ pulldown
+   to GND, no other connection anywhere (same "isolated pulldown, no routed net" shape as `BSCANP` itself,
+   just a different resistor). Genuinely just an unused/reserved connector pin, not a signal worth
+   chasing further — closes this file's last open item.
