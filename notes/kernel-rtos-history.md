@@ -2480,6 +2480,10 @@ didn't. The oversized-function anomaly itself (`entry_point`/`start_address` mis
 is still real and still unexplained, but **not attributable to the ARM/Thumb bug** — that link is retracted.
 Whatever's actually going on with this function's boundary is an open question again, not a known-blocked
 one; worth a fresh, direct decompile/read of the region rather than assuming a GUI fix is needed.
+**Cleanup, same day**: deleted all 16 of these stale bookmarks from the live Ghidra project via
+`mcp__ghidra__delete` (scoped to this range only — the wider "Bad Instruction" bookmark category still has
+~163 more entries project-wide, very plausibly also stale leftovers from the same closed sweep, left alone
+since a full re-sweep wasn't asked for this session).
 
 **Bottom line for the SSTV question this was chasing**: RTTY's own "where do decoded characters actually
 come from" gap has the *same shape* as SSTV's "where do demodulated audio samples come from" gap — both
