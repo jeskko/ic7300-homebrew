@@ -126,7 +126,7 @@ Concrete open design questions, needing a firm answer before writing the loader 
 Once Phase 2's hook exists and boots correctly with a trivial "do nothing" or "blink something obvious"
 app loaded from SD card, iterate toward something genuinely useful, informed by what this project already
 understands well (CI-V, the UI icon/graphics system, SD-card file I/O, the band-scope/spectrum data). See
-[[custom-apps-technical-requirements]] for a concrete per-app breakdown (serial hello-world, display
+`sdk/app-requirements.md` for a concrete per-app breakdown (serial hello-world, display
 hello-world, a simple game, an SSTV receiver) of what's already known vs. what still needs research,
 deliberately excluding the launching-mechanism/memory-placement question above (expected to get much
 easier once a live-device memory dump is available).

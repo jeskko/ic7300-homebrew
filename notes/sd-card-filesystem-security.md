@@ -1,6 +1,6 @@
 # SD-card filesystem: candidate robustness surface for goal (a)
 
-Started 2026-08-30, following up on [[custom-custom-code loading-roadmap]]'s "secondary track" — the user
+Started 2026-08-30, following up on `sdk/roadmap.md`'s "secondary track" — the user
 specifically wants a no-reflash custom-code loading trigger via SD card or serial port if one can be found,
 not just the (already-confirmed-feasible) unauthenticated-firmware-update path. This file tracks that
 investigation specifically for the SD-card filesystem angle.

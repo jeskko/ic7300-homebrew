@@ -1,6 +1,6 @@
 # Custom apps: what else needs researching, per example app
 
-Started 2026-08-30, following [[custom-code-execution-roadmap]]'s Phase 2/3 (app design/build). Scope of
+Started 2026-08-30, following `sdk/roadmap.md`'s Phase 2/3 (app design/build). Scope of
 this file: for four representative example apps, what RTOS/hardware-interface/graphics-library knowledge
 this project already has vs. what still needs research — **deliberately excluding** the app-launching
 mechanism and memory placement (Phase 2's own open questions), since that's expected to get much easier
