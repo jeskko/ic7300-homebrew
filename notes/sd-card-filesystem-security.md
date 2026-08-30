@@ -235,6 +235,77 @@ This is now the most concrete, best-evidenced lead in this whole investigation �
 by reading the actual code, independent of any external advisory database, in a function directly reachable
 from ordinary SD-card file operations.
 
+## Sweeping other targets: the bug is systemic, plus a concurrency lead (2026-08-30, same day)
+
+User's ask: trace other possible targets too, not just the one `vfs_close` path. Two productive
+directions:
+
+### The buffer-cache layer has the identical bug, far more heavily used
+
+Corrected an earlier mistake first: the 13 "references" originally reported for the `"negative buf
+ref"` string were bogus — they were reads of an unrelated global pointer whose value happens to render
+as printable-looking bytes (`"h\t9 "`) immediately before the real string, a Ghidra string-boundary
+mis-detection. The real single call site is `0x200c88d8`.
+
+That single call site is **`fs_buffer_release_ref_UNSAFE_NEGATIVE`** (renamed `FUN_200c8854`) — the
+exact same shape as the file-object bug (decrement, check negative, log via `fs_debug_log`, but proceed
+with full cleanup/unlink regardless), this time for the block **buffer cache** object rather than the
+file object. This one is **far more heavily used**: 16 call sites (`references_to`), spanning
+`0x200bd000`-`0x200c9200` — essentially the entire FAT cluster-chain-walking and directory-block I/O
+layer. Confirmed genuine FAT12/16/32 logic while tracing these (e.g. `FUN_200bd5b8`'s classic
+1/2/3-byte FAT-entry-size branching, with the real FAT32 28-bit cluster mask `0xfffffff` — this really
+is a proper FAT driver, just not ChaN's specific implementation).
+
+**This confirms the bug is systemic**, not an isolated one-off in a single function — the same
+"detect-but-don't-enforce negative reference count" anti-pattern exists at (at least) two separate
+layers of this filesystem's object model.
+
+Sampled 6 of the 16 call sites in detail (`FUN_200bd470`, `FUN_200bd5b8`, `FUN_200bd7a8`
+— the FAT-entry *write* counterpart to `FUN_200bd5b8`'s *read* — `FUN_200be08c`, `FUN_200bfd68`,
+`FUN_200c9030`): **all six release calls are individually gated** on a local flag/pointer actually
+indicating a held reference before calling release — careful, correct code on each of these specific
+paths, no single-function double-release found yet. The remaining 10 call sites
+(`0x200bd9b0`/`200be16c`/`200be234`/`200be67c`/`200be9ac`/`200beb68`/`200bfaf8`/`200bfb30`/`200bfee4`/
+`200bffe0`/`200c0364` — some addresses overlapped between the two passes, see Ghidra's plate comment on
+`fs_buffer_release_ref_UNSAFE_NEGATIVE` for the exact current list) are not yet individually checked.
+
+### A genuinely promising concurrency angle
+
+While sampling those call sites, one function stood out structurally: the hardware DMA-accelerated block
+read/write path (`FUN_200c9030`) explicitly **drops the global FS lock for the duration of the hardware
+transfer**:
+
+```c
+FUN_200c6b64(*puVar7);                     // unlock
+uVar3 = (**(code **)(iVar9 + 8))(...);     // hardware DMA call - potentially slow
+FUN_200c6b3c(*puVar7);                     // re-lock
+```
+
+If per-function locking is otherwise careful (each individual audited function looks correctly gated),
+a **lock-drop window during hardware I/O** is exactly the kind of place a real over-release trigger could
+hide in an RTOS with multiple tasks capable of touching the SD card (the SD menu, voice-memory recording,
+an in-progress firmware update, the CI-V-driven file-RPC service — several already-documented features
+that all go through this same filesystem layer). If another task can reach
+`fs_object_release_ref_UNSAFE_NEGATIVE`/`fs_buffer_release_ref_UNSAFE_NEGATIVE` for the *same* object
+during this unlocked window, that's the trigger this whole investigation has been looking for.
+**Not confirmed** — this requires identifying two real, concurrently-schedulable code paths that could
+actually collide on the same file/buffer object, which hasn't been done yet. But it's a concrete,
+well-motivated next step, and connects the two findings (an unenforced check + a real window where it
+could be hit) into one coherent hypothesis rather than two separate loose ends.
+
+### Next steps, in order
+1. Check the remaining ~10 unaudited `fs_buffer_release_ref_UNSAFE_NEGATIVE` call sites for a
+   single-function double-release (less likely now, given the 6/16 sampled were all careful, but not
+   exhausted).
+2. Identify what other RTOS tasks/features can call into this filesystem layer *concurrently* with a
+   DMA transfer in flight, and whether any two of them could plausibly touch the same file/buffer object
+   at once — this is the concrete way to turn the concurrency hypothesis into a real, demonstrated bug.
+3. If static analysis stalls, this is an excellent candidate to test live once JTAG hardware arrives:
+   breakpoint `fs_object_release_ref_UNSAFE_NEGATIVE`/`fs_buffer_release_ref_UNSAFE_NEGATIVE` and watch
+   for the ref count actually going negative during real, ordinary multi-tasking SD-card use (e.g.
+   recording voice memory while browsing the SD menu) — would settle reachability far faster than
+   continuing static tracing.
+
 ## Caveat
 
 None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag

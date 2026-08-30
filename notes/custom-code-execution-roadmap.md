@@ -154,8 +154,13 @@ radio's firmware at all. This track now has a genuinely promising, actively-bein
   and found a **real bug, not a advisory-database match**: `fs_object_release_ref_UNSAFE_NEGATIVE`
   (confirmed reachable from `vfs_close`, the public file-close API) detects a reference count going
   negative (an over-release), **logs it, but does not prevent the cleanup path from running anyway** —
-  a genuine double-free/use-after-free shape, visible directly in the decompiled logic. Still open: a
-  concrete trigger (some call path that releases a file handle one extra, unbalanced time).
+  a genuine double-free/use-after-free shape, visible directly in the decompiled logic. **Confirmed
+  systemic**: the block buffer-cache layer has the identical bug (`fs_buffer_release_ref_UNSAFE_NEGATIVE`,
+  16 call sites vs. 1) — sampled 6, all individually careful, no single-function double-release found yet.
+  **A genuinely promising concurrency lead**: one buffer-cache caller explicitly drops the global FS lock
+  during a hardware DMA transfer — exactly the shape of window a real over-release trigger could hide in,
+  if another concurrently-running task reaches the release path on the same object meanwhile. Not
+  confirmed, but a concrete next step (or a good live-JTAG test once hardware arrives).
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command
