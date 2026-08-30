@@ -187,24 +187,25 @@ boundary-scan-only). Searched for all 4 ICE-register addresses (`ICEREGMDRSTCTL`
 tied to on the board is what actually decides this, with no software override anywhere in the traced boot/
 runtime path.
 
-**Remaining open item: `BSCANP`'s physical net.** Not confirmed which physical net `BSCANP` is tied to.
-The JTAG connector's own pinout table above has exactly one otherwise-unexplained pin — **pin 4,
-unlabeled, pulled to GND** — which is a good structural fit for `BSCANP` (GND = `BSCANP`=0 = the CoreSight
-mode invasive debugging needs, and a pull-down on a mode-select pin broken out to the debug connector is
-exactly the kind of thing worth exposing there) but this is a **plausible hypothesis, not a confirmed
-identification** — no net label for pin 4 has been read off the schematic itself. Worth checking sheet 8
-("MAIN-2", the JTAG cluster) directly for this pin's actual net name before relying on it; if right, it
-also means the board doesn't need any jumper/strap set to reach CoreSight mode — it's already wired that
-way by the pull resistor alone.
+**`BSCANP`'s physical net — confirmed, 2026-08-30, user read directly off the schematic**: `BSCANP` has a
+dedicated **10 kΩ pulldown to GND (`R311`)** and **no other connection anywhere in the schematic** — not
+routed to the JTAG connector (`J491`) or anywhere else, just permanently tied low by this one resistor.
+**This retracts the "plausibly connector pin 4" guess above** — pin 4 is a separate, still-unidentified
+signal, not `BSCANP`. The practical answer is actually simpler than that guess: `BSCANP` is **hardwired
+low at all times**, full stop, no jumper/strap/connector pin involved at all. Combined with the firmware-
+side result above (`PINSETEN` reset value already routes `DBGEN`/`NIDEN` from this pin, and nothing in
+either boot stage ever changes that), this closes the loop completely: **`BSCANP`=0 permanently** →
+Normal operation (CoreSight debug mode) is the board's only possible state, hardware-fixed, with real
+invasive debug enabled by the same hardwiring. Connector pin 4's own identity remains open (see next
+steps below) but no longer matters for this question.
 
-**Bottom line for the user's question**: no extra hurdles expected. Every register this firmware *could*
-have used to disable or reconfigure JTAG (`JPMC0`, the ICE debug-enable block) is left at its power-on-
-reset default across the entire traced boot and runtime path, and the default in both cases is
-"JTAG/debug active" — a standard ARM debug probe should be able to attach and do invasive debug (halt,
-breakpoints, memory read/write) as soon as it's wired up, no firmware-side unlock step needed. The one
-genuine unknown is physical, not firmware — confirming `BSCANP`'s net (very plausibly connector pin 4) —
-and even if that turns out different than expected, it's a hardware/schematic question to resolve with a
-multimeter, not something requiring more Ghidra work.
+**Bottom line for the user's question**: no extra hurdles, confirmed both ways. Every register this
+firmware *could* have used to disable or reconfigure JTAG (`JPMC0`, the ICE debug-enable block) is left at
+its power-on-reset default across the entire traced boot and runtime path, and `BSCANP` — the one signal
+that could have overridden that from the hardware side — is permanently hardwired low by `R311`, with no
+firmware or jumper involvement possible at all. A standard ARM debug probe should be able to attach and do
+real invasive debug (halt, breakpoints, memory read/write) as soon as it's wired up, no unlock step of any
+kind needed on either the firmware or hardware side.
 
 ## Next steps (physical, not further Ghidra work)
 1. ~~Physically locate the header near `IC301`~~ — done, confirmed
@@ -220,5 +221,7 @@ multimeter, not something requiring more Ghidra work.
 6. ~~Confirm the firmware doesn't disable/reconfigure JTAG or the ARM debug-enable signals at runtime~~ —
    done, see "Firmware readiness check" above: everything relevant is left at hardware power-on-reset
    defaults, both boot stages never touch the relevant registers.
-7. New: confirm connector pin 4's actual net name against schematic sheet 8 — likely `BSCANP` (see above),
-   not yet read directly off the schematic.
+7. ~~Confirm `BSCANP`'s physical net~~ — done, user read it directly off the schematic: hardwired low via
+   `R311`, no connector involvement. See above.
+8. New: connector pin 4's own identity is still unresolved (ruled out as `BSCANP`, see above) — no lead on
+   what it actually is; low priority, doesn't block using the debug connector as-is.
