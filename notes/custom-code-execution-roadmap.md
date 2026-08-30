@@ -140,19 +140,19 @@ needing a full rebuild-repackage-reflash cycle each time.
 
 ## Secondary track: genuine a robustness bug surfaces (goal (a) in the strict sense)
 
-Not needed to achieve the core goal (see reframing above), but worth keeping as a lower-priority,
-opportunistic track — useful if a lighter-weight, no-firmware-modification-at-all trigger is ever wanted
-(e.g. proving a concept on a radio you don't want to touch the firmware of at all), or just as an
-interesting standalone question. Candidate surfaces, roughly ordered by how much The owner-reachable,
-complex parsing they involve — none of these have been examined with an eye toward robustness yet,
-this is a survey of *where to look*, not a finding:
+**Promoted, 2026-08-30**: the user specifically wants this pursued properly, not treated as a low-priority
+fallback — a no-reflash trigger on stock firmware is more valuable than the "flash once" approach even
+though that approach is already confirmed feasible, because it doesn't require ever modifying the
+radio's firmware at all. This track now has a genuinely promising, actively-being-traced lead:
 
-- **The SD-card filesystem driver** — `"RENESAS RZ/A1 SD Driver Ver4.01"` (`notes/kernel-rtos.md`),
-  almost certainly built on a FAT filesystem middleware (ChaN's FatFs is the near-universal choice for
-  this class of Renesas BSP). Parsing untrusted FAT structures (long-filename entries, directory
-  chains) from a crafted SD card is a classic embedded Bug class; whether this specific
-  driver/version has known issues, or whether Icom's integration constrains the attack surface, is
-  unexamined.
+- **The SD-card filesystem driver — now the most promising lead, see [[sd-card-filesystem-security]]**.
+  `"RENESAS RZ/A1 SD Driver Ver4.01"` (`notes/kernel-rtos.md`) is plausibly FatFs-derived (Renesas ships
+  FatFs-based middleware for the RZ/A series); a **real, current (July 2026) public disclosure of 7 FatFs
+  CVEs** includes a long-filename buffer overflow in typical *wrapper* code (a disclosed FatFs bug) that matches
+  the shape of Icom's own `vfs_read_dir_entry` (`0x200cbcf0`) closely enough to warrant a full trace —
+  in progress, not yet confirmed reachable. See the dedicated note for the full derivation and the
+  precise next steps (find the vtable-dispatched low-level directory reader and check whether it bounds
+  its writes to the caller's 128-byte stack buffer).
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command
