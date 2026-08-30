@@ -137,6 +137,75 @@ possibly a debug-enable strap, not confirmed.
 ([[icom-ic7300-re-project]]) should now work for both radios as-is — pinout is confirmed identical,
 not just the connector part.
 
+## Firmware readiness check: are the JTAG pins actually live by default? (2026-08-30)
+
+User's ask: trace whether `TCK`/`TMS`/`JP0_0`/`JP0_1`/`TRST` are left in a JTAG-usable state by default, or
+whether the firmware does anything that would need working around first. Read the RZ/A1H hardware manual's
+Ports (54) and Debugger Interface (56) chapters in full and cross-checked every relevant register address
+against both `body.bin` (via the live Ghidra project's exhaustive literal-pool search, the same method
+already validated for `DRESD`/`P2` in [[ic7300-signal-chain]]) and the raw `base.dat` (byte-search, since
+it isn't loaded as its own Ghidra program). **Clean result: JTAG is left fully at its hardware power-on-
+reset defaults for this entire firmware's boot and runtime lifetime** — the exact detail follows.
+
+**Correction to this file's own earlier hedge**: the "`JP0_0`/`JP0_1` are muxed with GPIO port 0 bits 0/1"
+guess above is **wrong** — checked directly against the manual's Port chapter. `JP0_0`/`JP0_1` (**JTAG
+Port 0**, alternate functions `TDI`/`TDO`) and `P0_0`-`P0_5` (**general Port 0**, where `P0_0`/`P0_1` are
+the `MD_BOOT0`/`MD_BOOT1` boot-mode straps from [[memory-map]]) are two **entirely separate** pin groups
+on this SoC, each with its own dedicated register block (`<JPORTn_base>` = `0xFCFE7B00` vs. the general
+`PORTn_base` = `0xFCFE3000` family) — they only share a superficially similar "port 0, bits 0/1" naming
+convention. The boot-mode-strap concern doesn't apply to the JTAG data pins at all.
+
+**`JP0_0`/`JP0_1` (`TDI`/`TDO`) — default state confirmed JTAG-active, and never touched by firmware**:
+- The manual's own reset value for the JTAG port's mode-control register (`JPMC0`, `<JPORTn_base>+0x40` =
+  `0xFCFE7B40`) is `0xFFFF` — bit=1 means "Alternative mode" (i.e. `TDI`/`TDO`, not GPIO) per the register's
+  own bit description. **The chip powers up with these pins already in JTAG mode**, no boot-strap or
+  firmware configuration needed.
+- Exhaustively searched for every literal reference to the JTAG-port register block
+  (`0xFCFE7B00`/`0xFCFE7B20`(`JPPR0`)/`0xFCFE7B40`(`JPMC0`)/`0xFCFE7B90`(`JPMCSR0`)/`0xFCFE7F00`(`JPIBC0`))
+  as a 4-byte little-endian constant: **zero hits anywhere in `body.bin`** (Ghidra's own memory search over
+  the analyzed image) **and zero hits anywhere in the raw `base.dat`** (direct byte search, v1.42). Neither
+  boot stage ever writes to these registers — the power-on-reset default holds for the device's entire
+  operating lifetime as shipped.
+
+**`TCK`/`TMS`/`TRST` — not part of any port structure at all, can't be reconfigured by firmware even in
+principle**: the manual's Port Function table (54.4) lists exactly one JTAG-related port entry, "JTAG Port
+0 (`JP0_0` to `1`)" — `TCK`/`TMS`/`TRST` don't appear anywhere in the ports chapter. They're dedicated,
+non-multiplexed pins with no documented GPIO alternative, matching this file's own schematic-derived pinout
+table above (only `MTDI`/`MTDO` carry a `JP0_x` alt-name; `MTCK`/`MTMS`/`MTRST` don't). Firmware has no
+register-level path to disable or repurpose these three pins.
+
+**The deeper "is invasive debug actually enabled" question — also defaults on, also untouched by
+firmware**: the ARM core's own `DBGEN`/`NIDEN` debug-enable signals (gating whether the CoreSight TAP can
+do invasive things like halt/breakpoint, not just boundary-scan) are controlled by `ICEREGMDRSTCTL`
+(`0xFC00F000`) *only* when `ICEREGJTTRCSEL`'s (`0xFC00F004`) `PINSETEN` bit is `0`. **`PINSETEN`'s own
+reset value is `1`** — meaning by default, `DBGEN`/`NIDEN` are driven directly by the physical **`BSCANP`**
+pin's hardware level, not by any software register at all (Table 56.1: `BSCANP`=0 selects "Normal
+operation (CoreSight debug mode)", the mode real invasive JTAG debugging needs, vs. `BSCANP`=1 for
+boundary-scan-only). Searched for all 4 ICE-register addresses (`ICEREGMDRSTCTL`/`ICEREGJTTRCSEL`/
+`ICEREGCLKPWRCTRL` `0xFC00F014`/`ICEREGLOCKACCESS` `0xFC00FFB0`) the same way — **zero hits in either
+`body.bin` or `base.dat`**. Firmware never touches this register block either, so whatever `BSCANP` is
+tied to on the board is what actually decides this, with no software override anywhere in the traced boot/
+runtime path.
+
+**Remaining open item: `BSCANP`'s physical net.** Not confirmed which physical net `BSCANP` is tied to.
+The JTAG connector's own pinout table above has exactly one otherwise-unexplained pin — **pin 4,
+unlabeled, pulled to GND** — which is a good structural fit for `BSCANP` (GND = `BSCANP`=0 = the CoreSight
+mode invasive debugging needs, and a pull-down on a mode-select pin broken out to the debug connector is
+exactly the kind of thing worth exposing there) but this is a **plausible hypothesis, not a confirmed
+identification** — no net label for pin 4 has been read off the schematic itself. Worth checking sheet 8
+("MAIN-2", the JTAG cluster) directly for this pin's actual net name before relying on it; if right, it
+also means the board doesn't need any jumper/strap set to reach CoreSight mode — it's already wired that
+way by the pull resistor alone.
+
+**Bottom line for the user's question**: no extra hurdles expected. Every register this firmware *could*
+have used to disable or reconfigure JTAG (`JPMC0`, the ICE debug-enable block) is left at its power-on-
+reset default across the entire traced boot and runtime path, and the default in both cases is
+"JTAG/debug active" — a standard ARM debug probe should be able to attach and do invasive debug (halt,
+breakpoints, memory read/write) as soon as it's wired up, no firmware-side unlock step needed. The one
+genuine unknown is physical, not firmware — confirming `BSCANP`'s net (very plausibly connector pin 4) —
+and even if that turns out different than expected, it's a hardware/schematic question to resolve with a
+multimeter, not something requiring more Ghidra work.
+
 ## Next steps (physical, not further Ghidra work)
 1. ~~Physically locate the header near `IC301`~~ — done, confirmed
    populated via photos.
@@ -148,3 +217,8 @@ not just the connector part.
    was sourced against.
 5. A standard ARM debug probe (J-Link or SWD/JTAG-compatible) should
    work once wired, assuming standard ARM JTAG/SWD signal behavior.
+6. ~~Confirm the firmware doesn't disable/reconfigure JTAG or the ARM debug-enable signals at runtime~~ —
+   done, see "Firmware readiness check" above: everything relevant is left at hardware power-on-reset
+   defaults, both boot stages never touch the relevant registers.
+7. New: confirm connector pin 4's actual net name against schematic sheet 8 — likely `BSCANP` (see above),
+   not yet read directly off the schematic.

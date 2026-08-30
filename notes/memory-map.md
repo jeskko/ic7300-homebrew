@@ -40,6 +40,10 @@ above windows; not yet pinned down to a specific base.
 - `P0_1` / `MD_BOOT1` pulled down
 - `P7_0` / `MD_BOOT2` pulled up
 - → **Boot mode 3: serial flash booting**
+- **Not the same pins as JTAG** — `P0_0`/`P0_1` (general Port 0, these boot straps) are physically separate
+  from `JP0_0`/`JP0_1` (JTAG Port 0, `TDI`/`TDO`) despite the similar naming; see
+  [[hardware-debug-access]]'s "Firmware readiness check" section for the full manual-sourced distinction —
+  an earlier hedge in that file conflating the two has been corrected.
 - Exception vector table lives at `0xffff0000` at boot.
 - Code execution for the loaded image starts around `0x18000000` (start of
   the SPI multi-I/O bus area, channel 0) — consistent with boot-mode-3
