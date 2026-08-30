@@ -2485,6 +2485,88 @@ one; worth a fresh, direct decompile/read of the region rather than assuming a G
 ~163 more entries project-wide, very plausibly also stale leftovers from the same closed sweep, left alone
 since a full re-sweep wasn't asked for this session).
 
+**Full project-wide sweep, same day, user asked for it anyway**: a background agent processed all 163
+remaining bookmarks. 155 confirmed stale and deleted; 8 were genuinely broken. Fixed all 8 collaboratively
+with the user in the Ghidra GUI over several rounds — worth recording the process, not just the outcome,
+since it surfaced a real methodology lesson: one of the 8 (`0x200ba930`) looked like it might be data
+rather than code, because a `references_to` query showed a "READ" reference into it from `0x200ba824`.
+That reference turned out to be a phantom — `0x200ba824` itself was misdecoded (a `"BMP\0"` string read as
+two fake Thumb instructions, one of which happened to be a bogus `ldr` computing exactly that address) —
+a second, previously-unflagged instance of the same underlying bug, not caught by the original bookmark
+sweep. The thing that actually settled it was finding a **real branch instruction** (`bge LAB_200ba92c` at
+`0x200ba884`) targeting the same address range — a genuine branch target is solid proof of code in a way a
+plain data-read reference isn't, especially when the "reader" itself might be corrupted. **Lesson for next
+time**: when disambiguating code vs. data during this kind of cleanup, prefer control-flow (branch/call)
+references over data-read references, and always check whether the referencing instruction itself is real
+before trusting what it points to.
+
+Final outcome, all 8: 5 fixed as code (`0x2000581c`, `0x200083e0`, `0x200ba7dc`, `0x200ba96c`, `0x200ba930`
+as ARM; `0x20188354` as **Thumb**, not ARM — the user's own correct call after my first guess was wrong),
+3 fixed as data (`0x200bbc54`/`0x200bbc5c` — `"us0*"`/`"sd0*"` tags; `0x200ba820`/`24`/`28` — `"DAT"`/
+`"BMP"`/`"PNG"` tags, found once `0x200ba824`'s fake-instruction problem above was fixed). All 179 original
+bookmarks now accounted for.
+
+## Following up on the bookmark-cleanup fixes: what the newly-uncovered code actually does (2026-08-31)
+
+User's ask: don't just leave the 8 fixed spots as bare addresses — decompile them and see what's really
+there. Two clusters turned out to matter.
+
+### The `"DAT"`/`"BMP"`/`"PNG"` tag table's real owner — corrected a wrong guess
+
+First guess (recorded in `notes/kernel-rtos.md`'s `bmp_capture_task` row) was that this 3-entry tag table
+plus the neighboring function (`0x200ba82c`) was a capture-format selector for the BMP screen-capture
+feature, given the physical proximity of `"BMP"`. **Wrong — retracted after actually decompiling it.**
+The real strings the code checks are `s_TXT_200baa8c`/`s_HTM_200baa90` (Ghidra had already auto-named
+these, just hadn't been looked at) — RTTY's own two log formats, not BMP/PNG. The `"DAT"`/`"BMP"`/`"PNG"`
+tags aren't referenced by either function actually decompiled; they belong to some other, not-yet-located
+caller nearby. Good reminder not to trust a proximity-based guess over what the code itself references.
+
+### A real SD-card filename/directory-listing mechanism, plausibly RTTY's own
+
+- **`FUN_200ba82c`** (called from `0x200bb428`): checks a directory entry's extension against `"TXT"`/
+  `"HTM"`. On match, builds a 20-byte list-entry record — exactly `rtty_decode_log_service`'s own
+  "pending record" size (`0x14` bytes, see the section above). Caps at 1000 entries, tail-calling
+  `0x20021320(1)` (a shared overflow/error handler) past that.
+- **`FUN_200ba938`** (called from `0x200bb45c`): filters out `.`/`..` (confirmed by reading the raw bytes
+  at `0x200baa94`/`98` — literally `"."` then `".."`), then for real entries starting with `"20"` (a year
+  prefix) calls the same ASCII-digits-to-packed-nibbles date parser `voice_tx_memory_control_task` already
+  uses to resolve numbered message slots, then **`FUN_200ba490`** — a real short-filename (`8.3`)
+  numeric-tail scanner: finds a trailing `~N` in the filename, verifies everything after the `~` is
+  digits, and calls **`FUN_2017c8f6`** (confirmed a `strtol`-shaped wrapper — saves/restores the task's
+  own errno-equivalent around a call to `FUN_2017ca74(str, 0, 10)`) to parse `N`, returning `N+1` (or `1`
+  if no tilde-suffix) clamped to the caller's running counter. **This is the classic DOS/FAT short-filename
+  disambiguation scheme** (`LONGFI~1.TXT`, `LONGFI~2.TXT`, …) — i.e. this function computes the next free
+  numeric suffix to avoid a collision when auto-generating a new date-stamped filename.
+- Both functions share three state-pointer globals (`DAT_200ba814`/`818`/`81c`, a "remembered
+  index/matching entry" tracker) and both feed the same overflow handler — clearly two halves of one
+  directory-scan operation, not independent features.
+
+**Reading together**: this is very plausibly the real "list already-recorded logs, generate a unique
+RTC-date-stamped filename" mechanism behind `rtty_decode_log_poll_task`'s own file writes — a piece of
+infrastructure this project has referenced (both `rtty_decode_log_write` and `voice_recording_file_task`
+build RTC-date-stamped filenames) without ever tracing the actual naming/collision-avoidance logic before.
+
+**Not resolved**: the containing dispatcher (the code at `0x200bb400`-`0x200bb45c` that calls both
+functions) isn't bounded as a Ghidra function at all — `functions.get`/`list` find nothing there, it's just
+real, well-formed, disassembled ARM code with no defined boundary. Tried to find its real owner by checking
+whether it's part of real CI-V command handling — the immediate neighborhood has symbols named
+`civ_table_id00` through `civ_table_id08` — but this came up **negative**: read all 43 real entries of
+`g_civ_handler_table` (`0x2018ab84`) directly, and none of their handler-function pointers land anywhere
+in this cluster (they're all in `0x2000b`-`0x2000f`; this cluster is `0x200b9`-`0x200bb7`). **The
+`civ_table_idNN` labels near this cluster are not actually CI-V handlers** — likely a stale mislabel from
+an earlier session, or a name belonging to some other, unrelated table. Retracted that connection rather
+than asserting it. `civ_table_id08` itself turned out to be a genuine zero-byte stub, referenced only as
+`DATA` from `0x203360b0` — a real function-pointer-table entry, just not the CI-V one.
+
+**Also found nearby, tangential, not chased further**: `FUN_200ba38c` — a character-set conversion
+routine (checks a Shift-JIS-style multi-byte length via `thunk_FUN_200bcd18`, then does byte-range
+transformations matching a half-width/full-width katakana conversion table shape). Unrelated to the
+filename-dedup thread, just a close neighbor in this dense code region.
+
+**Next step if picked up again**: find the real owner of the `0x200bb400`+ dispatcher — either give it a
+proper Ghidra function boundary and read its full body, or search for what calls into `0x200bb1cc`/
+`0x200bb400` via a broader reference/data-table search than the CI-V one already ruled out.
+
 **Bottom line for the SSTV question this was chasing**: RTTY's own "where do decoded characters actually
 come from" gap has the *same shape* as SSTV's "where do demodulated audio samples come from" gap — both
 dead-end at a boundary between the feature-level code (fully traced, generic file-I/O) and whatever
