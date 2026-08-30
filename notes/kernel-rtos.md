@@ -136,10 +136,33 @@ flow ([[firmware-update]]). Full search log and detail in the history file.
    FreeRTOS API is identified by comparing call-site argument shapes
    against `task.h`/`queue.h`/`semphr.h` signatures.
 
-*(Later sessions accumulated more open items than are listed here — the real CI-V command dispatcher
-consumer, `kernel_start`'s own mystery task, `thunk_FUN_2007ea68`'s peripheral identity, the SCIF1
-turnaround/service-mode triggers, etc. See the "Session handoff" sections in the history file for the
-fuller, more current running list.)*
+*(Later sessions accumulated more open items than are listed here — `kernel_start`'s own mystery task,
+`thunk_FUN_2007ea68`'s peripheral identity, the SCIF1 turnaround/service-mode triggers, etc. See the
+"Session handoff" sections in the history file for the fuller, more current running list.)*
+
+## CI-V command dispatcher — found, and one genuine undocumented command (2026-08-30)
+
+The long-open "real CI-V command dispatcher consumer" item above is resolved. Full derivation in the
+history file's "The real CI-V command dispatcher found, and a genuine undocumented command (0x2A)
+confirmed" section — summary:
+
+- **`civ_rx_frame_stage_and_dispatch`** (`0x2000b258`) → **`civ_dispatch_lookup_validate`** (`0x2000b03c`,
+  indexes **`g_civ_cmd_table`**, base `0x2018aa2c`, 43 entries covering wire command bytes `0x00`-`0x2A`,
+  each `{handler_base_idx; subcmd_list ptr}`) → **`civ_dispatch_invoke_handler`** (`0x2000acd8`, permission-
+  gates against **`g_civ_handler_table`**, base `0x2018ab84`, 16 bytes/entry, function pointer at `+4`) →
+  the real per-command handler.
+- Cross-checked entry-by-entry against the real manual (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`,
+  pages 19-2 to 19-13): every unimplemented table slot (`0x0C`/`0x0D`/`0x12`/`0x1D`/`0x1F`/`0x20`/`0x22`/
+  `0x23`/`0x24`/`0x29`) matches a real gap in the manual's own command list — strong confirmation this
+  table really is CI-V's (unlike the retracted `sdcard_file_rpc_dispatch_task` false lead below).
+- **Command `0x2A`, subcommand `0x01` is real, fully implemented, and completely absent from the manual**
+  (whose table ends at `28 00`) — **the undocumented CI-V command**. Handler:
+  **`civ_cmd_2a_handler_UNDOCUMENTED`** (`0x20010710`). Takes one further data byte (0-3): `0`=disable,
+  `1`=validate (incl. a frequency-ceiling check) then enable + trigger a 9-function subsystem re-sync,
+  `2`/`3`=set flags on a sibling state machine. The "enable" path bit-twiddles two registers
+  (`DAT_2001f50c`/`DAT_2001f510`) in tandem — a real guarded hardware toggle, not a no-op. **What it
+  physically controls is not yet identified** — those two addresses are RAM-shadowed, not raw MMIO, so the
+  real sink needs tracing (or JTAG). See the history file for the full open-items list.
 
 ## Living reference: full boot-time task catalog
 

@@ -2097,3 +2097,115 @@ real kernel-internal machinery, not a nameable application feature the way `voic
 `spectrum_scope_fft_task` turned out to be. Recording this as a distinct, legitimate category (kernel-internal,
 not mystery, not a feature) rather than forcing it into "fully resolved" or leaving the old "generic loop"
 description standing uncorrected.
+
+## The real CI-V command dispatcher found, and a genuine undocumented command (0x2A) confirmed (2026-08-30)
+
+User's ask: find the CI-V command table/handler and check for undocumented commands — picking up exactly
+where the 29th session's "civ_command_dispatch_task retraction" section left off (see above): "Only the 4
+direct readers [of the RX-ready flag global] were checked at the top level — their own callers weren't
+individually walked." This session walked that chain to the end.
+
+**The chain**: `civ_frame_rx_statemachine` stores a completed RX frame into a shared buffer pointed to by
+`DAT_200115c8` (RAM `0x20396ad4`). That pointer is *also* held by a second, independent global,
+`DAT_2000b210` (found by reading `DAT_200115c8`'s actual pointer *value* and searching for references to
+that literal address rather than to the pointer-variable's own address — the earlier session's search only
+covered the latter, which is why it stalled). `DAT_2000b210` sits in a cluster of ~20 sibling globals
+(`0x2000b20c`-`0x2000b254`) belonging to a completely different code region (`0x2000axxx`-`0x2000bxxx`,
+far from the SCIF0 driver's own `0x20010xxx`-`0x20012xxx` cluster) — this is the actual application-level
+CI-V consumer, not anything previously named.
+
+- **`civ_rx_frame_stage_and_dispatch`** (renamed from `FUN_2000b258`, called from 3 sites in unrelated
+  polling loops — serviced piggybacked on a periodic tick, not a dedicated CI-V task): on seeing the RX-ready
+  flag set, copies the received frame's payload (`RX_buf+1` = src/cmd/subcmd/data) into a scratch buffer
+  (`DAT_2000b228`) and the frame length into a small work struct, then calls the real dispatcher, then — if
+  the dispatcher produced a reply — copies the reply back into the RX buffer at offset `0x66` with its
+  length at offset `0xca`. This is exactly the `pcVar4+0x66`/`pcVar4[0xca]` pair the *TX* side
+  (`FUN_20011384`, `0x20010xxx` cluster) was already known to read to build an outgoing frame — closes the
+  loop between RX and TX that was previously only traced halfway from each end.
+- **`civ_dispatch_lookup_validate`** (renamed from `FUN_2000b03c`): reads the frame's cmd byte
+  (`g_civ_rx_copy_buf+1`), rejects anything `>= 0x2b`, then indexes **`g_civ_cmd_table`** (renamed from
+  `DAT_2000b250`'s pointed-to table, base `0x2018aa2c`, 43 entries × 8 bytes, one per possible cmd byte
+  `0x00`-`0x2A`): `{u8 handler_base_idx; u8 pad[3]; char *subcmd_list}`. `subcmd_list` is a byte string of
+  accepted subcommand values terminated by `0xFD`; a leading `0xFE` sentinel means "this command doesn't
+  validate a subcommand byte at all, always dispatch to `handler_base_idx`" (used for VFO-select/scan/
+  split/send-CW-message — commands whose data isn't a simple enum). A real match adds the subcommand's
+  position in the list to `handler_base_idx`, giving the final index into **`g_civ_handler_table`** (renamed
+  from `DAT_2000b234`, same base region immediately following the first table — `0x2018ab84` — confirmed
+  contiguous: `0x2018aa2c + 43*8 == 0x2018ab84` exactly): 16 bytes/entry, `{u8 permission_flags; 3 packed
+  length-bound bytes; void *handler_fn}`.
+- **`civ_dispatch_invoke_handler`** (renamed from `FUN_2000acd8`): permission-gates the call against a
+  current-mode byte (`*DAT_2000b230`, 3 possible modes) and the entry's flag byte, then calls
+  `handler_fn(remaining_length)` through the function pointer at entry+4, and on success/failure paths
+  clears the two "reply pending" flags (`RX_buf[0xcb]`/`[0xcc]`) the earlier session had found written by
+  `civ_frame_rx_statemachine` but never traced to a reader — that reader is this function, closing that
+  loose end too.
+
+**Cross-checked the whole table against the real manual** (user supplied the exact location this session:
+`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`, pages 19-2 through 19-13, full "Command table" and "Data
+content description" sections). Every `handler_base_idx == 0` slot (meaning: `civ_dispatch_lookup_validate`
+outright rejects the command, no handler at all) matches a **real gap in the manual's own command list**:
+`0x0C`/`0x0D` (manual jumps `0B`→`0E`), `0x12` (jumps `11`→`13`), `0x1D` (jumps `1C`→`1E`), `0x1F`/`0x20`
+(jumps `1E`→`21`), `0x22`/`0x23`/`0x24` (jumps `21`→`25`), `0x29` (manual's table ends at `28 00`, nothing
+after). This is strong, independent confirmation that `g_civ_cmd_table`'s ID space really is the literal
+CI-V wire command byte (unlike the earlier, retracted `sdcard_file_rpc_dispatch_task` false lead, whose
+table shape looked superficially similar but whose IDs disagreed with the manual at command `0x03`). Every
+implemented command's decoded subcommand list also matches the manual closely where checked in detail (e.g.
+`0x28`'s single subcommand `0x00` — manual: "28 00, data 00 to 08" — matches exactly; `0x07`'s
+`00/01/A0/B0` — manual: VFO A/VFO B/equalize/exchange — matches; `0x0E`'s 14-entry scan list matches the
+manual's scan-mode table one-for-one).
+
+**The one exception: `0x2A` is real and implemented, with no manual entry anywhere.** `g_civ_cmd_table[0x2a]`
+has `handler_base_idx = 0x8f` and a genuine (non-`0xFE`) subcommand list accepting exactly one value,
+`0x01` — not a stub, not a duplicate alias, not zeroed. The manual's command table (`IC-7300_ENG_FM_12b.pdf`
+p.19-8) ends at `28 00` with no `0x29` or `0x2A` entry at all, in any sub-table, anywhere in the 12-page
+command reference. **This is the undocumented CI-V command** the original investigation (28th/29th sessions)
+set out to find.
+
+**`civ_cmd_2a_handler_UNDOCUMENTED`** (renamed from `FUN_20010710`, the real `0x2A 01` handler,
+`g_civ_handler_table[0x8f]`'s function pointer): takes one further data byte (min=max length 1, matching
+the manual-style `00 to 0x03`-shaped commands), read from a small shared state struct
+(`*(DAT_20010868+3)`, a struct also touched by 8 sibling handler functions in the same `0x20010xxx`
+cluster — an ordinary "current handler state" scratch area, not `0x2A`-specific) — not yet traced back to
+confirm it's literally the wire data byte verbatim, but the shape (0/1/2/3 four-way branch) matches every
+other simple enum-style CI-V command in this firmware:
+- `0`: calls `FUN_20066c14(0)` — "disable"
+- `1`: runs a validation chain (`FUN_20066720`/`FUN_2005361c`/`FUN_200623bc` checked against a frequency
+  ceiling at `DAT_200108ac+0x300`/`FUN_20062b3c`/`FUN_2001344c`) and only on success calls a 9-function
+  subsystem re-sync (`FUN_200663d8`, itself calling `FUN_2002fd94(1)`/3 more `FUN_20033xxx` calls/
+  `FUN_2005361c` again/`FUN_20065db8`/`FUN_20058fec`/`FUN_2004b74c`/`FUN_20061020`) then `FUN_20066c14(1)`
+  — "enable, gated on a frequency check and several subsystem preconditions"
+- `2`/`3`: call `FUN_20066c38(1)`/`FUN_20066c38(2)`, a sibling function with its own internal state check
+  (`*(DAT_20066eac+3)`) and flag writes (`DAT_20066eac+1`/`+2`)
+
+`FUN_20066c14` is a real hardware access, not bookkeeping: it bit-ORs two registers
+(`DAT_2001f50c`/`DAT_2001f510`) in tandem — both get the same enable bit written into two different bit
+positions each, the classic shape of driving two GPIO/peripheral pins together — and zeroes a 3-field
+status struct (`DAT_2001f514`/`518`/`51c`). **Genuinely a guarded hardware enable/disable toggle, not a
+no-op or an alias of a documented command.**
+
+**What it does isn't identified yet.** `DAT_2001f50c`/`DAT_2001f510` are RAM addresses (`0x2001f5xx`, on-chip
+RAM range), not raw MMIO — they're a shadow/staging copy of *something*, not directly a GPIO peripheral
+register, so identifying the real pin needs tracing where this shadow state eventually gets flushed to real
+hardware (a register write elsewhere, not found this session) or cross-referencing against the schematic
+if a plausible candidate net turns up. The frequency-ceiling gate on the "enable" path (`DAT_200108ac+0x300`)
+is the most promising lead for guessing *domain* (something that's only valid below some frequency —
+consistent with, but not proof of, an antenna-tuner-adjacent or band-limited RF-chain control, distinct
+from the already-documented `1C 01` tuner command since that one's fully accounted for separately) — not
+confirmed.
+
+**Open items for a future session**:
+1. Trace `DAT_2001f50c`/`DAT_2001f510` to their real hardware sink to identify the actual pin/peripheral
+   `0x2A 01` controls — the single most valuable next step, likely resolves what this command is *for*.
+2. Confirm `*(DAT_20010868+3)` really is the verbatim CI-V data byte (walk the shared `0x20010xxx`-cluster
+   struct-fill code that presumably runs before every sibling handler in that cluster, not just this one).
+3. Decode the frequency-ceiling table at `DAT_200108ac+0x300` (what unit, what values) — would help confirm
+   or refute the "band-limited" domain guess above.
+4. Live JTAG (once hardware arrives, see [[icom-ic7300-re-project]]) could settle this fast: send
+   `FE FE <addr> E0 2A 01 01 FD` and watch for any visible radio behavior change, or breakpoint
+   `civ_cmd_2a_handler_UNDOCUMENTED` and watch the two GPIO-shaped registers.
+
+Also worth noting for anyone revisiting this: the manual PDF's real path is
+`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf` (user supplied this exact path this session after the
+28th/29th sessions apparently had a temporary copy that wasn't saved anywhere locatable — future sessions
+needing the CI-V command table, or any other section of the full manual, should read directly from here
+rather than re-deriving from notes).
