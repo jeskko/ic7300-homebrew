@@ -355,6 +355,73 @@ target.
    operations (e.g. start a large file copy, then try to close/reopen something else) would settle
    reachability far faster than continuing this trace statically.
 
+## Following the next-steps list: two results, both cooling the leading hypothesis (2026-08-30, same day)
+
+Continued with the two concrete next steps from the previous section.
+
+### Step 1: the vtable's "open" implementation — not statically findable, and probably doesn't matter
+
+Tried to read the concrete vtable by walking the real object chain: `DAT_200ca64c` (root device pointer,
+link-time constant) → the root object at `0x20390968` → **entirely `0xFF` (uninitialized RAM) in the
+static image**. The whole device/mount-point tree is built dynamically at boot/mount time, not baked into
+the binary — there is no static vtable constant to simply read off.
+
+Traced the path-resolution machinery instead (`FUN_200c9950`, the mount-point-name matcher walked by
+`FUN_200ca70c`) to understand the real structure: it's a **linked list of registered mount points**
+(matched by name, e.g. a drive letter), not a vtable dispatch table directly — the earlier "obj+0x10 =
+vtable" mental model was conflating two different structs (this mount-point-list node, and the actual
+per-file inode object several indirections downstream). Not fully unwound to a literal vtable address,
+but not needed either — see the next result.
+
+### Step 2 (revised): no path-based open-deduplication found
+
+The original hypothesis was "two `vfs_open` calls on the same file might share one under-refcounted
+object." Swept every reader of the filesystem-global pointer (`DAT_200c754c`) looking for a "find an
+already-open file by path/identity" lookup — found none. What *does* exist at that global:
+- `FUN_200c7910`: a **per-task** filesystem-context allocator (a free-list keyed by task ID, matching the
+  `"GRP_FS: no task environment"` string) — unrelated to file identity.
+- `FUN_200c7570`/`FUN_200c75b4`: walk that *same* per-task list, again keyed by task ID.
+- `FUN_200c767c`: dispatches through a registered callback slot on the fs-global struct itself (looks
+  like a flush/sync hook), not a per-file cache either.
+
+No function anywhere in this sweep compares a path string or file identity against a list of already-open
+files. **This is a real negative result, not just "didn't find it yet"** — it substantially weakens the
+"duplicate-open shares one object" hypothesis. This filesystem most plausibly does independent path
+lookups and independent object allocations per `open()` call, with no de-duplication layer at the
+file-object level (only the buffer cache, already audited, has that kind of shared/reference-counted
+object model).
+
+### A genuine synchronization primitive found — also cools the concurrency hypothesis
+
+While tracing `fs_close_fd`'s busy-wait loop (`while (busy bit set) { ...; FUN_200c7a00(...); }`),
+decompiled `FUN_200c7a00` (renamed **`fs_task_wait_on_object`**) and found a real, correctly-implemented
+**condition-variable pattern**: records what's being waited on, increments a waiter count, drops the
+outer filesystem lock, blocks on a per-task semaphore until signaled, then re-acquires the lock and
+decrements the waiter count. This is used from **13 call sites** across the cluster — a real, working
+interlock, not a naive/missing one. This means a straightforward "close a file while another task is
+still using it" race is plausibly **already guarded against by design**, at least at the level this
+mechanism covers (the file's own busy bit) — weakening (not eliminating) the DMA-lock-drop concurrency
+hypothesis from the previous section, since dropping the *global* lock during DMA doesn't necessarily
+leave the *file* unprotected if its own busy bit is independently held for the operation's duration
+(not individually re-verified for every operation, but the existence of a real, heavily-used interlock
+mechanism changes the prior).
+
+### Honest status after this pass
+
+Both leading hypotheses for *how* to trigger the confirmed-real unenforced-negative-refcount bug took
+real hits this round — not refuted outright, but weakened by genuine negative evidence (no open-dedup
+found; a real busy/wait interlock exists and is heavily used). The underlying code defect
+(`fs_object_release_ref_UNSAFE_NEGATIVE` logging-but-not-preventing an over-release) remains real and
+confirmed — what's still missing is a concrete, demonstrated way to reach it. Continued pure static
+tracing from here has diminishing returns without a much larger cross-task data-flow effort (enumerating
+every caller of every SD-touching feature and checking pairwise interleavings by hand). **This is now a
+good point to prefer live testing over more static tracing**: once JTAG hardware arrives, breakpointing
+`fs_object_release_ref_UNSAFE_NEGATIVE`/`fs_buffer_release_ref_UNSAFE_NEGATIVE` and watching for the
+`"GRP_FS: negative ..."` log lines during heavy, varied real-world SD-card use (concurrent voice
+recording + SD menu browsing + a firmware update, deliberately-interrupted operations, rapid
+card-eject/reinsert) would settle reachability far faster than further static analysis, and would also
+catch any bug in code this session hasn't looked at at all.
+
 ## Caveat
 
 None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag

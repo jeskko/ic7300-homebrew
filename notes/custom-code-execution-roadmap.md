@@ -161,11 +161,14 @@ radio's firmware at all. This track now has a genuinely promising, actively-bein
   same-variable double-release by construction. **But the file-object version has no such defense** — it
   operates on the raw object pointer directly, protected only by its caller (`fs_close_fd`) invalidating
   *that specific fd struct's* own field, which does nothing against two *different* fd structs sharing one
-  underlying object. Sharpened the whole investigation to one concrete question: does opening the same
-  file twice correctly find-and-share the existing object with a proper refcount increment, or can it
-  yield two independently-closable handles on one under-refcounted object? Traced as far as a
-  vtable-dispatched per-device "open" implementation not yet located — the next concrete target, or a good
-  live-JTAG test once hardware arrives (breakpoint the release function during real overlapping SD use).
+  underlying object. **Follow-up: both leading trigger hypotheses took real hits.** Swept the filesystem-
+  global's other readers looking for a "find already-open file by path" cache — **found none**, weakening
+  the duplicate-open hypothesis. Traced `fs_close_fd`'s busy-wait loop and found a real, correctly-
+  implemented condition-variable primitive (`fs_task_wait_on_object`, 13 call sites) — a genuine, heavily-
+  used interlock, weakening the naive concurrency-race hypothesis too. The underlying code defect remains
+  real and confirmed; a concrete trigger remains elusive after real effort. **Live JTAG testing is now the
+  better next step** over further static tracing — breakpoint the release functions during heavy real-world
+  concurrent SD-card use and watch for the `"GRP_FS: negative ..."` log lines.
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command
