@@ -89,15 +89,44 @@ relay control.
 
 ## Tuner unit (separate board)
 
-Source: service manual "[TUNER UNIT]" IC list screenshot (2026-08-27).
-No firmware-relevant chips — comparators (SWR/protection sensing) and
-motor drivers for the internal antenna tuner's motorized L-network.
+Source: service manual "[TUNER UNIT]" IC list screenshot (2026-08-27), refined 2026-08-30 with the
+user's own parts-list-plus-relay-net reading of the tuner schematic sheet. **Correction**: the
+BU2092FV-E2 ×4 were originally guessed as "motor driver ICs" for a motorized roller inductor — they're
+actually serial-in/parallel-out latched relay drivers (shared `TDAT`/`TCLK` data/clock, `TOE` output-
+enable, one `TSTBn` latch-strobe per chip — matches the schematic-confirmed `TSTB1`-`TSTB4`/`TCLK`/
+`TDAT` cluster on main-CPU pins `P7_1`-`P7_6`, see `notes/ic7300-signal-chain.md`). The IC-7300's tuner
+is a **relay-switched stepped L-network**, not a continuously-variable motor-driven roller inductor.
 
 | Ref | Part | Role |
 |---|---|---|
 | IC1701 | BA2903SFVM-TR | Quad comparator — likely SWR/protection sensing |
 | IC1901 | NJM2904CRB1-TE1 | Dual op-amp |
-| IC2811 / IC2821 / IC2831 / IC2841 | BU2092FV-E2 ×4 | Motor driver ICs (Rohm) — drive the tuner's motorized/relay-switched inductor and capacitor banks |
+| IC2811 / IC2821 / IC2831 / IC2841 | BU2092FV-E2 ×4 | Serial-in/parallel-out relay drivers (Rohm) — share `TDAT`/`TCLK`/`TOE`, individually latched via their own `TSTB1`-`TSTB4` |
+
+### Tuner relay network (living reference)
+
+Each `BU2092FV-E2` drives a fixed group of the network's relays, one active-low output per relay
+(`[signal]RS` naming per the schematic). `TSTBn` latches that chip's shifted-in byte to its outputs.
+
+| Chip | Latch | Outputs → relay |
+|---|---|---|
+| IC2811 | `TSTB1` | `NL0RS`→RL2211+RL2221 (bypass), `NL1RS`→RL2011, `NL2RS`→RL2021, `NL3RS`→RL2031, `NL4RS`→RL2041, `NL5RS`→RL2051 |
+| IC2821 | `TSTB2` | `NL6RS`→RL2061, `NL7RS`→RL2071, `NL8RS`→RL2081, `NL9RS`→RL2091, `NC12RS`→RL2121 |
+| IC2831 | `TSTB3` | `NC3RS`→RL2131, `NC4RS`→RL2141, `NC5RS`→RL2151, `NC6RS`→RL2161, `NC7RS`→RL2171, `NC8RS`→RL2181 |
+| IC2841 | `TSTB4` | `NC9RS`→RL2191, `NCINRS`→RL2251, `NCOUTRS`→RL2261, `NCREDRS`→RL2281, `NATT1RS`→RL1011, `NATT2RS`→RL1021 |
+
+Working read of the network's function (user's hypothesis, not yet cross-checked against firmware
+relay-pattern data): `RL20xx` relays (the `NL`-driven group) switch **inductance** steps into the
+antenna line; `RL21xx` relays (`NC1`-`NC9`, despite the "C" suggesting capacitance, numbered
+differently from the `NL` group) switch **capacitance** steps; `RL2211`/`RL2221` (both driven by
+`NL0RS`) bypass the added L/C network entirely (straight-through); `RL1011`/`RL1021` (`NATT1`/`NATT2`)
+bypass TX-related measuring components, plausibly disabled/don't-care during receive. This gives 9
+inductance steps + 9 capacitance steps + a bypass + 2 measurement-bypass relays = the tuner's real
+switched-element inventory — not yet matched against a firmware-side relay-pattern table (see
+`notes/kernel-rtos.md`'s CI-V section for the `tuner_engage_gpio_toggle`/`tuner_start_tuning_sequence`
+code that presumably drives this network; the exact code path that serializes a relay pattern out over
+`TDAT`/`TCLK` hasn't been located yet — the raw `P7` port data register is touched only by the generic
+one-time boot GPIO init, so the runtime path must go through a different (not yet found) indirection).
 
 ## Notably absent from this list
 

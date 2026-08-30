@@ -78,10 +78,13 @@ by but not built on top of the prior work there.
   60 MHz frequency-ceiling check and a subsystem re-sync. **Traced further the same day: it converges
   on the exact same hardware-engage call (`tuner_engage_gpio_toggle`) as the real, documented `1C 01`
   antenna-tuner command's own "start tuning" path** — reads as an independently-coded, more lightly
-  gated alternate/bypass trigger for the tuner engage hardware, plausibly a factory/test shortcut. The
-  underlying registers' real physical pins are still unidentified (RAM-shadowed, not raw MMIO — needs
-  further tracing or JTAG to fully confirm). See
-  `notes/kernel-rtos.md`'s "CI-V command dispatcher" section.
+  gated alternate/bypass trigger for the tuner engage hardware, plausibly a factory/test shortcut.
+  **Correction**: the two registers it touches turned out to be a generic, heavily-shared status-flags
+  byte pair (60+ unrelated call sites), not tuner-specific GPIO state as first guessed — the real
+  relay-shift-out code driving the tuner's schematic-confirmed relay network (user-supplied parts/net
+  map now in `notes/ic7300-hardware.md`) hasn't been located yet (the raw port register it would use
+  has only the generic one-time boot-init reference). See `notes/kernel-rtos.md`'s "CI-V command
+  dispatcher" section.
 - ✅ **Real service/factory mode fully decoded, end to end**: entry condition (front-panel
   MENU+FUNCTION held **and** the REMOTE/CI-V jack's contacts shorted, detected via a raw GPIO
   pin-read of the CI-V receive pin), the boot-time code that checks it, and the reduced-

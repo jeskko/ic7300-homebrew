@@ -170,11 +170,20 @@ confirmed" section — summary:
   with that same documented path. Reads as an **alternate/bypass trigger for the tuner engage hardware**,
   independently coded with lighter gating (skips the documented path's TX-state/split/mode checks) —
   plausibly a factory/production-test shortcut, not confirmed as literally "the tuner command" since its
-  own state machine (`g_civ_2a_state`) is fully independent. **Still open**: `DAT_2001f50c`/`DAT_2001f510`'s
-  real hardware sink — RAM-shadowed, matches the schematic-confirmed tuner-interface signal group
-  (`TCLK`/`TDAT`/`TSTB1`-`4`/`TCON`/`IMPI`/`PHASEI`, see `notes/ic7300-signal-chain.md`) but the write-back
-  to real MMIO/serial-shift-out isn't traced yet — needs that trace or live JTAG to go from "shares the
-  primitive" to "confirmed to move the tuner network". See the history file for full derivation.
+  own state machine (`g_civ_2a_state`) is fully independent.
+- **Correction, same day**: `DAT_2001f50c`/`DAT_2001f510` are **not** a GPIO shadow as first guessed —
+  they're pointers to `0x203902d4`/`0x203902d6`, a generic shared status/interlock flags byte pair with
+  60+ unrelated call sites across the firmware (checked via `references_to`), not tuner-specific state.
+  The user supplied a real schematic/parts-list map of the tuner's relay network (4× `BU2092FV-E2`
+  serial-in/parallel-out relay drivers, shared `TDAT`/`TCLK`/`TOE`, individually latched by `TSTB1`-`4`
+  — full relay map now in `notes/ic7300-hardware.md`), but the raw P7 port data register
+  (`0xFCFE301C`) that would carry those signals has exactly one reference in the whole image — the
+  generic one-time boot GPIO init, same signature as the already-solved `DRESD`/`P2_6` case — so the
+  real runtime relay-shift-out code goes through some other, not-yet-found indirection. **Still open**:
+  find that code (check `g_ppr_register_base`, `0x2002a0d0`, an already-named but unexplored lead from
+  earlier signal-chain work) or fall back to live JTAG, to go from "shares the tuner's call-site
+  identity" to "confirmed to physically move the relay network". See the history file for full
+  derivation.
 
 ## Living reference: full boot-time task catalog
 

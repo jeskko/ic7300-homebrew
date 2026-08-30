@@ -2307,3 +2307,50 @@ turn "shares the tuner's engage primitive" into "confirmed to physically move th
 Renamed in Ghidra this session: `tuner_engage_gpio_toggle`, `tuner_start_tuning_sequence`,
 `civ_cmd_1c01_tuner_dispatch`, `civ_cmd_1c01_tuner_handler`, `tuner_freq_and_txstate_precheck`,
 `civ_2a_state_set`, `civ_2a_state_engage_or_abort`, `g_civ_2a_state`.
+
+### Real tuner relay hardware map from the user + correction to the "GPIO shadow" guess (2026-08-30, same day)
+
+User supplied a direct schematic/parts-list reading of the tuner unit: the 4 `BU2092FV-E2` ICs
+(`IC2811`/`IC2821`/`IC2831`/`IC2841`) are serial-in/parallel-out relay drivers sharing `TDAT`/`TCLK`/`TOE`,
+each individually latched by its own `TSTB1`-`TSTB4`, and each driving a fixed group of relays
+(`NL0`-`NL9`/`NC1`-`NC9`/`NCIN`/`NCOUT`/`NCRED`/`NATT1`/`NATT2`, full mapping now in
+`notes/ic7300-hardware.md`'s new "Tuner relay network" table) — confirms the tuner is a **relay-switched
+stepped L-network**, correcting the service-manual-derived guess that these were "motor driver ICs" for a
+motorized roller inductor.
+
+Used this to push the code trace one step further: tried to find the runtime code that serializes a relay
+pattern out over `TDAT`/`TCLK`/`TSTBn` (the P7 pins), to settle whether `tuner_engage_gpio_toggle`
+(called identically by both the documented `1C 01` tuning-start path and undocumented `0x2A`) actually
+drives this network. **Result: a real correction to the previous session's framing, not a confirmation.**
+`DAT_2001f50c`/`DAT_2001f510` (the two addresses `tuner_engage_gpio_toggle` bit-twiddles) are themselves
+pointer variables holding `0x203902d4`/`0x203902d6` — checking `references_to` on those two literal RAM
+addresses turned up **60+ distinct call sites scattered across dozens of unrelated subsystems** (SD-card
+menu, cold-boot init, mode dispatch, and many more, spanning `0x2000axxx` through `0x20034xxx`). That's
+far too broad a fan-out for tuner-specific hardware state — these are a **generic, shared global
+status/interlock flags byte pair**, not a GPIO register shadow as the previous session guessed.
+`tuner_engage_gpio_toggle` most likely just asserts/clears a couple of shared "RF-chain busy"-style bits
+alongside everything else that touches this byte pair, rather than driving real relay hardware directly
+itself.
+
+**Checked the actual P7 port data register** (`0xFCFE301C`, per the RZ/A1H port-register map
+`notes/ic7300-signal-chain.md` already established, `PORTn_base=0xFCFE3000`, `Pn` stride 4 bytes/port) via
+direct `references_to`: **exactly 2 hits, both inside `port_bulk_gpio_init_pass1`/`port_bulk_gpio_init_pass2`**
+— the same generic one-time boot-time port-register initializer already fully documented from the
+DRESD/`P2_6` chase (an earlier session found the identical "exactly one reference, the boot bulk-init"
+signature for that pin too). `P6`'s data register (`0xFCFE3018`, carries `EKEY`/`ESTA`) shows the same 2
+hits and nothing else. `PNOT7`/`P0`'s data register: zero hits at all. **Conclusion**: nothing in the
+traced firmware pokes the raw P7/P6/P0 port data registers at runtime — the real relay-shift-out routine,
+if it exists in the statically-traced image at all, must go through some other indirection (a computed/
+table-driven register address, not a literal one) — possibly related to the already-named but
+unexplored `g_ppr_register_base` (`0x2002a0d0`) from earlier signal-chain work, not yet checked against
+this specific question.
+
+**Net effect on the `0x2A` finding**: the core conclusion from the previous section stands — `0x2A`'s
+"engage" data byte calls the exact same `tuner_engage_gpio_toggle(1)` the documented `1C 01` tuning-start
+path calls, which remains real, meaningful evidence that `0x2A` is an alternate/bypass trigger for
+whatever `tuner_engage_gpio_toggle` represents. But the previous session's implicit "and this
+directly moves tuner hardware" extension is **not confirmed** — corrected the Ghidra plate comments on
+both `civ_cmd_2a_handler_UNDOCUMENTED` and `tuner_engage_gpio_toggle` to state this precisely (shared
+status-flags byte pair, not a GPIO shadow; real relay-drive code still unlocated). Open item updated
+accordingly: find the actual `TDAT`/`TCLK`/`TSTBn` shift-out code (check `g_ppr_register_base`'s other
+uses first) to close this out, or fall back to live JTAG once hardware arrives.
