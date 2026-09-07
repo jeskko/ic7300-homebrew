@@ -35,20 +35,23 @@ understood; whatever produces the real content — demodulated audio or decoded 
 yet found for *any* traced feature). Worth remembering if either thread is picked back up: progress on one
 likely generalizes to the other.
 
-**Lead chased and retracted, same day (`notes/kernel-rtos-history.md`'s "Picking the RTTY/SSTV thread back
-up" + its same-day correction)**: tracing RTTY's mode-entry path surfaced `operating_mode_change_dispatch`
-(`0x2005807c`) and a real per-operating-mode "on enter this mode" function-pointer table (`0x2019ac0c`) —
-initially looked like the best lead in the project (RTTY/CW-R's shared entry sat in a never-disassembled
-code region hitting the known ARM/Thumb bug). **Once the user applied the manual Thumb fix and it was
-actually decompiled, it turned out to be trivial**: the whole table is lightweight UI/interlock-flag
-bookkeeping (mostly plain no-ops, one real squelch-state reset for FM, nothing resembling DSP/buffer setup
-for any mode). This closes it as a lead — mode-specific demodulation does not get armed here. Working
-theory now: the DSP likely demodulates continuously per its currently-synced mode/filter settings, with no
-discrete main-CPU "start decoding" call to find — meaning the real audio-source/decode-source boundary may
-be genuinely DSP-internal (unreachable from `body.bin`), not just unfound yet. Two consecutive CPU-side
-static-analysis approaches (file-write path, mode-change path) have now dead-ended; the still-unexamined
-`0x20058d78` "digital-text-mode manager" dispatcher (mode bytes `'R'`/`'a'`/`'\\'`/`']'`, struct
-`DAT_20390064`) is the one lead left before this genuinely looks like a live-JTAG-only question.
+**Three CPU-side leads chased and closed, same session (`notes/kernel-rtos-history.md`'s "Picking the
+RTTY/SSTV thread back up" and its two same-day follow-ups)**: (1) `operating_mode_change_dispatch`'s
+per-mode table — decompiled, turned out to be trivial UI/interlock-flag bookkeeping, not demod-arming; (2)
+the real CI-V `1A 05 01 66`-`77` RTTY command range (per the user's own knowledge) — decompiled, turned out
+to be a generic settings get/set bridge onto a pre-existing 216-item menu-value table (`notes/diode-matrix.md`),
+not a decode trigger or data readback; (3) the `0x20058d78` "digital-text-mode manager" dispatcher — fully
+decompiled (104-entry per-state function-pointer table, `0x2019b70c`), turned out to be the SD-card
+decode-log **writer's own state machine** (open file → write 20-byte record → close, running continuously
+whenever a digital mode is active) — the real internals behind `rtty_decode_log_poll_task`, not a
+screen-open gate or the demodulator. **None of these three shows a discrete "start decoding" action
+anywhere on the main CPU.** Working theory, now fairly well-supported after three independent dead ends:
+the DSP demodulates continuously per its currently-synced mode/filter settings with no discrete "enable"
+call to find on the CPU side; "MENU → Decode" most likely just toggles a separate, still-unfound *on-screen
+display* consumer of the same decoded-character stream the SD-logger also reads — not something that starts
+the underlying decoding. **This CPU-side static-tracing approach has been pushed about as far as it
+profitably goes; live JTAG (watch `SCIF5`/DSP-interface traffic during real RTTY reception) is the honest
+next step**, not further static reading.
 
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 
