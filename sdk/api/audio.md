@@ -35,15 +35,20 @@ understood; whatever produces the real content — demodulated audio or decoded 
 yet found for *any* traced feature). Worth remembering if either thread is picked back up: progress on one
 likely generalizes to the other.
 
-**Best lead yet, 2026-09-07 (`notes/kernel-rtos-history.md`'s "Picking the RTTY/SSTV thread back up")**:
-tracing RTTY's mode-entry path (not its file-write path, a different angle than the above) surfaced
-`operating_mode_change_dispatch` (`0x2005807c`) and a real per-operating-mode "on enter this mode"
-function-pointer table (`0x2019ac0c`) — most entries are plain no-op `bx lr`, but the entry very plausibly
-corresponding to RTTY (and CW-R) points at `0x20056fd4`, an address that turns out to sit in a completely
-undissassembled code region and hits the project's known ARM/Thumb bug. Not yet readable, but this is a
-much more targeted candidate for "where does mode-specific hardware/DSP setup happen" than anything found
-chasing the file-I/O side — worth checking first, once the user applies the manual Thumb fix, before
-assuming a live-JTAG session is required to find the real audio/decode-data source.
+**Lead chased and retracted, same day (`notes/kernel-rtos-history.md`'s "Picking the RTTY/SSTV thread back
+up" + its same-day correction)**: tracing RTTY's mode-entry path surfaced `operating_mode_change_dispatch`
+(`0x2005807c`) and a real per-operating-mode "on enter this mode" function-pointer table (`0x2019ac0c`) —
+initially looked like the best lead in the project (RTTY/CW-R's shared entry sat in a never-disassembled
+code region hitting the known ARM/Thumb bug). **Once the user applied the manual Thumb fix and it was
+actually decompiled, it turned out to be trivial**: the whole table is lightweight UI/interlock-flag
+bookkeeping (mostly plain no-ops, one real squelch-state reset for FM, nothing resembling DSP/buffer setup
+for any mode). This closes it as a lead — mode-specific demodulation does not get armed here. Working
+theory now: the DSP likely demodulates continuously per its currently-synced mode/filter settings, with no
+discrete main-CPU "start decoding" call to find — meaning the real audio-source/decode-source boundary may
+be genuinely DSP-internal (unreachable from `body.bin`), not just unfound yet. Two consecutive CPU-side
+static-analysis approaches (file-write path, mode-change path) have now dead-ended; the still-unexamined
+`0x20058d78` "digital-text-mode manager" dispatcher (mode bytes `'R'`/`'a'`/`'\\'`/`']'`, struct
+`DAT_20390064`) is the one lead left before this genuinely looks like a live-JTAG-only question.
 
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 

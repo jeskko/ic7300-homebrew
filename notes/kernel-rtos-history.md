@@ -2622,3 +2622,28 @@ Read `table1` (`0x2019ac0c`, 19 entries × 24 bytes — table2 at `0x2019add4` f
 **Why it matters for the overflow-hunting angle**: a per-mode "enter mode" hook that plausibly initializes buffers/state for a hardware decode engine is a textbook place for a fixed-vs-variable-size mismatch (e.g. a buffer sized for one mode's sample format reused for another). Nothing found yet — the function isn't readable — but it's a substantially better-targeted candidate than the SD-card directory code audited in part 1 above, which came back clean.
 
 **Next step if picked up again**: get the user's manual ARM/Thumb GUI fix at `0x20056fd4` (and worth doing its siblings `0x20056fd0`/`0x20056fd8`/`f64`/`f84`/`f9c`/`fcc`/`f90`/`f94`/`f98`/`f88` in the same pass, all currently undissassembled), then decompile all of them; separately, confirm the table-index ↔ CI-V-mode-code mapping directly (trace the real `06`-command "select operating mode" CI-V handler forward, or check `/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`'s mode-code table against a live JTAG mode-change test) rather than relying on the coherence argument above.
+
+## Correction, same day: the per-mode hook table is NOT the demod-arming code — it's trivial bookkeeping
+
+User applied the manual ARM/Thumb GUI fix at `0x20056fd4` and its siblings right after the above was written. Once readable, **the RTTY/CW-R/index-11 hook (`0x20056fd4`) turned out to be a single-line tail-call**: `*(byte *)(DAT_200183a4 + 3) = 0; return;` — it just clears one flag byte, nothing resembling DSP mailbox setup, buffer registration, or any kind of hardware arming. **Retracting last entry's "most promising lead in the whole project" framing** — decompiling it directly disproved the hypothesis rather than confirming it, exactly the outcome static analysis is for.
+
+Went ahead and gave real function boundaries to every other populated entry in the primary 19-entry table (`0x2019ac0c`) while at it, now that the region disassembles cleanly:
+
+| index (mode, if CI-V-code-indexed) | hook function | what it actually does |
+|---|---|---|
+| 0 (LSB) | `0x20056f60` | `bx lr` — no-op |
+| 1, 2, 3 (USB, AM, CW), 16, 18 | `0x20056f5c` | `bx lr` — no-op |
+| **4, 7, 11 (RTTY, CW-R, ?)** | **`0x20056fd4`** | tail-calls `0x200175d4`: clears one flag byte (`DAT_200183a4+3 = 0`) — nothing more |
+| 5 (FM) | `0x20056fd0` → `FUN_20044dec` | a real, substantial reset: zeroes/initializes a ~0x2c-byte squelch/tone-detect state block (several bytes to 0, two to `0xff`, two `u16` fields to `10`/`0x96`) — plausibly FM squelch state, not digital-mode related |
+| 6 (WFM) | `0x20056fd8` | tests a 2-bit field against `2`, stores the boolean result, then also tail-calls `0x200175d4` (the same flag-clear RTTY/CW-R use) |
+| 8 (RTTY-R) | `0x20056f64` | conditionally clears a different byte, then calls `FUN_20056ca0()` (not traced) |
+| 9 | `0x20056f84` → `FUN_200093a4` | a real function: one-shot init-on-first-entry pattern (checks/sets a "done" byte), copies one byte from an unrelated struct, calls `FUN_2000930c(1,1)`, sets a status bit — not obviously digital-mode related, not traced further |
+| 10 | `0x20056f9c` | if a byte is zero: calls `FUN_20027d0c(1)`, `FUN_20014920()`, clears a byte — not traced further |
+| 12 | `0x20056fcc` | **pure no-op** (`return;` with no side effects at all — even more trivial than the `bx lr` entries) |
+| 13, 14 | `0x20056f90`/`f94` | `bx lr` — no-op |
+| 15 | `0x20056f98` | tail-calls `0x200175d4` — same flag-clear as RTTY/CW-R |
+| 17 | `0x20056f88` | calls `FUN_200615b4(1)` — not traced further |
+
+**Reading this table as a whole**: it's clearly a lightweight **"reset a couple of small pieces of UI/interlock state when the mode changes"** table, not a hardware/DSP setup table — most entries are literally no-ops, and the ones that aren't (FM's squelch-state reset, WFM's/RTTY's/CW-R's shared flag clear) are small, single-purpose, and don't touch anything resembling a sample buffer, DMA channel, or the `SCIF5` DSP-link register. **This closes the `operating_mode_change_dispatch` table as a lead for "where does RTTY demodulation get armed"** — it doesn't happen here. The real answer is more likely that the DSP demodulates continuously according to whatever mode/filter settings are currently synced to it (via the already-known `SCIF5` parameter-sync traffic, `notes/multi-cpu-images.md`), with the main-CPU side only needing to route/interpret already-arriving decoded output differently per mode — meaning there may be no discrete "enable RTTY decode" call to find on the CPU side at all, and the real content-producer boundary is genuinely DSP-internal (unreachable from `body.bin`'s own disassembly, JTAG-onto-the-DSP or the DSP's own firmware would be needed, not more CPU-side static reading).
+
+**Bottom line, still standing after this correction**: the RTTY "who writes the staging bytes" question and the SSTV "where do live samples live" question remain unresolved. Two full sessions have now traced this from both the file-write side (dead-ends at generic, well-bounded file-I/O) and the mode-change side (dead-ends at trivial UI-flag bookkeeping) without finding a CPU-side answer — a genuine, repeated negative result, not just an unexplored gap. The strongest remaining static-analysis lead is the still-unexamined `0x20058d78`/`digital-text-mode manager` dispatcher (mode-identity bytes `'R'`/`'a'`/`'\\'`/`']'`, struct `DAT_20390064`) from the 2026-08-30 session — worth a real decompile pass before concluding this needs live JTAG, but two consecutive dead ends on this specific "trace it from the CPU side" approach are worth taking as a signal, not just bad luck.
