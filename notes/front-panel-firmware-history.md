@@ -514,6 +514,45 @@ sessions and many different angles (boot sequence, SD-menu task siblings, litera
 searches). Best remaining options: a targeted look at whatever code runs specifically on SD-card
 insertion/mount (not yet identified as its own function), or settling it directly on live hardware.
 
+### Searched the raw disassembly directly for every ARM address-formation idiom, not just Ghidra's own analysis (2026-09-07)
+
+User's suggestion: search the project's own independent disassembly tooling
+(`tools/superset_disasm.py`'s `scratch/superset_142.sqlite`, a full ARM+Thumb candidate decode of every
+address in `body.bin`) directly, in case the populating code sits somewhere Ghidra's own analysis never
+correctly reached — the same class of gap this project has hit before (ARM/Thumb misclassification, or
+code with no function boundary Ghidra ever created).
+
+Checked all 3 ways a 32-bit RAM address can be formed in ARM/Thumb code, each independently, against the
+whole decoded instruction stream (not just Ghidra's resolved xrefs):
+
+1. **PC-relative literal-pool loads** (`ldr Rd, [pc, #imm]`) — already covered by the earlier raw-byte scan
+   and Ghidra's own reference tracking; re-confirmed zero hits for the candidate struct's base or any field
+   offset.
+2. **`MOVW`/`MOVT` immediate-pair construction** (loads a 32-bit constant as two 16-bit halves, no literal
+   pool word at all) — queried the DB directly for `movw #0x4654` / `movt #0x2040` (the exact low/high
+   halves of `0x20404654`): zero hits for either. **Ran a control check first** to make sure this idiom is
+   even used by this toolchain at all, using `g_screen_display_scratch_buf` (`0x203ff76c`, confirmed
+   referenced dozens of times via literal pools) as a known-real address — also zero `movw`/`movt` hits.
+   This toolchain simply doesn't use this idiom anywhere; not a gap specific to our struct.
+3. **`ADR`/`ADD rD, pc, #imm`/`SUB rD, pc, #imm`** (direct PC-relative address computation, no literal pool
+   word either) — `tools/superset_disasm.py`'s own `target` resolution only covers case 1 above (confirmed
+   by reading its source), so this needed a fresh script: computed the resolved target address for every
+   `adr` (7324 instances) and `add`/`sub ..., pc, #imm` (1724 instances) in the whole decoded stream,
+   checked each against the candidate struct's address range. Zero matches.
+
+**All three known static address-formation idioms come back empty, across the entire decoded instruction
+stream — not just what Ghidra's own analysis reached.** This is a meaningfully stronger negative result
+than before. What's left standing as explanations: either the address is reached through pure
+register-indirect chaining (a pointer stored via another pointer, several layers removed, with no direct
+literal connection anywhere — invisible to any static search, would need dynamic/live tracing), or **the
+candidate struct is never actually populated in this firmware release at all**. The second option has real
+support: the "candidate is all-zero" case (`bVar2` in `ui_recording_storage_screen_draw_and_compare`, and
+the analogous `iVar2+0xa0==0 && iVar2+0xa4==0` check believed shared by the version-info path) is a
+specifically-handled, anticipated branch, not undefined behavior — a struct designed with a sane
+"never-populated" fallback is consistent with it genuinely staying at that fallback permanently in this
+release, rather than a bug. Not proven either way, but the balance of evidence after two sessions of
+searching leans toward "unpopulated/vestigial in v1.42," not "hidden by tooling."
+
 ### Does a version mismatch actually trigger a firmware push? Checked from 3 angles, answer is no (2026-09-07)
 
 User's natural next question: if a mismatch is detected, does the radio go push new firmware to whatever's
