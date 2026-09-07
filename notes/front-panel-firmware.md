@@ -82,6 +82,14 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   unresolved is what writes the candidate side and whether it's this screen's own "last frame" or
   something update-file-related after all. See `notes/front-panel-firmware-history.md`'s "What the
   candidate struct really is" section.
+- **Follow-up correction, 2026-09-07, later same day**: partially walking back the retraction above after
+  user pushback — RAM-sharing with unrelated screens doesn't actually disprove candidate holds real
+  update-file data for *this* screen specifically (mutually-exclusive screens sharing scratch RAM is
+  normal, independent of what each screen's own code does with it). The user's reading — this comparison
+  exists to tell the user "you're out of sync, go run a manual update," not to auto-push anything — is the
+  better-motivated explanation for why the comparison exists at all, and fits everything else found (the
+  only real update path requires explicit manual confirmation). The actual populate-candidate function is
+  still unfound after a further attempt this session; open for next time.
 - **Checked, 2026-09-07 — does a detected mismatch actually trigger a firmware push? No, from 3 angles.**
   The mismatch branch's own calls are 100% UI-drawing, nothing touches flash/transport code. The real
   updater (`firmware_update_main`) shares zero code or data with the comparison structs — reached only via

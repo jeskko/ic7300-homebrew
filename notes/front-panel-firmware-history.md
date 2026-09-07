@@ -433,6 +433,27 @@ verified independently via the label strings drawn alongside each value, unaffec
 a real SD-card update file (settling the original "is update-availability really detected this way"
 question) or is purely a same-buffer-type previous-frame snapshot with no tie to update files at all.
 
+**Follow-up, same day — reconsidering the retraction above after the user pushed back.** The user's own
+reading (why compare firmware versions at all if there's no push mechanism, unless the comparison's real
+job is telling the user "you're out of sync, go run a manual update") is better-motivated than my "generic
+redraw-skip snapshot" hypothesis. **Walking back part of the retraction**: finding the same RAM reused by
+two unrelated screens (the memory-channel editor, the recording-storage display) doesn't actually disprove
+"candidate holds real update-file data for the version screen specifically" — screens here are mutually
+exclusive (only one shown at a time), so different screens sharing one scratch-RAM pool for their own
+unrelated purposes is an ordinary memory-conservation pattern, not evidence against any *particular*
+screen's own interpretation. Conflating "this RAM is reused elsewhere" with "therefore not update-file data
+here" was too big a leap. The user's framing (diagnostic prompt, not auto-push trigger) is the more
+sensible explanation for why this comparison exists at all, and is fully consistent with everything found
+so far (the only real update path, `firmware_update_main`, requires explicit manual confirmation).
+
+**Tried to find the actual populate-candidate function, came up empty this pass**: checked one outlier SD-
+file-open caller (`FUN_2003ba80`, at `0x2003ba84` — one of the 20 callers of the SD-open helper
+`FUN_200bc5f4` outside `firmware_update_main`'s own neighborhood) — dead end, just a trivial wrapper
+unrelated to version data. A function-name search for update/check-version patterns turned up nothing new
+beyond already-known functions (`chunk_needs_update`, `firmware_update_main`, `md5_update`). Not pursued
+further this session given the effort already spent without traction — a good next-session target, or
+settled quickly by watching real `SCIF3`/SD-card behavior on hardware once JTAG/live access exists.
+
 ### Does a version mismatch actually trigger a firmware push? Checked from 3 angles, answer is no (2026-09-07)
 
 User's natural next question: if a mismatch is detected, does the radio go push new firmware to whatever's
