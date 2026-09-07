@@ -63,6 +63,31 @@ Observed sequence, mapped onto the traced code:
    but this confirms the reset event itself is real and exactly as hypothesized, not a full power-cycle
    that would wipe RAM.
 
+## Checked a real lead for the update-progress dialog renderer — not it, but real infrastructure found (2026-09-08)
+
+User's hunch: `FUN_200aa750` (called from `FUN_200ab148`) might render the update-progress dialogs from
+the video sequence above, since it has progress-bar-shaped code (`value * 300 / 0xff` width scaling,
+matching the recording-storage screen's real progress bar) and is called from the same top-level screen
+dispatcher tail (`switchD_1807b5d4::default` in `FUN_20080380`) that also runs
+`ui_version_screen_draw_and_compare`.
+
+Traced its actual dispatch state (`*pcVar3` at `g_radio_ui_state_base+0x7dc`) to its real writer,
+`FUN_20038450` — which derives the value entirely from **the currently-selected settings-menu item's
+property byte** (read from a per-item table, `DAT_2001a050 + item_index*0x10 + 6`, mapped into 12
+categories by value-range checks). That's a menu-item-property lookup, unrelated to
+`firmware_update_main`'s own progress state.
+
+**Conclusion: this is a generic "contextual warning/hint dialog for whichever settings-menu item is
+currently selected" system, not the firmware-update-progress dialog renderer specifically** — a real,
+distinct piece of UI infrastructure that happens to share widget IDs and a progress-bar drawing pattern
+with what the update dialogs use, which is why it looked promising. Not fully ruled out as *involved*
+somehow (the real message-string table this section's own opening lists — `"Checking the file"`,
+`"Updating MAIN CPU firmware"`, `"Updating DSP/FPGA firmware"` — still has zero static references anywhere
+in the image, so its actual consumer remains reached only via a computed/indexed lookup no direct search
+has found), but the concrete evidence found here points away from it, not toward it. A good-faith,
+well-motivated hunch given the surface pattern match; worth recording so a future session doesn't re-chase
+the same lead without this context.
+
 ## The SPI-NOR flash driver (`0x20024xxx`)
 
 - `FUN_20024850` — driver init (SPI controller bring-up, same register
