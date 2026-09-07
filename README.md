@@ -163,32 +163,70 @@ class) matching the shape of the radio's own SD directory-reading code.
   confirmed real executable DSP code, not a calibration table — Icom's
   "Program"/"Data" naming apparently isn't a code/non-code split. See
   `notes/multi-cpu-images.md` and `notes/front-panel-firmware.md`.
-- 🔎 **Front-panel MCU (`IC501`, RL78/G14) firmware: still genuinely
-  unidentified.** `front_cpu.bin` (extracted, expecting this to be it) turned
-  out to be DSP code instead (see above) — real front-panel firmware's
+- 🔎 **Front-panel MCU (`IC501`, RL78/G14) firmware: location still genuinely
+  unidentified, but the `SCIF3` link and version/update questions are now
+  thoroughly resolved.** `front_cpu.bin` (extracted, expecting this to be it)
+  turned out to be DSP code instead (see above) — real front-panel firmware's
   location in the update container, if it's covered by this mechanism at all,
-  is an open question. RL78 tooling (Ghidra `xyzz/ghidra-rl78`, stock
-  binutils' `rl78` target) is installed and confirmed working regardless, for
-  whenever real front-panel firmware turns up. **2026-09-07**: unrelated
-  UI-menu tracing cross-checked the confirmed `SCIF3` front-panel-link status
-  buffer against the main CPU's own physical-key-event struct and found zero
-  static connection between them — a real, sharper open question (does
-  button data reach the main CPU over `SCIF3` at all?) than the older "which
-  bit is MENU" one. See `notes/front-panel-firmware.md` and its new
-  `notes/front-panel-protocol-handout.md` (a dedicated onboarding doc for
-  picking this thread back up, including what update-mechanism code shapes to
-  watch for that would point at a real, still-unfound firmware image).
+  remains open. RL78 tooling (Ghidra `xyzz/ghidra-rl78`, stock binutils'
+  `rl78` target) is installed and confirmed working regardless.
+  **2026-09-07/08, a multi-session thread run essentially to ground**:
+  - ✅ **Physical button presses do reach the main CPU over `SCIF3`** — a
+    real question this project's own UI-menu tracing had sharpened, resolved
+    the same week it was raised: `scif3_key_bitfield_scan_and_resolve` diffs
+    live `SCIF3`-buffer bytes against a shadow copy and feeds the resolved
+    key code into the main input-routing struct, verified against known
+    `MENU`/`QUICK` key codes.
+  - ✅ **How the main CPU gets the displayed front-panel version**: a
+    genuine one-shot `SCIF3` handshake at cold boot
+    (`scif3_frontpanel_identify_handshake` — sends an outbound `0xF0`
+    "identify" frame, blocks for the reply) latches the result once per
+    boot, not per menu-visit. DSP Program/Data/FPGA version fields are
+    likewise confirmed live-queried at boot, over `SCIF5`.
+  - ✅ **No firmware-write mechanism to the front panel found** — the entire
+    outbound `SCIF3` driver is a small, fully self-contained 2-function call
+    graph; every send is a single ≤33-byte frame, nothing chunk/erase/
+    program-shaped. A real negative result (not a whole-image sweep).
+  - ✅ **The version-info screen's comparison logic, and the real
+    update-progress dialogs, both fully traced** — including a genuinely
+    satisfying complete-chain confirmation: the exact bilingual (English/
+    Japanese) message table and activation call chain behind the real
+    on-screen sequence during an update (`"Checking the file"` →
+    `"Updating MAIN CPU firmware"` → `"Updating DSP/FPGA firmware"` →
+    `"completed, will restart"`), independently confirmed against a real
+    hardware video recording. The dialog sequencer turned out to be the
+    exact same function that sets the `"Fup_AutoEnd_3765"` post-reboot
+    marker below — two previously-separate threads, one function. Confirmed
+    by direct listing that `firmware_update_main` itself synchronizes with
+    this sequencer via a literal shared-flag busy-wait — a real task-to-task
+    handshake, not inference. See `notes/firmware-update.md`'s "`FUN_200aa750`
+    IS the real update-dialog renderer" section for the full derivation.
+  - 🔎 Still open: where real front-panel firmware would live if it exists at
+    all; who populates the version-info screen's "candidate" comparison
+    struct (checked exhaustively — every known ARM address-formation idiom
+    comes back empty; leans toward "generic multiplexed buffer, not update-
+    file-sourced" but not proven either way); the "Checking the file." message's own
+    activating item.
+  See `notes/front-panel-firmware.md`, `notes/front-panel-firmware-history.md`,
+  and `notes/firmware-update.md` for the complete trace.
 - ✅ **Two substantial finds from extending Ghidra's memory map to the RZ/A1H's
   real, datasheet-confirmed 10 MB on-chip RAM range** (previously only
   `body.bin`'s own ~3.7 MB static image was mapped): (1) a likely answer to
   the long-open "how does the radio restart after a firmware update"
   question — a `"Fup_AutoEnd_3765"` marker written to the very top of RAM
   right before the same watchdog-reset sequence used elsewhere, checked and
-  cleared on the next boot (`notes/firmware-update.md`); (2) a previously
-  uncharted shared "live radio/UI state" structure with a spectrum/band-scope
-  display sub-region (mode selector + computed low/high frequency bounds,
-  feeding what looks like a frequency→screen-position mapping function) —
-  see `notes/band-scope-state.md`.
+  cleared on the next boot. **2026-09-08: the function that sets this
+  marker's trigger flag turned out to be `firmware_update_progress_dialog_
+  sequencer`** — the same function that drives the real on-screen "Updating
+  MAIN CPU firmware"/"Updating DSP/FPGA firmware"/"completed" dialog
+  sequence, with the marker set one state past the DSP/FPGA dialog. The
+  marker's *consumer* side is still a confirmed dead end — the flags it sets
+  on a successful match have zero readers anywhere in the static image
+  (`notes/firmware-update.md`); (2) a previously uncharted shared "live
+  radio/UI state" structure with a spectrum/band-scope display sub-region
+  (mode selector + computed low/high frequency bounds, feeding what looks
+  like a frequency→screen-position mapping function) — see
+  `notes/band-scope-state.md`.
 - 🟡 **RTOS task catalog's two remaining mystery tasks, chased further without JTAG**: found that 9
   of the catalog's tasks share one compiled 16-byte-stride descriptor array (cleanly bounded by an
   adjacent HF band-plan table — no hidden extra task there). `kernel_start`'s own mystery task
