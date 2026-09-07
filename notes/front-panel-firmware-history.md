@@ -133,3 +133,66 @@ never updated over this path?). Worth checking whether the update file's "Front 
 (`FUN_200a94c8`'s `+0xa4`) is ever compared against anything read from `IC501` itself (e.g. over `SCIF3`)
 rather than assumed — that would be the natural next thread, not a continuation of the RL78-disassembly
 work done above.
+
+## Priority-1 handout question resolved: yes, physical keys reach the main CPU over `SCIF3` (2026-09-07)
+
+Picked the thread back up via `notes/front-panel-protocol-handout.md`'s top-priority open question: does
+`key_event_resolve_and_route`'s raw key-code struct (the handout's own `0x200301f2`) have any real
+connection to the confirmed `SCIF3` status buffer (`0x203dcab6`), given a same-day `references_to` search
+on both raw addresses had found zero static links?
+
+**First step: found and fixed a real address typo in the handout itself.** `0x200301f2` has no Ghidra
+symbol at all; the actual address `key_event_resolve_and_route` reads (`DAT_2002f74c[4]`, confirmed by
+reading the pointer variable's stored bytes directly — `f2 01 39 20` little-endian) is **`0x203901f2`**,
+which does have a live symbol (`DAT_203901f2`). A single mistyped digit (`2003` vs `2039`) meant every
+literal-address search run against the handout's number — both the live `references_to` call and a fresh
+whole-image raw-byte scan of `body.bin` for the literal word `0x200301f2` — was silently searching for an
+address nothing in the firmware ever references. Re-running the exact same searches against the corrected
+`0x203901f2` immediately surfaced real hits, including a `WRITE` reference Ghidra's own analysis had
+already resolved through the pointer-variable indirection (something a plain literal-word grep of the raw
+file can't see at all, since the address only ever exists as the *stored contents* of pointer variables
+like `DAT_2002f74c`, never as a literal instruction operand).
+
+**The writer, found and confirmed**: `scif3_key_bitfield_scan_and_resolve` (renamed from `FUN_2002fbc8`,
+`0x2002fbc8`) — called every tick from `ui_input_poll_tick` (`0x2002fca8`), right before it conditionally
+calls `key_event_resolve_and_route`. It:
+
+1. Reads a 0-4 rotating index (`DAT_2002f74c+2`, i.e. the *same* struct, a different field) and increments/
+   wraps it mod 5.
+2. Compares one live byte at that index — via `scif3_status_live_byte_ptr` (renamed from `FUN_2002fbb8`),
+   which resolves to `DAT_200306b4 + 0xd + index` — against a cached "previous scan" byte at the same
+   index via `scif3_key_shadow_byte_ptr` (renamed from `FUN_2002fba8`), `DAT_2002f750 + 0xd + index`.
+3. **`DAT_200306b4`'s stored value is `0x203dcab6`** — read directly, confirmed byte-for-byte — the exact,
+   already-known `SCIF3` front-panel status buffer address (`scif3_frame_dispatch_by_type`'s own
+   destination, reached there via its own separate pointer copy `DAT_20037590`). So this function's "live"
+   byte really is a live `SCIF3`-populated byte, at buffer offset `0xd`-`0x11` (5 bytes, indices 0-4) — the
+   *exact same offset* `boot_check_mode1_combo`/`_mode5_combo` already read bits 3/4 of for the MENU+
+   FUNCTION service-mode combo. `DAT_2002f750` (`0x203dca96`) sits exactly `0x20` bytes before it — most
+   likely a sibling field inside one larger front-panel-status struct, the shadow/previous-scan copy this
+   function itself maintains for edge-detection, not another live hardware buffer.
+4. On any bit difference (XORed against a per-index mask table at `DAT_2002f754`/`0x2018d904`), finds the
+   changed bit's index (0-39 across the 5 bytes) and looks it up in `g_scif3_bit_to_keycode_table` (renamed
+   from `DAT_2018d980`, `0x2018d980`) to get a resolved key code, then writes that code into
+   `*(DAT_2002f74c+4)` — `0x203901f6`, the exact struct field `key_event_resolve_and_route` reads to decide
+   what command to dispatch.
+
+**Verified against already-known key codes, not just plausible-looking**: `g_scif3_bit_to_keycode_table`'s
+bytes at index 16 and 23 are `0x09` and `0x0c` — exactly the confirmed `MENU`=9 and `QUICK`=12 key codes
+from `notes/ui-menu.md`'s physical-button-chain trace. Both indices land inside the same `0xd`-`0x11`
+byte range read from the live `SCIF3` buffer, closing the loop cleanly.
+
+**Answer to the handout's open question**: possibility 2 was right — there *is* a copy from the `SCIF3`
+buffer into the key-code struct, through a genuinely computed/indirect path (a rotating index into a small
+window of the buffer, diffed bit-by-bit against a shadow copy, translated through a lookup table) that a
+plain address `references_to`/literal-word search on the final destination address alone could never catch
+— only tracing forward from the confirmed-real `SCIF3` buffer address found it. Physical button presses
+**do** reach the main CPU over `SCIF3`; `key_event_resolve_and_route`'s struct is downstream of it, not an
+independent, unrelated input path as the two struct addresses looking "disconnected" had suggested.
+
+**Left open, not chased further this pass**: `FUN_2002fa9c` (called by `ui_input_poll_tick` as a fallback
+when `scif3_key_bitfield_scan_and_resolve` returns nothing pending) reads two *different*, fixed bit tests
+(`DAT_2002f750+0xf`, `+0x11`) against threshold counters in a separate small struct (`DAT_2002f764`) rather
+than the same bit-diff+table pattern — plausibly the encoder/dial or a couple of discrete non-matrix
+buttons, not yet confirmed. Also unconfirmed: whether `DAT_2002f750`/`DAT_200306b4` are truly two fields of
+one larger struct (the round `0x20`-byte offset between them strongly suggests it) or coincidentally
+adjacent separate allocations — would need the struct's full field layout mapped to settle for certain.

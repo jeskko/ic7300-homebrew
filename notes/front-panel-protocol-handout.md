@@ -1,5 +1,15 @@
 # Handout: front-panel (`IC501`) protocol and firmware-image thread
 
+**Correction, same day (2026-09-07), after this handout was picked up again**: goal 1 below is now
+**resolved** — see `notes/front-panel-firmware.md`'s "Open questions" section and
+`notes/front-panel-firmware-history.md`'s "Priority-1 handout question resolved" section for the full
+answer. Also, **every `0x200301f2` address in this document is a typo for `0x203901f2`** (no symbol
+exists at the former; the latter is `key_event_resolve_and_route`'s real key-code struct) — that typo is
+exactly what made the "zero references found" cross-check below come back empty, on top of the real
+indirection it also correctly anticipated. Goal 2 (watch for an `IC501` firmware-update mechanism) is
+still open. Left unedited below for the record; read the current-state notes files for the up-to-date
+picture rather than treating this document's own "not yet decoded"/"still open" framing as current.
+
 Written 2026-09-07 as an onboarding doc for whoever (a fresh session) picks this thread up next. Two
 goals, in priority order:
 
