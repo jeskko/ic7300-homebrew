@@ -36,3 +36,24 @@ tooling built along the way remains valid and reusable, just not yet pointed at 
   against anything read live from `IC501` itself (e.g. over `SCIF3`) rather than just assumed — this is the
   natural next thread, not more RL78 disassembly of a file already ruled out.
 - Whether `IC501` is field-updated at all, or factory-programmed once and never touched by this mechanism.
+- **The exact `SCIF3` type→offset→field mapping (which bit is `MENU`, which is `FUNCTION`, etc.) is still
+  not decoded** — flagged as the concrete next step back in the 30th session (see `scif3_frame_dispatch_by_type`'s
+  own header comment) and still true.
+- **New, sharper question surfaced 2026-09-07 as a side effect of unrelated UI-menu tracing
+  (`notes/ui-menu.md`)**: found the actual main-CPU-side consumer of physical key/touch events
+  (`key_event_resolve_and_route`, `0x2002ef98`) — it reads a raw key-code byte from a small fixed
+  struct at `0x200301f2` (offset `+4`), completely separate from the confirmed `SCIF3` front-panel
+  status buffer at `0x203dcab6`. Checked directly with `references_to` on the *raw addresses* (not
+  just symbol names, learning from this session's own earlier alias mistakes): zero static references
+  connect the two. Confirmed `MENU`=key-code `9`→command `0x11` and `QUICK`=key-code `12`→command
+  `0x13` via a lookup array (`g_key_code_to_command_id`, `0x2018d9a8`) feeding a 279-entry system
+  command table — a real, working, *independent* path to "which command did this button trigger,"
+  useful in its own right, but it does **not** confirm or use the `SCIF3` byte-level protocol at all.
+  This raises a real, previously-unasked question: **does button-press data reach the main CPU via
+  `SCIF3` at all, or is `0x200301f2`'s raw-code byte populated some other way** (a local GPIO key-matrix
+  scan on the main board, a different serial link, or an indirect/computed copy from the `SCIF3` buffer
+  that a simple address xref wouldn't catch)? The writer of `0x200301f2+4` itself wasn't found either
+  (no direct references — likely written via a computed/indexed address, same class of gap this
+  project has hit before). Not resolved — a real next step if this thread is picked up, and higher
+  leverage than the type→bit mapping question above, since it would settle whether that mapping work
+  is even the right place to look for physical-button semantics.
