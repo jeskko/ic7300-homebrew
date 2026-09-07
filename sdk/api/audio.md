@@ -35,6 +35,16 @@ understood; whatever produces the real content — demodulated audio or decoded 
 yet found for *any* traced feature). Worth remembering if either thread is picked back up: progress on one
 likely generalizes to the other.
 
+**Best lead yet, 2026-09-07 (`notes/kernel-rtos-history.md`'s "Picking the RTTY/SSTV thread back up")**:
+tracing RTTY's mode-entry path (not its file-write path, a different angle than the above) surfaced
+`operating_mode_change_dispatch` (`0x2005807c`) and a real per-operating-mode "on enter this mode"
+function-pointer table (`0x2019ac0c`) — most entries are plain no-op `bx lr`, but the entry very plausibly
+corresponding to RTTY (and CW-R) points at `0x20056fd4`, an address that turns out to sit in a completely
+undissassembled code region and hits the project's known ARM/Thumb bug. Not yet readable, but this is a
+much more targeted candidate for "where does mode-specific hardware/DSP setup happen" than anything found
+chasing the file-I/O side — worth checking first, once the user applies the manual Thumb fix, before
+assuming a live-JTAG session is required to find the real audio/decode-data source.
+
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 
 Not yet assessed whether a task on the *main* CPU (as opposed to the DSP, which is already busy doing the
