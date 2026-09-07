@@ -4,6 +4,12 @@ See [notes/front-panel-firmware-history.md](front-panel-firmware-history.md) for
 including a full RL78-disassembly investigation into a file that turned out to be the wrong one — the
 tooling built along the way remains valid and reusable, just not yet pointed at a confirmed target.
 
+**Picking this thread back up? Read
+[notes/front-panel-protocol-handout.md](front-panel-protocol-handout.md) first** — a dedicated onboarding
+doc (2026-09-07) covering exactly where to start, a real open question about whether physical buttons
+even reach the main CPU over `SCIF3`, and what to watch for that would point at a real (still unfound)
+front-panel firmware image.
+
 ## Current state
 
 - **`IC501` = `R5F104LCAFB`**, Renesas **RL78/G14** (64-pin LQFP), the Display/Front Unit's MCU — see

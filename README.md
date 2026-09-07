@@ -169,8 +169,15 @@ class) matching the shape of the radio's own SD directory-reading code.
   location in the update container, if it's covered by this mechanism at all,
   is an open question. RL78 tooling (Ghidra `xyzz/ghidra-rl78`, stock
   binutils' `rl78` target) is installed and confirmed working regardless, for
-  whenever real front-panel firmware turns up. See
-  `notes/front-panel-firmware.md`.
+  whenever real front-panel firmware turns up. **2026-09-07**: unrelated
+  UI-menu tracing cross-checked the confirmed `SCIF3` front-panel-link status
+  buffer against the main CPU's own physical-key-event struct and found zero
+  static connection between them — a real, sharper open question (does
+  button data reach the main CPU over `SCIF3` at all?) than the older "which
+  bit is MENU" one. See `notes/front-panel-firmware.md` and its new
+  `notes/front-panel-protocol-handout.md` (a dedicated onboarding doc for
+  picking this thread back up, including what update-mechanism code shapes to
+  watch for that would point at a real, still-unfound firmware image).
 - ✅ **Two substantial finds from extending Ghidra's memory map to the RZ/A1H's
   real, datasheet-confirmed 10 MB on-chip RAM range** (previously only
   `body.bin`'s own ~3.7 MB static image was mapped): (1) a likely answer to
