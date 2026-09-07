@@ -23,6 +23,46 @@ so found by string search rather than xref-walking):
 Confirms: update source is a file on the **SD card**, with a two-step
 confirmation UX and an explicit backup-recommendation step.
 
+## Real hardware confirmation of the whole sequence, from a YouTube recording (2026-09-08)
+
+User found a video of a real IC-7300 firmware update (one where the DSP version actually changes) and
+reported the exact on-screen sequence. This lines up cleanly with the traced code, message-for-message, and
+is a genuine, valuable external confirmation of this session's own conclusion that the DSP/FPGA push happens
+*before* any reboot, in the same session as the main-body flash write — not a separate boot-time
+reconciliation step (see `notes/front-panel-firmware-history.md`'s "Does a version mismatch actually trigger
+a firmware push?" thread, which reached the same conclusion from static analysis alone).
+
+Observed sequence, mapped onto the traced code:
+
+1. *"...Do you wish to start the firmware update?"* — hold the on-screen YES button ~1 sec to confirm.
+   Matches the two-step confirmation UX already documented above.
+2. **"Checking the file. Please wait..." with a progress bar.** Maps to the header read (`size1`..`size7`)
+   plus the up-front MD5 verification pass over the file before any flash write begins — see "Precise
+   checksum timing in `firmware_update_main`" below. A real progress bar here makes sense: hashing a
+   multi-hundred-KB-to-MB file over SD-card I/O takes real, visible time.
+3. **"Updating MAIN CPU firmware. Please wait for 15sec." with a countdown.** Maps to the two
+   `flash_write_chunked_from_file` calls: the shared bootloader region (`0`-`0x10000`, always rewritten)
+   then the main body to whichever A/B slot isn't currently active.
+4. **At ~9 seconds into that countdown, the dialog switches to "Updating DSP/FPGA firmware. Please wait for
+   29sec." with its own countdown.** This is the direct, physical confirmation: the `chunk_needs_update`
+   loop and `chunk_transport_send_data` (the 3 "extra chunks") run in the *same update session*, right
+   after the main-body write, with **no intervening reboot** — exactly what this project's static analysis
+   found independently. Also confirms component0/1/2 are presented to the user as one combined
+   "DSP/FPGA" phase, not separate sub-phases (matching the single shared progress percentage,
+   `*(DAT_2002649c+0x50)`, `firmware_update_main` updates throughout this whole loop).
+5. **"Firmware updating has completed. The IC-7300 will automatically restart."** Maps to
+   `chunk_transport_send_reload_cmd` (sent when component0 or DSP Data changed) plus
+   `flash_write_active_slot_marker`, followed by the genuine watchdog-forced reset already confirmed as
+   this firmware's restart primitive (see "The system restart mechanism" below).
+6. **The radio power-cycles (power LED goes dark briefly) then returns to the frequency/home screen.** A
+   short LED-dark blip rather than a full cold power-cycle is consistent with a watchdog-triggered *warm*
+   reset, not a full power-off — and gives real-world grounding to the `"Fup_AutoEnd_3765"` marker
+   mechanism (written to the top of RAM just before this exact kind of reset, checked for on the very next
+   boot, see "A real, strong candidate found" below): this is precisely the reset event that marker is
+   designed to survive and detect. Its consumer side is still an unresolved dead end (see that section),
+   but this confirms the reset event itself is real and exactly as hypothesized, not a full power-cycle
+   that would wipe RAM.
+
 ## The SPI-NOR flash driver (`0x20024xxx`)
 
 - `FUN_20024850` — driver init (SPI controller bring-up, same register

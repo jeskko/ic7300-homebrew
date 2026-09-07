@@ -542,16 +542,48 @@ whole decoded instruction stream (not just Ghidra's resolved xrefs):
 
 **All three known static address-formation idioms come back empty, across the entire decoded instruction
 stream — not just what Ghidra's own analysis reached.** This is a meaningfully stronger negative result
-than before. What's left standing as explanations: either the address is reached through pure
-register-indirect chaining (a pointer stored via another pointer, several layers removed, with no direct
-literal connection anywhere — invisible to any static search, would need dynamic/live tracing), or **the
-candidate struct is never actually populated in this firmware release at all**. The second option has real
-support: the "candidate is all-zero" case (`bVar2` in `ui_recording_storage_screen_draw_and_compare`, and
-the analogous `iVar2+0xa0==0 && iVar2+0xa4==0` check believed shared by the version-info path) is a
-specifically-handled, anticipated branch, not undefined behavior — a struct designed with a sane
-"never-populated" fallback is consistent with it genuinely staying at that fallback permanently in this
-release, rather than a bug. Not proven either way, but the balance of evidence after two sessions of
-searching leans toward "unpopulated/vestigial in v1.42," not "hidden by tooling."
+than before, but see the correction immediately below — this whole thread had, in fact, already been
+investigated and conclusively explained by two much earlier sessions, which this session should have
+checked first rather than re-deriving from scratch.
+
+### Correction: this exact question was already answered by two 2026-08-29 sessions — should have checked first
+
+Found while following an unrelated lead (the user's YouTube-video hardware evidence, see below) that
+`notes/multi-cpu-images-history.md` and `notes/band-scope-state.md` had *already* run this exact
+investigation, using the same core technique (`references_to` on `0x20404654`) this session repeated:
+
+- An earlier session found 18 references to `0x20404654`, both `PARAM` sites resolving to the same
+  function — `FUN_2008cff8`, the *same* memory-channel-editor function this session independently landed
+  on. Their conclusion, verbatim: **"`0x20404654` is just one of many buffer-pairs this single shared
+  utility multiplexes across dozens of unrelated menu screens — not a dedicated firmware-version store
+  with a findable, specific writer."**
+- A separate session (`notes/band-scope-state.md`) reached the same conclusion for the sibling struct
+  `g_screen_display_scratch_buf` (`0x203ff76c`) with even harder evidence: once Ghidra's memory map was
+  extended to the RZ/A1H's full 10 MB RAM range, `references_to` surfaced **52 real references including 15
+  actual writes** — from completely unrelated screens (one writer contains the literal string
+  `"2 Scope Out of Range"`, a band-scope feature; another is a keypad/menu-entry handler with hardcoded
+  preset digits). Explicitly names `0x20404654` as "the same class."
+- That session's own bottom line, which stands: *"The genuine version-comparison values remain populated
+  by a mechanism this project's static-analysis techniques don't reach (most likely reached only through
+  this same generic, heavily-multiplexed settings-comparison machinery, several layers removed from any
+  single traceable literal write)."* — i.e. **not** "never populated," but "populated via a shared,
+  generic dispatcher's own internal logic, not a dedicated single-purpose writer function." Also recorded
+  ground-truth version numbers from the user's own real radio worth keeping: `Main CPU 1.42` /
+  `Front CPU 1.01` / `DSP Program 1.07` / `DSP Data 1.00` / `FPGA 1.13`.
+
+**Reconciling with this session's "never populated" hypothesis above**: the earlier framing is more precise
+and should supersede it. `FUN_2008cff8` is itself a large (~10 KB) generic dispatcher with an internal
+switch serving many different screen contexts by a runtime state ID — this session only decompiled a few
+of its branches. The real remaining next step, not tried by either this session or the 2026-08-29 one, is
+finding which (if any) of `FUN_2008cff8`'s *own internal cases* corresponds to the firmware-version screen's
+context — that's where real update-file data would enter, if it ever does, rather than searching for an
+external writer to the fixed address (which both sessions independently, correctly, found doesn't exist).
+
+**Net assessment after two independent sessions hitting the same wall via different techniques** (the
+original xref-based search, and this session's addition of `MOVW`/`MOVT`/`ADR` idiom checks across the full
+disassembly): this is a genuine, well-confirmed static-analysis limit, explicitly flagged by the earlier
+session as needing live JTAG to resolve cleanly. Not worth another blind pass without a sharper lead (the
+`FUN_2008cff8` internal-case angle above) or live hardware access.
 
 ### Does a version mismatch actually trigger a firmware push? Checked from 3 angles, answer is no (2026-09-07)
 

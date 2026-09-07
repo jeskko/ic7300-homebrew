@@ -104,15 +104,20 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   earlier (2026-08-29) session had left as "not fully proven." Several other new leads for the candidate
   struct's writer were checked and ruled out this round too (`cold_boot_hw_init`, `system_mode_request_
   dispatch`, `sd_menu_dispatch_task`'s neighboring cases) — still genuinely unfound; see the history file.
-- **Searched the raw disassembly directly for all 3 ARM address-formation idioms, 2026-09-07 — all zero.**
-  Literal-pool loads (already covered), `MOVW`/`MOVT` immediate pairs, and `ADR`/`ADD`/`SUB`-with-PC
-  computation — checked each against the *entire* decoded instruction stream via
-  `tools/superset_disasm.py`'s database plus a fresh script for the PC-relative-add case, not just
-  Ghidra's own resolved xrefs. Zero hits for all three. Meaningfully stronger negative result than before —
-  leans the balance of evidence toward "the candidate struct is never actually populated in this firmware
-  release," not "hidden by tooling," though pure register-indirect chaining (invisible to any static
-  search) remains a theoretical alternative. Full derivation in `notes/front-panel-firmware-history.md`'s
-  "Searched the raw disassembly directly" section.
+- **Searched the raw disassembly directly for all 3 ARM address-formation idioms, 2026-09-07 — all zero,
+  but see the correction below.** Literal-pool loads (already covered), `MOVW`/`MOVT` immediate pairs, and
+  `ADR`/`ADD`/`SUB`-with-PC computation — checked each against the *entire* decoded instruction stream via
+  `tools/superset_disasm.py`'s database plus a fresh script for the PC-relative-add case. Zero hits for all
+  three — a genuinely new, valuable check (neither this nor an earlier session had tried it).
+- **Correction, 2026-09-07 — this exact question was already answered by two 2026-08-29 sessions; should
+  have checked existing notes first.** `notes/multi-cpu-images-history.md` and `notes/band-scope-state.md`
+  already ran this investigation via `references_to` and reached the same "generic multiplexed buffer"
+  conclusion this session did independently, with harder evidence (actual unrelated writers identified for
+  the sibling struct, one containing the literal string `"2 Scope Out of Range"`). Their more precise
+  framing: **not** "never populated," but "populated via `FUN_2008cff8`'s own generic dispatch logic, not a
+  dedicated writer function" — a real, sharper next step (find which internal case of `FUN_2008cff8`
+  handles this screen) that neither session has tried yet. See `notes/front-panel-firmware-history.md`'s
+  correction section for the full reconciliation.
 - **Checked, 2026-09-07 — does a detected mismatch actually trigger a firmware push? No, from 3 angles.**
   The mismatch branch's own calls are 100% UI-drawing, nothing touches flash/transport code. The real
   updater (`firmware_update_main`) shares zero code or data with the comparison structs — reached only via
