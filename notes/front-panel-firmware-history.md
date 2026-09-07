@@ -415,3 +415,43 @@ verified independently via the label strings drawn alongside each value, unaffec
 **Still open**: who writes `g_update_candidate_version_struct`, and whether it's ever actually sourced from
 a real SD-card update file (settling the original "is update-availability really detected this way"
 question) or is purely a same-buffer-type previous-frame snapshot with no tie to update files at all.
+
+### Does a version mismatch actually trigger a firmware push? Checked from 3 angles, answer is no (2026-09-07)
+
+User's natural next question: if a mismatch is detected, does the radio go push new firmware to whatever's
+out of sync? Checked directly rather than assumed, from three independent angles, all converging on no:
+
+1. **The mismatch branch's own calls**: every function `ui_version_screen_draw_and_compare` calls there
+   (`FUN_200ace08`/`FUN_200adba4`/`FUN_200ac6e0`/`FUN_200ac2cc`/`FUN_200addac`, plus string-formatting
+   helpers) lives in the UI-widget-drawing (`0x200ac000`-`0x200ae000`) or string-formatting (`0x2017c000`,
+   `0x20080000`) ranges. Nothing touches flash, SD-card I/O, or any transport code — pure display.
+2. **No shared code or data with the real updater**: `firmware_update_main` (the actual flash-erase/program
+   orchestrator, `notes/firmware-update.md`) is reached only via the SD-card menu's explicit case `0xb` — a
+   manual user confirmation, not anything automatic. Pulled every reference to both comparison structs
+   (`g_screen_display_scratch_buf`, `g_update_candidate_version_struct`): every single one sits in the
+   `0x2003xxxx`-`0x2008xxxx` range (other unrelated screens, per the struct-reuse finding above). **None
+   land anywhere near `firmware_update_main` (`0x20025ae4`) or its own chunk-decision function** — two
+   fully disjoint regions, zero overlap.
+3. **`firmware_update_main`'s own per-chunk trigger is a separate, still-unfound mystery**: it decides
+   whether to write each of the 3 optional "extra chunks" via `chunk_needs_update(index)` (already named
+   from an earlier session), which just reads a 3-byte flag array, `DAT_2002217c`. Went looking for its
+   writer: **zero writers found anywhere** — both via Ghidra's own reference tracking and an independent
+   whole-image raw-byte scan for the literal address. Whatever sets this flag isn't reachable by any
+   address-literal search at all (the same "computed/indexed address" gap class this project keeps
+   hitting) — a real, separate open mystery, unconnected to the version-info screen either way.
+   `notes/firmware-update.md` had already flagged this exact gap as "plausible, not proven" when first
+   found; this session's search makes it more precisely "not found by any means tried yet," not closer to
+   confirmed.
+4. **Even if triggered, the transport for these 3 chunks isn't `SCIF3` anyway** — re-decompiled
+   `chunk_transport_send_data` directly (not just citing the older note) to double-check: it's built on a
+   completely different low-level transport, a `PPR0`/`HSK1`-handshake-gated ring buffer using hardware
+   register `0xFCFF0305`, nothing resembling the `SCIF3` UART's `0xFE`/`0xFD` frame convention at all.
+   Reconfirms, independently this session, that none of these 3 chunks could reach the front panel over
+   `SCIF3` regardless of what triggers them.
+
+**Answer: no traced "mismatch → push firmware" pathway exists anywhere in this firmware**, checked at all
+three places one could plausibly live (the comparison screen itself, the real updater's entry point, and
+the real updater's own per-chunk trigger). The version-info screen is display-only; the real updater is a
+separate, manually-triggered mechanism with its own unfound trigger condition; and the front panel
+specifically has no outbound firmware-write transport at all — independently reconfirmed this session on
+top of the prior session's finding.

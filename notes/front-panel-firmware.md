@@ -79,6 +79,14 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   unresolved is what writes the candidate side and whether it's this screen's own "last frame" or
   something update-file-related after all. See `notes/front-panel-firmware-history.md`'s "What the
   candidate struct really is" section.
+- **Checked, 2026-09-07 — does a detected mismatch actually trigger a firmware push? No, from 3 angles.**
+  The mismatch branch's own calls are 100% UI-drawing, nothing touches flash/transport code. The real
+  updater (`firmware_update_main`) shares zero code or data with the comparison structs — reached only via
+  a manual SD-card-menu confirmation. Even `firmware_update_main`'s own per-chunk trigger
+  (`chunk_needs_update`/`DAT_2002217c`) has no writer found anywhere (checked exhaustively, a real open
+  mystery of its own). And the transport those 3 chunks would use (`chunk_transport_send_data`) is
+  reconfirmed non-`SCIF3` regardless. See `notes/front-panel-firmware-history.md`'s "Does a version
+  mismatch actually trigger a firmware push?" section.
 - **Checked, 2026-09-07 — no firmware-image-write mechanism found for the front panel (not exhaustive).**
   `scif3_send_frame` (the only outbound-frame-construction primitive found) is called exclusively from
   `scif3_driver_pump_tick` (`0x200373ac`, renamed from `FUN_200373ac`), which is in turn the *only* caller

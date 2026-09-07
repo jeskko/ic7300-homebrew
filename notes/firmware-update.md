@@ -260,15 +260,20 @@ and — the one piece never traced — how the radio actually restarts afterward
 menu dispatcher, alongside format/save-settings/load-settings/memory-keyer operations. Nothing special
 gates entry to it; it's reached the same way any other SD-menu action is.
 
-**The "3 extra chunks" decision step — the per-chunk gate finally identified.** `FUN_20021ff0(index)`
-(`index` 0-2) is a trivial 3-byte lookup into `DAT_2002217c` — this is exactly the per-chunk
-"does this component actually need updating" flag `firmware_update_main` consults twice (once to compute a
-progress estimate, once to decide which of the 3 chunks to actually read/write/push). **Not yet confirmed,
-but a strong, live hypothesis**: this looks like precisely the kind of decision [[multi-cpu-images]]'
-`FUN_200a94c8` (the 5-field Main/Front-CPU/DSP-Program/DSP-Data/FPGA version-compatibility check) would
-feed — no direct writer to `DAT_2002217c` was found via `references_to` this session (same "runtime-
-populated via indirect addressing" pattern seen elsewhere in this project), so the link is plausible, not
-proven. Worth confirming directly if this thread is picked up again.
+**The "3 extra chunks" decision step — the per-chunk gate finally identified.** `chunk_needs_update(index)`
+(renamed from `FUN_20021ff0`, `index` 0-2) is a trivial 3-byte lookup into `DAT_2002217c` — this is exactly
+the per-chunk "does this component actually need updating" flag `firmware_update_main` consults twice (once
+to compute a progress estimate, once to decide which of the 3 chunks to actually read/write/push).
+
+**Correction, 2026-09-07 — the `FUN_200a94c8` link is retracted, not just unconfirmed.** That function
+(renamed `ui_version_screen_draw_and_compare`, see `notes/front-panel-firmware.md`) turned out to be the
+version-info *menu screen*'s own display/redraw-optimization logic, not an update-decision function — its
+comparison structs share zero code or data with `firmware_update_main`/`chunk_needs_update` (checked
+directly, every reference to both sides lands in a disjoint address range). **`DAT_2002217c`'s real writer
+is still genuinely unfound** — checked again this session via an independent whole-image raw-byte scan for
+the literal address on top of the original `references_to` check, still zero hits. This is a real, deeper
+open gap on its own, unconnected to the version-info screen either way — worth chasing directly (maybe a
+computed/indexed write, per this project's recurring pattern) rather than assuming any particular source.
 
 **Real hardware handshake found on the "3 extra chunks" transport — corrects an earlier negative
 result.** Read the literal-pool constants `FUN_20025044` (the per-chunk ring-buffer producer) and
