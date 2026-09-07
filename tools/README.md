@@ -93,6 +93,20 @@ to touch the live project — no MCP tool exposes this (checked both the current
 `themixednuts/GhidraMCP` and, before it, `bethington/ghidra-mcp`, abandoned as unreliable; see
 `README.md`'s Ghidra MCP section). `ghidra_scripts/FixArmThumbMode.java` is a native Ghidra script that
 collapses the three manual GUI steps (Clear Code Bytes / Set Register TMode / Disassemble) into one
-run with three prompts (start address, length, ARM or Thumb). One-time setup: Ghidra's Script Manager
-(Window → Script Manager) → Script Directories icon → add this repo's `tools/ghidra_scripts` → Refresh;
-it then shows up under the `ICOM.ARM-Thumb` category like any built-in script.
+run. One-time setup: Ghidra's Script Manager (Window → Script Manager) → Script Directories icon → add
+this repo's `tools/ghidra_scripts` → Refresh; it then shows up under the `ICOM.ARM-Thumb` category
+like any built-in script.
+
+Rather than prompting interactively, it reads its work from a fixed request file — `scratch/
+armthumb_fix_requests.txt` — so Claude can write the addresses directly and you just click Run, no
+copy-pasting. One line per fix: `<address> <length> <arm|thumb>`, optionally followed by a free-text
+note:
+```
+0x20056fd4 16 thumb   known needs-Thumb spot, bookmark sweep 2026-08-29
+0x2014b000 4096 thumb FreeType Thumb-2 region
+```
+Every line's outcome (OK or the error message) is appended, timestamped, to `scratch/
+armthumb_fix_results.txt`; the request file is then replaced with a single "processed at &lt;time&gt;"
+line so a stray re-run with no new content is an obvious no-op rather than silently reapplying old
+fixes. Both files are gitignored (`scratch/`) — regenerate/rewrite as needed, nothing durable is lost
+since the real record of a fix is the Ghidra database itself.
