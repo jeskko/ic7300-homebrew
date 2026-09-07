@@ -87,3 +87,12 @@ real fix by hand in the GUI:
   literal-pool xrefs and other instruction patterns once you know the mode.
   Regenerate the `.sqlite` (gitignored, lives under `scratch/`) whenever the
   working firmware release changes.
+
+**Applying a real fix** (once you know the mode from the two tools above) still needs Ghidra itself
+to touch the live project — no MCP tool exposes this (checked both the currently-installed
+`themixednuts/GhidraMCP` and, before it, `bethington/ghidra-mcp`, abandoned as unreliable; see
+`README.md`'s Ghidra MCP section). `ghidra_scripts/FixArmThumbMode.java` is a native Ghidra script that
+collapses the three manual GUI steps (Clear Code Bytes / Set Register TMode / Disassemble) into one
+run with three prompts (start address, length, ARM or Thumb). One-time setup: Ghidra's Script Manager
+(Window → Script Manager) → Script Directories icon → add this repo's `tools/ghidra_scripts` → Refresh;
+it then shows up under the `ICOM.ARM-Thumb` category like any built-in script.
