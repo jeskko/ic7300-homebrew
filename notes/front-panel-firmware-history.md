@@ -363,12 +363,17 @@ Full decompile re-read to pin down exactly what happens in each branch, not just
    jumps straight to the tail section, skipping the entire detail block below.
 3. **Scenario B — a mismatch was found**: draws a whole detail panel at widget `0x26a`/`0x26c`/`0x26d`/
    `0x26e` — a title string assembled from a table lookup (indexed by a 2-bit mode selector and a language/
-   variant bit) plus `current+0x84`'s own string, a formatted "`current[0x9f]`/`current[0x9e]-1`" counter,
-   what reads as a percentage/gauge computation (`iVar9*100/local_8c`, scaled and split into two draw calls
-   — shape strongly suggests a filled/empty bar), then **an unrolled loop over all 5 components**, each
-   drawing its label string (from `DAT_200a9bb0` at `+4`/`+0x10`/`+0x1c`/`+0x28`/`+0x34`) and its raw
+   variant bit) plus `current+0x84`'s own string, a formatted `"current[0x9e]/current[0x9f]"` counter (a
+   plain `"NN/NN"` string — meaning not yet confirmed), then **an unrolled loop over all 5 components**,
+   each drawing its label string (from `DAT_200a9bb0` at `+4`/`+0x10`/`+0x1c`/`+0x28`/`+0x34`) and its raw
    *current*-side 4 bytes as the displayed value (not the candidate's — this panel shows "what's currently
-   installed," not "what's on offer").
+   installed," not "what's on offer"). **Correction, 2026-09-07, same day, caught by the user pushing back
+   on "why show a progress bar if no update is happening"**: an earlier pass of this write-up wrongly
+   attributed a percentage/gauge-bar computation (`iVar9*100/local_8c`, split into two draw calls) to
+   *this* function — re-read the fresh decompile line-by-line and confirmed **no such code exists anywhere
+   in `ui_version_screen_draw_and_compare`**. That computation is real, but belongs to `FUN_2009e8c0` (see
+   below) — a mix-up from working on both functions in the same session. There is no progress bar in the
+   actual version-info mismatch screen.
 4. **Tail section, always evaluated** (whether or not scenario B's block ran): three near-identical blocks
    for widget IDs `0x270`/`0x271`/`0x272`. Each is gated by the *same* condition,
    `(uVar9 != 0) || (current+0xb4 != candidate's matching byte)` — i.e. re-evaluated independently per
@@ -397,6 +402,18 @@ belong to `FUN_2008cff8` — a **memory-channel-editor screen**, comparing chann
 bytes at that same `+0x9c` offset convention, with zero relation to firmware versions. This is the *same*
 struct-reuse pattern already flagged for `g_screen_display_scratch_buf` (52 reference sites across
 unrelated screens) — now confirmed for the "candidate" side too, at least one unrelated user found.
+
+**A second unrelated screen found sharing the same buffer, same day, while chasing the progress-bar
+correction above**: `FUN_2009e8c0` — previously guessed to be "likely the SD-card-insert firmware-update
+notification screen" purely from its structural similarity to `ui_version_screen_draw_and_compare` and its
+adjacent screen-ID range (`0x261`-`0x269` vs `0x26a`-`0x272`) — **that guess is also wrong.** Checked the
+string it references directly (`0x2009f210`): decodes to `"(REC:"`. Combined with its own formatting code
+(one field rendered as `"X.Y MB"`, another as `"NNh NNm"`), this is a **recording/QSO-recorder storage-
+capacity display** ("REC: <space used> / <duration>"), not a firmware-related screen at all — a third
+confirmed unrelated reuse of the same generic buffer pair, on top of the memory-channel editor above. Its
+percentage/gauge-bar computation (`iVar9*100/local_8c`, current+0xa0/+0xa4 read as a numeric ratio, not
+version bytes) is exactly this screen's own "how much recording storage is used" progress bar — real code,
+just never part of the firmware-version comparison at all.
 
 **This retracts the earlier "likely an SD-card update file's header" hypothesis** — there's no positive
 evidence for it, and real evidence now points the other way (a struct genuinely shared by content that

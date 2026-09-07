@@ -63,9 +63,12 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   (the live, `SCIF3`-latched current value) against `g_update_candidate_version_struct+8` via a 4-byte
   compare, alongside the same check for all 5 components; any mismatch sets a flag that gates a whole
   detail panel plus 3 status-row widgets (full scenario breakdown in the history file). A second,
-  structurally identical comparison function (`FUN_2009e8c0`) does the same diff for what's likely the
-  SD-card-insert notification screen, not just the manual version-info menu — real, load-bearing logic,
-  not a one-off.
+  structurally identical comparison function (`FUN_2009e8c0`) does the same diff structure — but
+  **correction, same day**: it's *not* a firmware-related screen at all (an initial guess it was "likely
+  the SD-card-insert notification" was wrong too) — it's a recording/QSO-recorder storage-capacity display
+  (its own string reference decodes to `"(REC:"`), a third confirmed unrelated screen reusing the same
+  generic comparison-struct pair. See `notes/front-panel-firmware-history.md`'s "A second unrelated screen
+  found" section.
 - **Correction, 2026-09-07, later same day**: retracting the "likely an SD-card update file's header"
   guess for what `g_update_candidate_version_struct` holds. Found its base address (offset `+0x9c`) reused
   **verbatim inside a completely unrelated screen** — a memory-channel-editor function (`FUN_2008cff8`)
