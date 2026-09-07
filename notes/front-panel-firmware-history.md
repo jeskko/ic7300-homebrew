@@ -346,9 +346,72 @@ coincidence.
 
 **Not yet traced**: where `g_update_candidate_version_struct` itself gets populated. No direct `WRITE`
 reference was found to its base address or its `+8` (Front CPU) field specifically — consistent with it
-being filled by a single bulk copy (e.g. `memcpy`-style, from an inserted SD-card update file's header)
-whose destination is computed rather than a fixed literal operand, the same class of gap this project keeps
-hitting. Strong working hypothesis, not confirmed: this is the update-container's own "Front CPU" version
-field (`FUN_200a94c8`'s `+0xa4`, per the original handout's phrasing) getting copied in when the
-update-file-scanning code (`notes/firmware-update.md`) detects a real update file — i.e. the comparison is
-real and load-bearing, but exactly when/how the candidate side gets populated is still open.
+being filled by a single bulk copy whose destination is computed rather than a fixed literal operand, the
+same class of gap this project keeps hitting.
+
+### Full scenario breakdown of `ui_version_screen_draw_and_compare` (asked for directly, 2026-09-07)
+
+Full decompile re-read to pin down exactly what happens in each branch, not just that a comparison exists:
+
+1. **The diff itself**: one big `||`-chained `if`, 4-byte-comparing `current`'s (`g_screen_display_scratch_buf`)
+   Main CPU/Front CPU/DSP Program/DSP Data/FPGA fields (`+0xa0`/`+0xa4`/`+0xa8`/`+0xac`/`+0xb0`) against
+   `candidate`'s (`g_update_candidate_version_struct`) matching fields (`+4`/`+8`/`+0xc`/`+0x10`/`+0x14` in
+   `ushort` units), plus 3 header-byte checks (`+0x9c`/`+0x9e`/`+0x9f`). **Any single mismatch anywhere
+   sets one shared flag** (`uVar9 |= 0x8000`) — no per-component granularity at this stage.
+2. **Scenario A — everything matches, including one more independent check**: if the flag is clear *and*
+   `current+0xb4` also equals `candidate`'s corresponding byte (`puVar3[0xc]`, i.e. candidate `+0x18`),
+   jumps straight to the tail section, skipping the entire detail block below.
+3. **Scenario B — a mismatch was found**: draws a whole detail panel at widget `0x26a`/`0x26c`/`0x26d`/
+   `0x26e` — a title string assembled from a table lookup (indexed by a 2-bit mode selector and a language/
+   variant bit) plus `current+0x84`'s own string, a formatted "`current[0x9f]`/`current[0x9e]-1`" counter,
+   what reads as a percentage/gauge computation (`iVar9*100/local_8c`, scaled and split into two draw calls
+   — shape strongly suggests a filled/empty bar), then **an unrolled loop over all 5 components**, each
+   drawing its label string (from `DAT_200a9bb0` at `+4`/`+0x10`/`+0x1c`/`+0x28`/`+0x34`) and its raw
+   *current*-side 4 bytes as the displayed value (not the candidate's — this panel shows "what's currently
+   installed," not "what's on offer").
+4. **Tail section, always evaluated** (whether or not scenario B's block ran): three near-identical blocks
+   for widget IDs `0x270`/`0x271`/`0x272`. Each is gated by the *same* condition,
+   `(uVar9 != 0) || (current+0xb4 != candidate's matching byte)` — i.e. re-evaluated independently per
+   block, not reusing scenario A/B's earlier branch outcome. Each draws a fixed banner/icon regardless, and
+   additionally draws an overlay/checkmark icon specifically when `current+0xb4` equals `1`, `2`, or `3`
+   respectively (one value per block). Reads as **three fixed status rows**, each highlighted when a
+   single "which single item is out of sync" byte (`current+0xb4`) points at that row — plausibly one row
+   per firmware group, not yet confirmed which.
+
+### What the candidate struct really is — retracting the "SD-card update file" guess
+
+Went looking for `g_update_candidate_version_struct`'s writer to settle the open question from last
+session. Checked all 11 raw-literal-word references to its base address (`0x20404654`) found via a
+whole-image scan, resolving each to its containing function. Most didn't resolve directly (literal-pool
+words sitting in code regions Ghidra's own `references_to` had already tracked through constant
+propagation instead — the real consuming instructions are a *different* address list, already used to find
+`ui_version_screen_draw_and_compare` and `FUN_2009e8c0`). Two of those real references were tagged `PARAM`
+(`0x2008aac4`, `0x2008abc0`) — worth checking directly since a `PARAM` tag on a struct address is exactly
+the shape a bulk-copy destination argument would leave.
+
+Reading the raw listing at that address's literal pool (`0x2008abd4`-`0x2008abf4`) instead of trusting the
+decompiler's variable names turned up the real finding: `DAT_2008abd8` = `0x203ff76c`
+(`g_screen_display_scratch_buf`'s own base, confirmed byte-for-byte) and `DAT_2008abe0` = `0x204045b8` =
+`g_update_candidate_version_struct + 0x9c` **exactly** (`0x20404654 + 0x9c = 0x204045b8`). Both pointers
+belong to `FUN_2008cff8` — a **memory-channel-editor screen**, comparing channel number/mode/split-state
+bytes at that same `+0x9c` offset convention, with zero relation to firmware versions. This is the *same*
+struct-reuse pattern already flagged for `g_screen_display_scratch_buf` (52 reference sites across
+unrelated screens) — now confirmed for the "candidate" side too, at least one unrelated user found.
+
+**This retracts the earlier "likely an SD-card update file's header" hypothesis** — there's no positive
+evidence for it, and real evidence now points the other way (a struct genuinely shared by content that
+has nothing to do with update files). **New leading hypothesis, not confirmed**: `current`/`candidate` are
+a generic previous-frame-vs-current-frame snapshot pair, reused across many unrelated screens as a cheap
+redraw-skip optimization — each screen's own populate function fills `current` with fresh values every
+tick, and whatever fills `candidate` (still not found) holds "what was on screen last render," so a widget
+only gets redrawn when its specific byte range actually changed since then. Under this reading,
+`ui_version_screen_draw_and_compare`'s "diff" isn't really "is an update available" logic at all — it's
+"did anything about the version-info screen's own displayed values change since I last drew this screen,"
+which happens to *also* answer the update-availability question correctly if `candidate` gets refreshed
+from a real update file at some point, but that refresh step is now the genuinely open, unconfirmed part.
+The version-info screen's own field *interpretation* (which offset means which component) stays solid —
+verified independently via the label strings drawn alongside each value, unaffected by this correction.
+
+**Still open**: who writes `g_update_candidate_version_struct`, and whether it's ever actually sourced from
+a real SD-card update file (settling the original "is update-availability really detected this way"
+question) or is purely a same-buffer-type previous-frame snapshot with no tie to update files at all.

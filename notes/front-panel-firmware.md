@@ -60,13 +60,25 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   version" section.
 - **Correction, 2026-09-07, same day**: the Front CPU version is *not* "only stored and displayed" — it
   IS actively compared. `ui_version_screen_draw_and_compare` diffs `g_screen_display_scratch_buf+0xa4`
-  (the live, `SCIF3`-latched current value) against `g_update_candidate_version_struct+8` (a "candidate"
-  struct, likely sourced from an inserted SD-card update file's header — that write path isn't traced yet)
-  via a 4-byte compare, alongside the same check for all 5 components; any mismatch sets a flag that drives
-  the "firmware update available" banner. A second, structurally identical comparison function
-  (`FUN_2009e8c0`) does the same diff for what's likely the SD-card-insert notification screen, not just
-  the manual version-info menu — real, load-bearing logic, not a one-off. See
-  `notes/front-panel-firmware-history.md`'s "The version IS compared" section.
+  (the live, `SCIF3`-latched current value) against `g_update_candidate_version_struct+8` via a 4-byte
+  compare, alongside the same check for all 5 components; any mismatch sets a flag that gates a whole
+  detail panel plus 3 status-row widgets (full scenario breakdown in the history file). A second,
+  structurally identical comparison function (`FUN_2009e8c0`) does the same diff for what's likely the
+  SD-card-insert notification screen, not just the manual version-info menu — real, load-bearing logic,
+  not a one-off.
+- **Correction, 2026-09-07, later same day**: retracting the "likely an SD-card update file's header"
+  guess for what `g_update_candidate_version_struct` holds. Found its base address (offset `+0x9c`) reused
+  **verbatim inside a completely unrelated screen** — a memory-channel-editor function (`FUN_2008cff8`)
+  comparing channel/mode/split data at the exact same offset, nothing to do with firmware versions.
+  `g_screen_display_scratch_buf` is even more widely shared (52 reference sites across unrelated screens).
+  **New leading hypothesis, not yet confirmed**: this is a generic previous-frame-vs-current-frame
+  snapshot pair used across many unrelated screens for redraw-skipping (only redraw a widget whose
+  underlying bytes actually changed since last render) — not specifically "installed vs. update-file
+  version." The version-info screen's own field *interpretation* (which offset means which component) is
+  still solid, verified independently via the label strings drawn alongside each value; what's genuinely
+  unresolved is what writes the candidate side and whether it's this screen's own "last frame" or
+  something update-file-related after all. See `notes/front-panel-firmware-history.md`'s "What the
+  candidate struct really is" section.
 - **Checked, 2026-09-07 — no firmware-image-write mechanism found for the front panel (not exhaustive).**
   `scif3_send_frame` (the only outbound-frame-construction primitive found) is called exclusively from
   `scif3_driver_pump_tick` (`0x200373ac`, renamed from `FUN_200373ac`), which is in turn the *only* caller
