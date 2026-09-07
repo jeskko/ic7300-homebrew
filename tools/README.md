@@ -36,4 +36,54 @@ tools/
     container.py   container parser (see /notes/container-format.md)
     cli.py          unpack one file -> component files + manifest.json
   verify_all.py     cross-check against all 10 releases + existing refs
+  arm_thumb_scan.py    per-window ARM-vs-Thumb region classifier (objdump heuristic)
+  superset_disasm.py   full per-address ARM+Thumb disassembly, persisted to SQLite
 ```
+
+## ARM/Thumb disassembly-ambiguity tooling
+
+`body.bin` has no embedded mode markers, and Ghidra occasionally guesses the
+wrong ARM/Thumb mode for a region (see `notes/kernel-rtos.md`'s tooling-gotcha
+entry) or fails to find a real string/data reference simply because the
+referencing instruction sits in a region Ghidra's own analysis hasn't
+resolved correctly yet. Two complementary scripts address this, neither ever
+touches the live Ghidra project — both are ground-truth locators, apply any
+real fix by hand in the GUI:
+
+- **`arm_thumb_scan.py`** — classifies fixed-size windows as `arm`/`thumb`/
+  `ambiguous` using objdump's own bad-instruction-count in each mode. Cheap
+  (~16s for the whole 3.7 MB image), good for "what mode does this region
+  look like". Doesn't keep the actual instructions.
+- **`superset_disasm.py`** — decodes *every* candidate address independently
+  in both modes (every 4-byte-aligned address as ARM, every 2-byte-aligned
+  address as Thumb — the standard "superset/shingled disassembly" technique
+  for resolving this kind of ambiguity) and persists every attempt (address,
+  mode, validity, mnemonic, operands, raw bytes, and — for `ldr Rd, [pc,
+  #imm]` literal loads — the resolved target address) to a SQLite database.
+  ~30s for the whole image. This is what makes cheap searches possible:
+  ```
+  python3 tools/superset_disasm.py scratch/unpacked/<rel>/body.bin \
+      --base 0x20005000 --out scratch/superset_<rel>.sqlite
+
+  # find every instruction (in either mode) that references a known address
+  sqlite3 scratch/superset_142.sqlite \
+      "select addr, mode, mnemonic, op_str from insns where target=0x2035a010"
+
+  # all literal-pool loads in a region, either mode
+  sqlite3 scratch/superset_142.sqlite \
+      "select addr, mode, mnemonic, op_str from insns
+       where mnemonic like 'ldr%' and op_str like '%pc%'
+       and addr between 0x20140000 and 0x20150000"
+  ```
+  **Caveat found while validating this** (checked against the known
+  `0x20056fd4` Thumb-fix spot): a *single* instruction's validity is a weak
+  mode signal on its own, especially in ARM mode — most 4-byte words decode
+  to *some* syntactically valid ARM instruction (conditional branches eat a
+  huge slice of the encoding space), so `0x20056fd4` decodes "validly" as
+  both `b #0x200175d4` (ARM) and `lsls r6, r7, #5` (Thumb) even though only
+  Thumb is real. Use `arm_thumb_scan.py`'s windowed run-of-valid-instructions
+  heuristic to judge *which* mode is actually right at a given address;
+  use `superset_disasm.py`'s persisted table to then search/grep for
+  literal-pool xrefs and other instruction patterns once you know the mode.
+  Regenerate the `.sqlite` (gitignored, lives under `scratch/`) whenever the
+  working firmware release changes.
