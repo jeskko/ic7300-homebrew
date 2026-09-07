@@ -97,7 +97,16 @@ transport:
 - **Live parameter sync** (`dsp_param_sync_tick`) — a 24-entry table (`dsp_cmd_table_init`), diffed against
   a shadow copy every tick, changed slots pushed live. Confirms the DSP is an actively-running core in
   normal operation, not held in reset. The ~22 individual parameters (mode/filter/AGC-shaped, per working
-  hypothesis) aren't individually named yet.
+  hypothesis) aren't individually named yet. **2026-09-07**: found the real rebuild trigger —
+  `dsp_param_table_rebuild_from_settings` (`0x200b232c`, from the RTTY-settings-usage side of
+  `notes/kernel-rtos-history.md`'s RTTY/SSTV thread) recomputes all 22 live words from the big DSP-config
+  struct at `0x203def00` (the same struct already known to feed `factory_file_load`'s identity check —
+  turns out to be a much bigger general settings block, not just 3 identity records) whenever a dirty flag
+  (`DAT_200b2b18`) is set, including per-operating-mode-indexed fields and mode-index-4-only global fields
+  (a real RTTY candidate). Confirms this mechanism really is how live settings (RTTY's included) reach the
+  DSP — no per-field writer found yet (same EEPROM-shadow pattern as elsewhere), but the consumer side of
+  the ~22-parameter question is now concretely answered even though individual slot identities still
+  aren't all pinned down.
 - **Identity/version query** (`dsp_identity_query_cmd0`-`cmd5`) — 3 formatted version-ish records,
   confirmed consumed by `factory_file_load` (gates whether a stored factory/calibration file matches the
   currently-installed DSP) — **not** by `FUN_200a94c8` as originally guessed.

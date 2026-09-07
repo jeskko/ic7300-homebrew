@@ -49,9 +49,23 @@ anywhere on the main CPU.** Working theory, now fairly well-supported after thre
 the DSP demodulates continuously per its currently-synced mode/filter settings with no discrete "enable"
 call to find on the CPU side; "MENU → Decode" most likely just toggles a separate, still-unfound *on-screen
 display* consumer of the same decoded-character stream the SD-logger also reads — not something that starts
-the underlying decoding. **This CPU-side static-tracing approach has been pushed about as far as it
-profitably goes; live JTAG (watch `SCIF5`/DSP-interface traffic during real RTTY reception) is the honest
-next step**, not further static reading.
+the underlying decoding.
+
+**Fourth angle, same session — approached from the settings side instead of the trigger side, and got real
+confirmation of the theory above.** Found real RTTY menu-item name strings (`"RTTY Mark Frequency"`,
+`"RTTY Decode USOS"`, `"RTTY TX USOS"`, `"RTTY FFT"`) in the menu-label pool `notes/diode-matrix.md` had
+flagged as still-unlocated, then — pivoting to `notes/multi-cpu-images.md`'s separate DSP-comms thread —
+found the actual function (`dsp_param_table_rebuild_from_settings`, `0x200b232c`) that rebuilds the DSP's
+24-word live parameter-sync table from a big settings struct (`0x203def00`) whenever a dirty flag is set,
+including fields gated on the operating-mode index equalling `4` (a real RTTY candidate). This *is* the
+concrete mechanism connecting RTTY's own settings to the DSP over `SCIF5` — real confirmation, not just a
+plausible story, that settings get pushed live/continuously rather than through a discrete "start decode"
+call. Full derivation in `notes/kernel-rtos-history.md`'s "Coming at it from the settings side" section and
+`notes/multi-cpu-images.md`'s DSP command API section.
+
+**This CPU-side static-tracing approach has been pushed about as far as it profitably goes across four
+independent angles now; live JTAG (watch `SCIF5`/DSP-interface traffic during real RTTY reception) is the
+honest next step** for anyone wanting the actual demodulator, not further static reading.
 
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 
