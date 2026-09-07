@@ -293,14 +293,18 @@ class) matching the shape of the radio's own SD directory-reading code.
   IC-9700's JTAG connector and full pinout are identical to the
   IC-7300's own (`10FLT-SM2-TB`) — see `notes/hardware-debug-access.md`.
   Genuine cold-start effort, no prior art existed for this radio going in.
-- 🟡 **UI menu/touchscreen system, first look, 2026-09-07**: two real structures found, neither fully
-  walked yet. A factory "FRONT CHECK MODE" self-test screen lists all 13 real physical front-panel
-  buttons by name (`MENU` is button 9, `QUICK` is button 12), reached via a 7-state factory-screen
-  selector. Separately, found the real touchscreen menu-*item* definition table (72-byte records,
-  distinct from both the existing 216-item CI-V/EEPROM value table and the menu-name string pool),
-  confirmed spanning at least the `QUICK MENU` and `MEMORY MENU` screens, with per-item function
-  pointers traced down to thunks — one decompiled so far turned out to be an enabled/checked-state
-  query, not yet the actual "on-press" action dispatcher. See `notes/ui-menu.md`.
+- 🟡 **UI menu/touchscreen system, first look, 2026-09-07**: a factory "FRONT CHECK MODE" self-test
+  screen lists all 13 real physical front-panel buttons by name (`MENU` is button 9, `QUICK` is button
+  12), reached via a 7-state factory-screen selector. Separately, found and correctly decoded (after
+  catching and fixing a self-made record-alignment error — see `notes/ui-menu.md`'s "Correction") a
+  generic, reusable touchscreen **list-menu widget** (72-byte records) that drives QUICK MENU, MEMORY
+  MENU, REC/SET, and other real screens — traced its full selection/navigation flow end-to-end through
+  real decompiled code (visible-item scan → focus resolution → activate → commit/redraw) and recovered
+  several real screen/setting names directly from the table (`"Meter Type"`, `"SELECT"`, `"REC/SET"`).
+  The one piece that dead-ends statically: the fields that would carry each item's actual unique
+  on-press action are zero in every record sampled so far — possibly genuinely runtime-populated, same
+  signature as a couple of other structures this project has already needed live JTAG for. See
+  `notes/ui-menu.md`.
 
 ## Layout
 

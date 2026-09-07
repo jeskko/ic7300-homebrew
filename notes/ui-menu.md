@@ -2,19 +2,22 @@
 
 Started 2026-09-07, prompted by wanting to know what the different on-screen menu buttons actually
 trigger. First real look at this subsystem — a genuinely new thread, not a continuation of an existing
-one. Two separate, real structures found this session; neither is fully walked yet.
+one. Two separate, real structures found; the second one's record layout was mis-aligned in an earlier
+pass this same session and has now been corrected against the actual pointer variables the code reads
+(see "Correction" below) — don't reuse the first-pass offsets, they were wrong.
 
 ## Living reference: what's confirmed so far
 
 | Finding | Address(es) | Status |
 |---|---|---|
-| **Factory "FRONT CHECK MODE" screen** — a numbered list of 13 real physical front-panel buttons | list at `0x20197153` ("FRONT CHECK MODE" title) through `~0x201973c0`; selector function `FUN_2003a540` (state values `0x2c`-`0x32` from `FUN_20013070()` pick between ≥7 factory/service screens, of which this is one) | ✅ button names confirmed, screen-select mechanism traced; the actual GPIO/key-matrix scan code itself not yet chased |
-| **General menu-item definition table** — real touchscreen menu-item records, 0x48 (72) bytes each, confirmed spanning at least the `QUICK MENU` and `MEMORY MENU` screens | table starts ~`0x2018f118`, confirmed items through at least `0x2018f4c4`+ (not yet bounded on either end) | 🟡 record layout mostly decoded, one real per-item handler traced to a checkbox/enabled-state query, not yet to "what pressing it actually does" |
+| **Factory "FRONT CHECK MODE" screen** — a numbered list of 13 real physical front-panel buttons | title at `0x20197153`, list at `0x20196f00`+; selector `FUN_2003a540` (7 states, `0x2c`-`0x32`, from `FUN_20013070()`) | ✅ button names confirmed, screen-select mechanism traced; the actual GPIO/key-matrix scan code itself not yet chased |
+| **Generic touchscreen "list menu" widget** — one reusable set of functions drives QUICK MENU, MEMORY MENU, and presumably every other list-style menu screen, operating on a global "current list" pointer pair | widget code at `0x2004f0e4`-`0x2004f7xx`; bound, in this static snapshot, to the table at `0x2018f0ec` (72-byte/`0x48` records) | 🟡 full selection/navigation flow traced end-to-end (see below); the actual **per-item unique action** the flow ultimately triggers sits in fields that are blank (zeroed) in the static image — likely runtime-populated, the same "can't go further without live hardware" signature this project has hit elsewhere |
 
 ## The "FRONT CHECK MODE" factory button list
 
-A raw string at `0x20197153` reads `"FRONT CHECK MODE"`, immediately preceded by a clean numbered list
-of real physical front-panel button names (read directly from memory, `0x20196f00`+):
+Unchanged from the first pass — a raw string `"FRONT CHECK MODE"` at `0x20197153`, immediately preceded
+by a clean numbered list of real physical front-panel button names (read directly from memory,
+`0x20196f00`+):
 
 ```
 1. TRANSMIT      2. TUNER         3. VOX/BK-IN     4. PBT-CLR
@@ -23,77 +26,112 @@ of real physical front-panel button names (read directly from memory, `0x20196f0
 13. EXIT
 ```
 
-This is a factory/service self-test screen (walks the operator through pressing each physical button in
-turn, presumably checking the key matrix isn't stuck) — confirms button #9 is the physical `MENU` key
-and #12 is `QUICK` (the dedicated Quick Menu key), among others. `FUN_2003a540` is the screen-selector:
-it reads a state value from `FUN_20013070()` (values seen: `0x2c`-`0x32`, i.e. 7 consecutive
-states/screens) and switches between several factory-mode screens, of which "FRONT CHECK MODE"
-(state `0x31`) is one — the other 6 states are other factory screens, not yet identified. The actual
-key-matrix/GPIO scan logic this screen must drive isn't traced yet — this session only found the
-screen-selection and title-string wiring.
+A factory/service self-test screen (walks the operator through pressing each physical button in turn,
+presumably checking the key matrix isn't stuck) — confirms button #9 is the physical `MENU` key and
+#12 is `QUICK` (the dedicated Quick Menu key). `FUN_2003a540` is the screen-selector: it reads a state
+value from `FUN_20013070()` (values seen: `0x2c`-`0x32`, 7 consecutive states) and switches between
+several factory-mode screens, of which "FRONT CHECK MODE" (state `0x31`) is one — the other 6 states
+are other factory screens, not yet identified. The key-matrix/GPIO scan logic itself isn't traced yet.
 
-## The general menu-item table
+## The generic touchscreen list-menu widget
 
-Found via a raw string search for `"QUICK MENU"` / `"MEMORY MENU"` (11 and 1 references respectively,
-all in the `0x2018f1xx`-`0x2018f5xx` range) — the touchscreen menu-item *definition* table, distinct
-from both the 216-item CI-V/EEPROM value-format table (`notes/diode-matrix.md`'s "Found the menu-item
-table" section, `DAT_2000e230`/`0x2018a698`) and the menu-name string *label pool*
-(`~0x2035a000`-`0x2035f000`, English+Japanese, already found but never connected to anything — see
-`notes/diode-matrix.md`'s open question 6). This is a third structure: real per-screen-button records
-that a UI-rendering/dispatch layer reads to draw and handle each menu tile.
+Found via a raw string search for `"QUICK MENU"` / `"MEMORY MENU"` (11 and 1 hits respectively, all in
+`0x2018f1xx`-`0x2018f5xx`) — not a QUICK-MENU-specific table as first assumed, but the data this session
+traced to a **generic, reusable list-widget** (the same code almost certainly drives every list-style
+menu screen — MEMORY MENU's single string hit inside the same address range is exactly what you'd
+expect if its own item list sits immediately after QUICK MENU's in the same table format).
 
-**Record layout** (72 bytes, offsets relative to record start — decoded from 4 consecutive "QUICK MENU"
-item records at `0x2018f160`, `0x2018f1a8`, `0x2018f1f0`, `0x2018f238`; not yet decoded against Ghidra
-structure/data-type tools, this is a hand-derived layout from raw hex):
+**Correction, same session**: the first pass hand-decoded this table's record layout starting from
+`0x2018f118` (where a `00000101` marker word first appears) and got self-contradictory results — one
+field looked like a string pointer in the raw dump but the widget code plainly dereferences the same
+field as a function pointer. Root cause: `0x2018f118` is **not** the real record 0 base. The widget's
+own code (`FUN_2004f610` etc.) reads its list pointer from a fixed global, `DAT_2004f728`, which in
+this static image currently holds `0x2018f0ec` — **44 bytes (`0x2c`) earlier** than the `00000101`
+landmark. Re-decoding from the real base fixed every contradiction. Lesson worth keeping: don't infer a
+struct's base address from where a recognizable bit-pattern *starts* — check what the code that reads
+it actually uses as the base pointer first.
 
-| Offset | Content | Notes |
+**Confirmed record layout** (72 bytes/`0x48`, base = `DAT_2004f728`'s current value, `0x2018f0ec` in
+this snapshot):
+
+| Record | Role | Key fields (all confirmed against real decompiled code, not just pattern-matched) |
 |---|---|---|
-| `+0x00` | `00000101` | flags/type word, constant across the items checked |
-| `+0x04` | ptr to `"QUICK MENU"` (`0x20359c0c`) | parent-screen name; a later cluster (~`0x2018f430`+) instead points to `"MEMORY MENU"` (`0x20359c18`), confirming the table covers multiple screens, not just Quick Menu |
-| `+0x08` | ptr, constant `0x20359e5c` across the 3 items checked | resolves to `"VOICE TX RECORD"` — a real Quick Menu feature name, but identical across sibling items, so probably *not* each item's own name (more likely a shared subtitle/group label) — not fully understood yet |
-| `+0x0c` | ptr, constant `0x20359c4c` across the same 3 items | **not actually text** — read back as non-ASCII binary bytes, so despite sitting in the same string-pool region this is more likely a small icon/glyph-index reference than a name string; corrected after actually reading it rather than assuming from the pattern |
-| `+0x10` | same as `+0x08` | |
-| `+0x18` | small pointer incrementing by ~3 bytes per item (`0x2018f054`, `057`, `05a`, `05c`, …) into a short byte region just before the table | plausibly a 1-3-char per-item tag/icon-key, not yet decoded |
-| `+0x1c` | `00000200` | constant |
-| `+0x28` | `0x2004f610` | shared function pointer across items (render/hit-test callback?), not yet decompiled |
-| `+0x2c` | `0x2004f688` | shared function pointer, not yet decompiled |
-| `+0x30` | **distinct per item**, stride exactly `0xc` (12 bytes): `0x2004f748`, `754`, `760`, `76c`, … | the interesting field — see below |
-| `+0x3c` | `0x203dca41`, shared | possibly icon/style struct, not yet decompiled |
+| index 0 (`0x2018f0ec`) | unused/sentinel | entirely zero |
+| index 1 (`0x2018f134`) | **the "QUICK MENU" screen container** | `+0x04` screen init/setup callback (`0x2004f5a0`); `+0x0c` = `FUN_2004f610` ("activate the currently-selected item"); `+0x10` = `FUN_2004f688` ("scan for up to 4 visible/enabled item positions" — matches the touchscreen's real 4-tiles-at-a-time Quick Menu layout); `+0x14` = this record's own "am I available" test callback; `+0x20` = pointer to a **runtime** current-focus-position byte (blank/unreadable statically); `+0x30` = screen title string `"QUICK MENU"`; `+0x44` = pointer to a small position→item-index lookup table (`0x2018f054`+, bytes `0x0d, 0x14, 0x16, 0x2e, ...` — i.e. absolute item indices `13, 20, 22, 46, ...`, confirming there are at least ~46+ total entries in this whole table, far more than the 3-4 sampled) |
+| indices 2, 3, 4 (`0x2018f17c`, `0x2018f1c4`, `0x2018f20c`) | individual QUICK MENU items | `+0x0c`/`+0x10` same generic function pointers as the container (shared code, not per-item); `+0x14` = **this item's own** "am I available" callback — each is a real 4-byte Thumb thunk (`adds r0,rN,#0x7; b <shared target>`, `rN` and the target both incrementing per item) that tail-calls one shared routine, `FUN_2004f250`, which reads an enabled/checked-state bit — real code, not guessed; `+0x30`/`+0x34` = same `"QUICK MENU"`/`"VOICE TX RECORD"` string pointers as the container and each other — **still not understood why an item-specific-sounding name like "VOICE TX RECORD" is identical across 3 sequential item records**; either it's a stale/default compile-time value never meant to be read this way, or these 3 particular sampled indices are literally 3 sibling sub-options of one feature (e.g. on/off/some third state for the same Voice-TX-Record item) rather than 3 different features — not resolved |
 
-The table's first record per screen (e.g. `0x2018f118` before the "QUICK MENU" items start) has a
-different shape (no name-string fields, a distinct function pointer `0x2004f5a0`) — almost certainly
-the screen-*container* record (the "QUICK MENU" tile/screen itself), with the following records being
-its individual items. Not confirmed against a second screen's container record yet.
+**The full selection/activation flow, traced end-to-end through real decompiled code** (not guessed):
+1. `FUN_2004f688` walks item positions 0..N, calling each one's `+0x14` availability thunk, and
+   builds a list of up to 4 visible/enabled item indices (matching the touchscreen's real 4-tile Quick
+   Menu row) into a small buffer.
+2. `FUN_2004f610` resolves "which absolute item index is currently focused" via the container's
+   `+0x44` lookup table indexed by a **runtime** focus-position byte (`+0x20`, blank in the static
+   image — this is a live "which of the 4 visible tiles has the cursor" value, can't be read
+   statically), then calls that item's own `+0x08` handler if present, and — if that returned 0 *and*
+   the item's enabled-bit is set — calls `FUN_2004f0f0(item_index)`.
+3. `FUN_2004f0f0` calls the *container's* `+0x18` callback if set (null/no-op in this snapshot for
+   QUICK MENU), stores the target item index into a "pending selection" state field, and calls
+   `FUN_2004f0e4`, which just marks the widget dirty for redraw.
 
-**The `+0x30` per-item function pointers are 4-byte real thunks, not full handlers**: each is exactly
-`adds r0,rN,#0x7` (Thumb, 2 bytes, `rN` decrementing per item: r6,r5,r4,r3) followed by `b <target>`
-(Thumb, 2 bytes), where `<target>` also increments by `0xc` per item (`0x2004f28c`, `298`, `2a4`, `2b0`).
-The 8 bytes after each 4-byte thunk are currently undefined in Ghidra (not yet checked whether that's
-real unreached code or genuine padding). All four targets decompile to the *same* enclosing function,
-`FUN_2004f250` — so the differing target offsets are multiple internal entry points into one shared
-routine, not four separate functions. Decompiled, `FUN_2004f250` reads an item's table entry (indexed
-via `DAT_2004f720`/`DAT_2004f728`, structures of the same `0x48`-byte stride as this table) and returns
-bit 0 of a byte at entry `+0x1c` — this reads like an **enabled/checked-state query** (e.g. whether a
-toggle-style Quick Menu item is currently on), not the actual "what happens when you press this"
-action dispatch. The real per-item *action* handler, if distinct from this state query, hasn't been
-found yet.
+**Where this dead-ends statically**: the fields that would carry each item's actual *unique action*
+(the container's `+0x18` "on commit" callback, and items' own `+0x08` handler) are all **zero in this
+static image** for every record sampled so far. This is the same signature as several other genuinely
+runtime-populated structures already documented elsewhere in this project (`kernel_start`'s mystery
+task descriptor, the multi-display attach bitmask) — plausibly filled in during screen construction at
+runtime rather than being compile-time constants, which would mean the real per-item action dispatch
+needs live hardware (JTAG) to observe, not more static reading. Not fully certain yet — worth checking
+a few more of the ~46+ total item records first (only indices 1-4 have been read) in case a later one
+in the table *does* carry a non-null value statically.
+
+## More screens found by reading further into the table
+
+Read records 10-14 (base still `0x2018f0ec`, same `0x48` stride) to see whether the pattern holds
+further out, and it does — plus real new screen names surfaced:
+
+- **Record 11**: a container with title `"REC/SET"` (`0x20359bec`) — very plausibly the Voice-TX-Record
+  settings screen, which would also explain the earlier mystery of `"VOICE TX RECORD"` appearing
+  identically across 3 sampled QUICK MENU items (records 2-4): the already-documented
+  `voice_tx_memory_control_task`/`voice_tx_memory_stream_task` feature (`notes/kernel-rtos.md`) has
+  multiple numbered message slots (`M1`/`M2`/`M3`) — a good working hypothesis is that those 3 records
+  are "Voice TX Record slot 1/2/3" quick-menu shortcuts sharing one feature-category label, distinguished
+  by the per-record `+0x44` lookup byte rather than by their title string. Not confirmed, but it fits
+  cleanly and stops the repetition from being an unexplained oddity.
+- **Record 12**: title `"MEMORY MENU"` (`0x20359c18`) — the second screen the original string search
+  found, now correctly placed in the table structure (an item/container immediately after record 11,
+  same table).
+- **Records 13, 14**: two more containers, each with their **own distinct** init/activate function
+  pointers (`0x2004f858`/`0x2004f864` and `0x2004f888`/`0x2004f898` respectively) — *not* reusing
+  `FUN_2004f610`/`FUN_2004f5a0` the way the QUICK MENU container did. So the "generic widget" isn't
+  fully uniform: some fields (the per-item availability-test convention, the record shape/stride) are
+  shared across every screen, but a screen's own activate/init callback can be screen-specific.
+  Record 13's subtitle field reads `"Meter Type"` (`0x20359c98`) — a real IC-7300 multi-function-meter
+  setting — and record 14's reads `"SELECT"` (`0x20359bd0`), a generic UI prompt. Both are genuinely
+  different content per record, unlike the QUICK MENU cluster — reinforcing that the field really is
+  per-record, and the QUICK MENU repetition above is a real coincidence (shared category label) rather
+  than a struct-decoding mistake.
+
+This table clearly encodes a good chunk of the real menu/settings screen tree, with actual title/
+subtitle strings recoverable directly from records rather than needing separate correlation to the
+216-item CI-V/EEPROM table or the raw label pool. That's real, if partial, progress toward the original
+question ("what do the different menu buttons trigger") — screen *names* are falling out cleanly; the
+per-item *action taken on press* is still the missing piece (see "where this dead-ends statically"
+above).
 
 ## Open questions / next steps
-1. What are `+0x08`/`+0x0c`'s actual strings for (read `0x20359c4c`), and what does the `+0x18`
-   incrementing short-label region (`0x2018f054`+) actually hold — likely the key to getting each
-   item's own real display name rather than just its parent screen's name.
-2. Find the real "on press, do X" action dispatcher — `FUN_2004f250` found so far looks like a
-   state/checkbox query, not an action trigger; its siblings (the shared `+0x28`/`+0x2c` function
-   pointers, not yet decompiled) are the next things to check.
-3. Bound the whole table: how many screens does it cover in total, and does it start/end where a
-   header/count record would be expected? Only confirmed spanning `QUICK MENU` and `MEMORY MENU` so
-   far, in a small address window; likely extends much further (this address range sits inside the
-   `0x2018e000`-`0x2035d000` span the ARM/Thumb tooling work identified as mostly icon/table *data*,
-   not code — consistent with this being exactly that kind of table).
-4. Whether this table is the "walker" that was missing to connect `notes/diode-matrix.md`'s 216-item
-   CI-V/EEPROM value table to the separate menu-name string pool (open question 6 there) — not
-   confirmed; this table's string pointers go to a *different* string pool address range
-   (`~0x20359xxx`-`0x2035dxxx`) than the one previously found (`~0x2035a000`-`0x2035f000`), which may
-   actually be the same pool (ranges overlap) — worth checking directly next session.
-5. The "FRONT CHECK MODE" factory screen's other 6 sibling states (`0x2c`-`0x30`, `0x32`) are other
+1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the
+   position-lookup table's largest observed index). Check whether any record anywhere has a non-null
+   `+0x08`/`+0x18` action-callback — would settle whether the per-item action dispatch is genuinely
+   runtime-only or just null for the 12 or so items sampled so far. ~~Figure out why title strings were
+   identical across the QUICK MENU items~~ — resolved well enough by records 11-14: real per-record
+   subtitles do vary (`"Meter Type"`, `"SELECT"`), so the QUICK MENU repetition looks like a genuine
+   shared-category-label coincidence (see hypothesis above), not a struct-decoding error.
+2. Whether this table is the "walker" that was missing to connect `notes/diode-matrix.md`'s 216-item
+   CI-V/EEPROM value table to the separate menu-name string pool (open question 6 there) — still not
+   confirmed; the string pool this table points into (`~0x20359xxx`-`0x2035dxxx`) may or may not be the
+   same pool diode-matrix.md found (`~0x2035a000`-`0x2035f000`) — worth checking directly.
+3. The "FRONT CHECK MODE" factory screen's other 6 sibling states (`0x2c`-`0x30`, `0x32`) are other
    factory/service screens, not yet identified at all.
+4. `FUN_2004f5a0` (the QUICK MENU container's own init/setup callback), records 13/14's own distinct
+   init callbacks (`0x2004f858`/`0x2004f888`), and `FUN_2004f0f0`'s caller chain (how does a real touch
+   event on the touchscreen actually reach `FUN_2004f610`?) aren't traced — that's the piece that would
+   connect this whole widget to an actual physical touch coordinate.
