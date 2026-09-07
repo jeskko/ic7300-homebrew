@@ -127,3 +127,19 @@ candidate without checking Ghidra's live state first, the same way the "Bad Inst
 sweep already taught. This was a genuine, well-supported negative result, not an unswept gap — the
 project's "Bad Instruction" bookmarks (16 currently live) were also all checked and are stale leftovers,
 not real bugs either. No known-broken address currently exists to test `FixArmThumbMode.java` against.
+
+**Follow-up, same day — full sweep of every non-ambiguous region, thread now closed.** Checked all 51
+remaining `arm`/`thumb`-classified regions from `arm_thumb_regions_142.json` (everything not already
+excluded above) against Ghidra's live state — exhaustively, not a sample. Zero real mode-mismatch bugs,
+and zero genuinely un-analyzed-but-plausible-code regions either. The two large ARM blocks
+(`0x20005000`-`0x200ca000`, `0x200d1000`-`0x200fd000`, ~1MB combined) are confirmed correct throughout
+via deep spot-checks and dense real functions. The remaining ~470KB (`0x2018e000`-`0x2035d000`) that the
+classifier tagged as code is **data** — icon/glyph/font-bitmap and menu-lookup tables with periodic
+repeating byte patterns that happen to fool the bad-instruction-count heuristic. Ghidra already
+correctly leaves it undefined. **Known limitation of `arm_thumb_scan.py`, worth remembering if its
+output is reused for anything else**: the bad-instruction-count heuristic mislabels certain low-entropy
+repeating data as `arm`/`thumb` code — don't trust its labels at face value over that address range
+without an independent check. Combined with the bookmark sweep and the direct-boundary sweep above,
+**this closes out ARM/Thumb-bug-hunting across the entire currently-analyzed image** — no known-broken
+address exists anywhere in it. Re-open only if newly-analyzed code (a region Ghidra hasn't touched yet)
+shows a real problem later.
