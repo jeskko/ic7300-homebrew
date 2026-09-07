@@ -454,6 +454,66 @@ beyond already-known functions (`chunk_needs_update`, `firmware_update_main`, `m
 further this session given the effort already spent without traction — a good next-session target, or
 settled quickly by watching real `SCIF3`/SD-card behavior on hardware once JTAG/live access exists.
 
+### Pinpointing exactly what the mismatch scenario displays — icons rendered directly (2026-09-07)
+
+Asked directly to pin down what's actually shown, not just "some widgets get drawn." The text side was
+already solid (title, an unconfirmed `"NN/NN"` counter, 5 labeled live version strings). The 3 tail-row
+widgets (`0x270`/`0x271`/`0x272`) use `FUN_200ac2cc`/`FUN_200addac` — traced these down to
+`icon_blit_by_id_v1`/`_v2` (already-named from the 2026-08-29 icon-bitmap thread, `notes/bitmaps.md`), i.e.
+these draw real **icon graphics**, not text.
+
+Resolving the icon IDs required walking `FUN_200abc20`'s multi-region locale/theme lookup table — computed
+this via script rather than by hand. Icon IDs `0xea`/`0xeb`/`0x15d`/`0x11d` all land in the same lookup
+region (`DAT_200ac384`-family arrays), resolving to icon-table indices 233/234/346/284 respectively
+(verified identical whether `param_1` is 0 or 1 — the theme-variant split happens to alias to the same
+bitmap for these specific icons, so the uncertain runtime value of that selector doesn't matter here).
+
+**Extracted and rendered the actual bitmaps** with the existing `tools/extract_icons.py` (all-white glyphs
+on a transparent alpha channel — composited over a gray background to see them, saved to
+`notes/assets/`):
+- Icon `0xea` (widget `0x270`, **always drawn**): an **upward-pointing triangle** ▲, 16×15px
+  ([notes/assets/version-screen-icon-up-triangle.png](assets/version-screen-icon-up-triangle.png)).
+- Icon `0xeb` (widget `0x271`, conditionally drawn): a **downward-pointing triangle** ▼, 16×15px
+  ([notes/assets/version-screen-icon-down-triangle.png](assets/version-screen-icon-down-triangle.png)).
+- Icon `0x15d` (widget `0x272`, conditionally drawn): a **curved return/reload arrow** ↩, 30×20px —
+  visually a classic "restart/reload" glyph
+  ([notes/assets/version-screen-icon-restart-arrow.png](assets/version-screen-icon-restart-arrow.png)).
+- Icon `0x11d` (the conditional overlay, drawn when `current+0xb4` matches that row's own number 1/2/3):
+  a single-pixel icon, `(0,0,0,128)` RGBA — solid black at 50% alpha. **Not a checkmark** as first assumed
+  — a semi-transparent dimming/highlight wash stretched across whatever widget it's blit onto.
+
+**Reading**: this is a genuine three-state indicator — version-ahead (▲) / version-behind (▼) /
+restart-needed (↩) — with `current+0xb4` selecting which single row gets the highlight overlay. About as
+concrete an answer as static analysis can give without live hardware to see the actual on-screen color/
+layout.
+
+### Further attempts to find the candidate-struct writer, all ruled out (same day)
+
+Pushed on the "should happen early in startup" hint with several concrete new checks, all negative:
+
+- **`cold_boot_hw_init`'s full body, read in full**: no SD-card or update-file touch anywhere in it. Real
+  side-finding though: confirmed `ui_version_screen_populate_fields`'s DSP-field source (`DAT_20043738`)
+  and `dsp_identity_query_record0`'s destination (`DAT_200b1ca0`) are the **same address** (`0x203def00`,
+  verified byte-for-byte) — closing a gap an earlier session (2026-08-29) explicitly left as "not fully
+  proven" — DSP Program/Data/FPGA really are live-queried over `SCIF5` at cold boot, the same pattern as
+  the `SCIF3` front-panel handshake.
+- **`system_mode_request_dispatch`'s full body** (runs on every system-mode transition, already
+  extensively documented by an earlier session) — no SD-card or candidate-struct touch.
+- **`sd_menu_dispatch_task`'s neighboring cases `0xc`/`0xd`** (`FUN_20026130`/`FUN_20026324`) — looked
+  promising purely from adjacency (same address range and case-number range as `firmware_update_main`'s own
+  case `0xb`), but both are unrelated file-loading logic (decompression/magic-byte checks matching a
+  font-or-graphics-asset load, not firmware). One of them calls a getter (`FUN_200a9bcc`) that looked like
+  it might resolve to the candidate struct — checked directly, resolves to a completely different, unrelated
+  address (`0x20508320`).
+- The one earlier "found a write" lead (`0x2003b320`, from the previous pass) was double-checked and
+  confirmed a coincidental edge-case overlap from an unrelated large buffer's flag-array write, not a real
+  populate function — not worth re-investigating.
+
+**Genuinely still open** — the candidate struct's writer remains unfound after real effort across two
+sessions and many different angles (boot sequence, SD-menu task siblings, literal/computed-address
+searches). Best remaining options: a targeted look at whatever code runs specifically on SD-card
+insertion/mount (not yet identified as its own function), or settling it directly on live hardware.
+
 ### Does a version mismatch actually trigger a firmware push? Checked from 3 angles, answer is no (2026-09-07)
 
 User's natural next question: if a mismatch is detected, does the radio go push new firmware to whatever's

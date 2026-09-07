@@ -90,6 +90,20 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   better-motivated explanation for why the comparison exists at all, and fits everything else found (the
   only real update path requires explicit manual confirmation). The actual populate-candidate function is
   still unfound after a further attempt this session; open for next time.
+- **Pinned down exactly what the mismatch scenario displays, 2026-09-07**: beyond the labeled version-value
+  panel already known, the 3 tail-row widgets draw real icon graphics (not text) — extracted and rendered
+  directly: an upward triangle ▲ (always shown), a downward triangle ▼, and a curved return/reload arrow ↩
+  (both conditional), each with a semi-transparent dimming/highlight overlay (a solid-black 50%-alpha
+  1×1-pixel icon, not a checkmark) applied to whichever row matches a state byte (1/2/3). Reads as a
+  version-ahead/version-behind/restart-needed three-state indicator. Full derivation and icon addresses in
+  `notes/front-panel-firmware-history.md`'s "Pinpointing exactly what the mismatch scenario displays"
+  section.
+- **Confirmed, 2026-09-07 — DSP Program/Data/FPGA fields really are live-queried at boot**: while searching
+  for the candidate-struct writer, confirmed `ui_version_screen_populate_fields`'s DSP-field source and
+  `dsp_identity_query_record0`'s destination are the exact same address (`0x203def00`) — closing a gap an
+  earlier (2026-08-29) session had left as "not fully proven." Several other new leads for the candidate
+  struct's writer were checked and ruled out this round too (`cold_boot_hw_init`, `system_mode_request_
+  dispatch`, `sd_menu_dispatch_task`'s neighboring cases) — still genuinely unfound; see the history file.
 - **Checked, 2026-09-07 — does a detected mismatch actually trigger a firmware push? No, from 3 angles.**
   The mismatch branch's own calls are 100% UI-drawing, nothing touches flash/transport code. The real
   updater (`firmware_update_main`) shares zero code or data with the comparison structs — reached only via
