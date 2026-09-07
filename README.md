@@ -293,6 +293,14 @@ class) matching the shape of the radio's own SD directory-reading code.
   IC-9700's JTAG connector and full pinout are identical to the
   IC-7300's own (`10FLT-SM2-TB`) — see `notes/hardware-debug-access.md`.
   Genuine cold-start effort, no prior art existed for this radio going in.
+- 🟡 **UI menu/touchscreen system, first look, 2026-09-07**: two real structures found, neither fully
+  walked yet. A factory "FRONT CHECK MODE" self-test screen lists all 13 real physical front-panel
+  buttons by name (`MENU` is button 9, `QUICK` is button 12), reached via a 7-state factory-screen
+  selector. Separately, found the real touchscreen menu-*item* definition table (72-byte records,
+  distinct from both the existing 216-item CI-V/EEPROM value table and the menu-name string pool),
+  confirmed spanning at least the `QUICK MENU` and `MEMORY MENU` screens, with per-item function
+  pointers traced down to thunks — one decompiled so far turned out to be an enabled/checked-state
+  query, not yet the actual "on-press" action dispatcher. See `notes/ui-menu.md`.
 
 ## Layout
 
