@@ -4,7 +4,7 @@ The hardware link is real and pin-confirmed; nothing here yet reaches a specific
 could call. This is App 4 (SSTV)'s single biggest open question in `app-requirements.md`, and would also
 matter for any general "record/play audio" SDK primitive.
 
-## ✅ Hardware link: SSIF0 + SSIF1, paired
+## ✅ Hardware link: SSIF0 + SSIF1, paired — now traced into real code, 2026-09-07
 
 `BCLK_`/`FRM_`/`DX_REC`/`DR_AF` (`P2_8`-`P2_11`) and `DX_FMT`/`DR_RSV` (`P3_6`/`P3_7`) form a confirmed,
 actively-used CPU↔DSP digital audio link via the RZ/A1H's Serial Sound Interface — SSIF0 (`0xE820B000`)
@@ -14,7 +14,18 @@ DMAC channel addresses — a genuine DMA-driven continuous audio/IQ sample strea
 the DSP, not a one-time handshake (`notes/ic7300-signal-chain.md`). DSP-side pin data independently
 confirms the same structure from the other end (McASP0's shared clock/frame-sync + 4 serializer pins).
 
-## 🔎 Open: where do live RX-demodulated audio samples actually live?
+**Traced into real driver code**: `ssif0_bring_up_and_pump`/`ssif1_bring_up_and_pump` (`0x20060778`/`0x888`)
+— codec bring-up handshake on first call, then real per-tick DMA-buffer processing on every call after.
+`ssif1`'s RX side extracts 36 samples/tick and pushes them into a genuine 8-frame ring buffer
+(`ssif_rx_ring_push_frame`, `0x203fc246`) — **confirmed continuous audio capture into main-CPU RAM, not
+just a wired-up link**. Both are ticked from `main_operating_loop` (the real main power-state/service
+loop, finally identified this session), gated behind a flag in the same struct cluster RTTY's own state
+lives in (`0x2039038c`, alongside `digital_mode_log_writer_tick`'s `0x20390368`) — real, structural
+evidence connecting "SSIF audio streaming active" to "a digital mode is active," even though the exact
+setter of that flag wasn't pinned down. See `notes/kernel-rtos-history.md`'s "Sweeping the actual audio
+hardware" section for the full trace.
+
+## 🔎 Open: where do live RX-demodulated audio samples actually live? (narrowed, not closed, 2026-09-07)
 
 **The single biggest open question for any audio-consuming app.** The best existing lead is
 `voice_recording_file_task` (`0x2001745c`, verified) — it streams *some* audio to SD card via a 4-slot ring
