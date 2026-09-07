@@ -58,6 +58,15 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   cosmetic/stored value** — but it only happens once per boot, not on every visit to the version-info
   screen. Full trace in `notes/front-panel-firmware-history.md`'s "How the main CPU gets the front-panel
   version" section.
+- **Correction, 2026-09-07, same day**: the Front CPU version is *not* "only stored and displayed" — it
+  IS actively compared. `ui_version_screen_draw_and_compare` diffs `g_screen_display_scratch_buf+0xa4`
+  (the live, `SCIF3`-latched current value) against `g_update_candidate_version_struct+8` (a "candidate"
+  struct, likely sourced from an inserted SD-card update file's header — that write path isn't traced yet)
+  via a 4-byte compare, alongside the same check for all 5 components; any mismatch sets a flag that drives
+  the "firmware update available" banner. A second, structurally identical comparison function
+  (`FUN_2009e8c0`) does the same diff for what's likely the SD-card-insert notification screen, not just
+  the manual version-info menu — real, load-bearing logic, not a one-off. See
+  `notes/front-panel-firmware-history.md`'s "The version IS compared" section.
 - **Checked, 2026-09-07 — no firmware-image-write mechanism found for the front panel (not exhaustive).**
   `scif3_send_frame` (the only outbound-frame-construction primitive found) is called exclusively from
   `scif3_driver_pump_tick` (`0x200373ac`, renamed from `FUN_200373ac`), which is in turn the *only* caller

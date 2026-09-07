@@ -316,3 +316,39 @@ only rules out the one outbound driver found via `scif3_send_frame`'s call graph
 field-updated at all, either the mechanism lives somewhere this session didn't reach, or (increasingly
 plausible given how narrow and simple this driver turned out to be) it genuinely isn't field-updated over
 `SCIF3` at all — factory-programmed once, matching one of the handout's original open questions.
+
+### Correction, same day: the version IS compared, not just stored/displayed
+
+Asked directly whether the front-panel version is ever compared to anything, or just stored in memory —
+re-checked `ui_version_screen_draw_and_compare`'s own decompile (already pulled earlier this session, just
+not highlighted). It's an active 4-byte compare, not a passive display:
+
+```c
+puVar3 = DAT_200a9ba8;   // g_update_candidate_version_struct (0x20404654)
+iVar2  = DAT_200a9ba4;   // g_screen_display_scratch_buf (0x203ff76c)
+...
+if ( ... || (iVar5 = FUN_2017c81e(iVar2 + 0xa4, puVar3 + 4, 4), iVar5 != 0) || ... ) {
+    uVar9 = uVar9 | 0x8000;   // "versions differ" flag
+}
+```
+
+`iVar2+0xa4` is exactly the field this session traced back to the boot-time `SCIF3` handshake
+(`scif3_frontpanel_identify_handshake`). `puVar3+4` (ushort-indexed, i.e. `+8` bytes) is the matching field
+of the "candidate" struct. The same 4-byte-compare-then-OR-into-one-flag pattern runs for all 5 components
+(Main CPU/Front CPU/DSP Program/DSP Data/FPGA) in this one `if`, and the flag drives the "new firmware
+available" banner/detail block right after it (the same `FUN_200ace08`/`FUN_200ac6e0` UI-drawing calls
+already noted). Also found a second, structurally near-identical function, `FUN_2009e8c0`, doing the exact
+same current-vs-candidate diff over a sibling pair of `DAT_2009f1f4`/`DAT_2009f1f8` structs, driving a
+different set of screen IDs (`0x261`-`0x269` vs `0x26a`-`0x272`) — very likely the SD-card-insert "update
+available" notification rather than the manually-opened menu screen. Two independent call sites doing the
+same comparison is good corroboration this is real, load-bearing update-detection logic, not a display-only
+coincidence.
+
+**Not yet traced**: where `g_update_candidate_version_struct` itself gets populated. No direct `WRITE`
+reference was found to its base address or its `+8` (Front CPU) field specifically — consistent with it
+being filled by a single bulk copy (e.g. `memcpy`-style, from an inserted SD-card update file's header)
+whose destination is computed rather than a fixed literal operand, the same class of gap this project keeps
+hitting. Strong working hypothesis, not confirmed: this is the update-container's own "Front CPU" version
+field (`FUN_200a94c8`'s `+0xa4`, per the original handout's phrasing) getting copied in when the
+update-file-scanning code (`notes/firmware-update.md`) detects a real update file — i.e. the comparison is
+real and load-bearing, but exactly when/how the candidate side gets populated is still open.
