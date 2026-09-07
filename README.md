@@ -306,8 +306,12 @@ class) matching the shape of the radio's own SD directory-reading code.
   `ui_show_message_dialog`). Getting there needed fixing two real never-disassembled code gaps with
   `tools/ghidra_scripts/FixArmThumbMode.java` — which itself needed a bug fixed first (its single
   `disassemble()` call only followed control flow and stopped at the first return, leaving later
-  independent functions in the same range undefined; it now sweeps the whole range). See
-  `notes/ui-menu.md`.
+  independent functions in the same range undefined; it now sweeps the whole range). **Same day,
+  the physical-button chain**: traced a real key press (confirmed for `MENU` and `QUICK`) all the way
+  from the main idle loop's input poll through a massive raw-input resolver, a key-code lookup, a
+  genuinely new **279-entry system-wide command dispatch table** (`g_system_command_table`), and each
+  button's own command handler, to a queued screen-open request — five newly-named functions and the
+  command table itself, all confirmed through real decompiled code. See `notes/ui-menu.md`.
 
 ## Layout
 

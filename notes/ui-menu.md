@@ -12,6 +12,7 @@ pass this same session and has now been corrected against the actual pointer var
 |---|---|---|
 | **Factory "FRONT CHECK MODE" screen** — a numbered list of 13 real physical front-panel buttons | title at `0x20197153`, list at `0x20196f00`+; selector `FUN_2003a540` (7 states, `0x2c`-`0x32`, from `FUN_20013070()`) | ✅ button names confirmed, screen-select mechanism traced; the actual GPIO/key-matrix scan code itself not yet chased |
 | **Generic touchscreen "list menu" widget** — one reusable set of functions drives QUICK MENU, MEMORY MENU, REC/SET, Meter Type, SELECT, and presumably every other list-style menu screen, operating on a global "current list" pointer pair | widget code at `0x2004f0e4`-`0x2004f9xx`; bound, in this static snapshot, to the table at `0x2018f0ec` (72-byte/`0x48` records) | ✅ full selection/navigation/commit flow traced end-to-end through real, named, decompiled code, including three distinct "on commit" action patterns (direct config-byte write, delegated setter call, confirm-dialog-then-cycle-state) — see below |
+| **Physical-button-press chain** — traced from a real key press through to a queued screen-open request, for `MENU` and `QUICK` specifically | `ui_input_poll_tick` (`0x2002fca8`) → `key_event_resolve_and_route` (`0x2002ef98`) → `system_command_dispatch` (`0x2002ed9c`) + its 279-entry `g_system_command_table` (`0x2018d9e0`) → `menu_key_command_handler`/`quick_key_command_handler` → `ui_queue_screen_open_request` (`0x2002fd44`) | ✅ full chain traced and named through real decompiled code; 🟡 the final hand-off (does the pending-request flag really get picked up and fed into the list-widget's `DAT_2004f728`/`DAT_2004f720`?) is a strong hypothesis, not independently confirmed — see below |
 
 ## The "FRONT CHECK MODE" factory button list
 
@@ -150,7 +151,51 @@ are both falling out of the same table.
 4. Which screen `menu_item_confirm_and_cycle_state` (`0x2004f8f4`) actually belongs to isn't identified
    yet — it wasn't reached via any record read so far, only via `menu_widget_mark_dirty`'s call site at
    `0x2004f940` (itself not yet tied to a specific record). `FUN_2004f5a0` (the QUICK MENU container's
-   own init/setup callback), records 13/14's own distinct init callbacks (`0x2004f858`/`0x2004f888`),
-   and `menu_widget_commit_selection`'s caller chain (how does a real touch event on the touchscreen
-   actually reach `menu_widget_activate_focused_item`?) aren't traced — that's the piece that would
-   connect this whole widget to an actual physical touch coordinate.
+   own init/setup callback) and records 13/14's own distinct init callbacks (`0x2004f858`/`0x2004f888`)
+   aren't decompiled. ~~`menu_widget_commit_selection`'s caller chain (how does a real touch event on
+   the touchscreen actually reach `menu_widget_activate_focused_item`?)~~ — **traced, see below.**
+
+## The physical-button-press chain, traced end to end
+
+Picked this up specifically to answer "how does a real key/touch event reach the menu system at all."
+Traced the complete chain from a physical button press through to a queued screen-open request, for two
+concrete buttons (`MENU` and `QUICK`, both confirmed against the FRONT CHECK MODE numbering above):
+
+```
+physical button press (MENU=9, QUICK=12 per FRONT CHECK MODE)
+  -> ui_input_poll_tick (0x2002fca8) -- called from the main idle loop, confirmed via its own two
+     callers sitting right next to the already-known idle-loop-variant functions (FUN_20053154 etc.,
+     notes/kernel-rtos-history.md's system_mode_request_dispatch section)
+  -> key_event_resolve_and_route (0x2002ef98, renamed from FUN_2002ef98) -- a genuinely massive
+     (2500+ byte) raw-input processor: reads a raw key/touch code byte, runs extensive radio-state
+     guards (TX state, band, split, tuner...), and resolves the raw code to a numeric "command ID"
+  -> for raw codes 1-0x1e, resolution goes through g_key_code_to_command_id (0x2018d9a8, a plain
+     ushort[] indexed by code-1) -- read directly: index 8 (key 9, MENU) -> command ID 0x11; index 11
+     (key 12, QUICK) -> command ID 0x13
+  -> system_command_dispatch (0x2002ed9c, renamed from FUN_2002ed9c) -- a genuine, previously-
+     undocumented **279-entry system-wide command table** (g_system_command_table, 0x2018d9e0; each
+     entry is 8 bytes: u32 command_id + u32 handler function pointer; ids run sequentially 0-0x116;
+     linear-scans for a matching id, falls back to a default label if none matches, then calls the
+     resolved handler). This table is a major structural find in its own right -- worth checking
+     later whether it's also what CI-V or other subsystems dispatch through, or is UI-input-specific.
+  -> per-command handler: menu_key_command_handler (0x200327dc, command 0x11) for MENU;
+     quick_key_command_handler (0x20032900, command 0x13) for QUICK. Both decompiled in full:
+     MENU's handler runs three pre-checks (FUN_20061f88/ffc/2006210c) and, if they pass, queues a
+     screen-open request. QUICK's handler is a real **toggle** -- if a state bit is already set it
+     closes (calls FUN_20062790(0)) instead of opening, confirming QUICK MENU really does open/close
+     on repeated presses rather than only opening.
+  -> ui_queue_screen_open_request (0x2002fd44, renamed from FUN_2002fd44) -- both handlers converge on
+     the exact same call shape, `(descriptor_ptr, list_ptr, 0x54, 0)`: fills in a small request struct
+     (screen size/type, the two pointers, a "new request" flag) and sets a "request pending" bit
+     (`*DAT_2002f758 |= 0x80`) for something else to notice.
+```
+
+**Where this stops being fully confirmed**: the two pointers each handler passes to
+`ui_queue_screen_open_request` are exactly shaped like the `DAT_2004f728`/`DAT_2004f720` pair the list
+-menu widget (earlier in this file) reads its current table/state from — strongly suggestive that
+whatever polls the "request pending" flag next tick is what actually assigns those two globals and
+hands off to the widget system, closing the loop back to `menu_widget_activate_focused_item` and
+friends. That last hand-off step (who reads the pending flag, and does it really write
+`DAT_2004f728`/`DAT_2004f720`) has **not** been independently verified yet — a strong, well-evidenced
+hypothesis, not a confirmed fact. Checking it is the natural next step if this thread gets picked up
+again.
