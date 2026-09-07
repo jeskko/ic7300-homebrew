@@ -110,3 +110,20 @@ armthumb_fix_results.txt`; the request file is then replaced with a single "proc
 line so a stray re-run with no new content is an obvious no-op rather than silently reapplying old
 fixes. Both files are gitignored (`scratch/`) — regenerate/rewrite as needed, nothing durable is lost
 since the real record of a fix is the Ghidra database itself.
+
+**2026-09-07 finding — exhaustive check of the whole image found zero live candidates.** Computed
+every *direct* ARM↔Thumb boundary in `arm_thumb_regions_142.json` (adjacent windows disagreeing with
+no `ambiguous`/`either` window between them) — only **7** exist in the whole 3.7 MB image, far fewer
+than expected. Checked all 7 against Ghidra's actual live state (functions + listing, not just the
+raw-file heuristic): every one is either (a) plain data Ghidra already correctly leaves undisassembled
+(pointer tables, glyph/string tables — the raw-byte heuristic's mode call on data is a false positive,
+not a real code-mode conflict), or (b) code Ghidra already disassembles correctly (confirmed
+semantically, e.g. the `0x2014b000` FreeType-region boundary: real ARM code with proper push/pop
+prologues and sensible local branch targets continues well past the point the window heuristic guessed
+a switch to Thumb — the heuristic's per-window call was simply wrong there, not Ghidra's disassembly).
+**Lesson**: an isolated single-mode window surrounded by `ambiguous` windows is a data-table false
+positive far more often than a real bug — don't treat every heuristic-flagged boundary as a fix
+candidate without checking Ghidra's live state first, the same way the "Bad Instruction" bookmark
+sweep already taught. This was a genuine, well-supported negative result, not an unswept gap — the
+project's "Bad Instruction" bookmarks (16 currently live) were also all checked and are stale leftovers,
+not real bugs either. No known-broken address currently exists to test `FixArmThumbMode.java` against.
