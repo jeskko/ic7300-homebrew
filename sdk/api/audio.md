@@ -78,6 +78,20 @@ call. Full derivation in `notes/kernel-rtos-history.md`'s "Coming at it from the
 independent angles now; live JTAG (watch `SCIF5`/DSP-interface traffic during real RTTY reception) is the
 honest next step** for anyone wanting the actual demodulator, not further static reading.
 
+**Fifth angle, same session — swept for an FFT/tone-detector, found neither, and this tempers the CPU-side
+lean above.** Confirmed the firmware's one real FFT (`spectrum_scope_fft_and_dbscale`) is single-purpose to
+the band-scope (exactly one caller). Found a genuine SSIF RX audio-capture pipeline into main-CPU RAM (an
+8-frame ring buffer, `notes/kernel-rtos-history.md`'s "Sweeping the actual audio hardware") — but it has
+**zero found consumers**, and a direct search for RTTY's own real tone constants (2125/2295/170 Hz, in
+float/double/int encodings) and the classic Baudot code table both came up completely empty anywhere in the
+3.7 MB image. **This is now a real, converging negative result across three independent search strategies**,
+not just an unswept gap. Two readings stay open: real CPU-side decode using non-literal (bin-index or
+fixed-point) constants in a part of `body.bin` not yet examined, or — newly plausible — the SSIF ring
+buffer actually belongs to `voice_recording_file_task`'s own unresolved audio source instead, with RTTY
+decode still DSP-side via a `SCIF5` receive path this project's traffic characterization hasn't recognized
+yet. Static analysis has now tried essentially every angle available; live hardware is the honest next step,
+not more searching.
+
 ## 🔎 Open: real-time budget for a main-CPU-side decode task
 
 Not yet assessed whether a task on the *main* CPU (as opposed to the DSP, which is already busy doing the
