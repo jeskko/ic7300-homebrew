@@ -124,7 +124,22 @@ public class FixArmThumbMode extends GhidraScript {
 
                 clearListing(start, end);
                 ctx.setValue(modeReg, start, end, BigInteger.valueOf(modeValue));
-                disassemble(start);
+
+                // disassemble(start) alone only follows CONTROL FLOW from start -- it stops at
+                // any return/unconditional-branch with no traced successor, leaving later
+                // independent functions in the same range undefined (hit for real 2026-09-07:
+                // several small back-to-back functions connected by nothing but proximity, e.g.
+                // a run of "mov r0,#N; bx lr" stubs). So sweep every mode-aligned address in the
+                // range (4 bytes for ARM -- always instruction-aligned, so this never lands
+                // mid-instruction; 2 bytes for Thumb, where it safely can land mid a 4-byte
+                // Thumb-2 instruction, hence the getInstructionContaining check) and disassemble
+                // from any address not already covered by an instruction.
+                int step = modeStr.equals("thumb") ? 2 : 4;
+                for (Address cur = start; cur.compareTo(end) <= 0; cur = cur.add(step)) {
+                    if (getInstructionContaining(cur) == null) {
+                        disassemble(cur);
+                    }
+                }
 
                 println("Fixed " + start + "-" + end + " mode=" + modeStr);
                 results.append(stamp).append("  ").append(line).append("  -> OK\n");
