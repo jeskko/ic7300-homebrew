@@ -6,9 +6,13 @@
 answer. Also, **every `0x200301f2` address in this document is a typo for `0x203901f2`** (no symbol
 exists at the former; the latter is `key_event_resolve_and_route`'s real key-code struct) — that typo is
 exactly what made the "zero references found" cross-check below come back empty, on top of the real
-indirection it also correctly anticipated. Goal 2 (watch for an `IC501` firmware-update mechanism) is
-still open. Left unedited below for the record; read the current-state notes files for the up-to-date
-picture rather than treating this document's own "not yet decoded"/"still open" framing as current.
+indirection it also correctly anticipated. **Goal 2 has real progress too, same day, follow-up session**:
+traced a confirmed one-shot boot-time `SCIF3` handshake that's how the main CPU gets the front-panel
+version for the version-info screen, and checked the entire outbound-`SCIF3` driver it uses for any
+chunked-firmware-write shape — found nothing (a real negative result, not a whole-image sweep). See
+`notes/front-panel-firmware-history.md`'s "How the main CPU gets the front-panel version" section. Left
+unedited below for the record; read the current-state notes files for the up-to-date picture rather than
+treating this document's own "not yet decoded"/"still open" framing as current.
 
 Written 2026-09-07 as an onboarding doc for whoever (a fresh session) picks this thread up next. Two
 goals, in priority order:

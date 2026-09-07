@@ -196,3 +196,123 @@ than the same bit-diff+table pattern — plausibly the encoder/dial or a couple 
 buttons, not yet confirmed. Also unconfirmed: whether `DAT_2002f750`/`DAT_200306b4` are truly two fields of
 one larger struct (the round `0x20`-byte offset between them strongly suggests it) or coincidentally
 adjacent separate allocations — would need the struct's full field layout mapped to settle for certain.
+
+## How the main CPU gets the front-panel version, and a check for a firmware-write mechanism (2026-09-07)
+
+Same session as the button-press trace above. User asked two concrete questions: (1) the version-info
+menu screen shows a front-panel firmware version — how does the main CPU actually get that number, and
+(2) search for any code that could write a firmware image to the front panel (the handout's goal 2).
+
+### Finding the version-info screen's own code
+
+Found the real UI strings first: `"Main CPU:"`, `"Front CPU:"`, `"DSP Data:"`, `"DSP Program:"`, `"FPGA:"`
+all live together at `~0x2035e3f4`-`0x2035e420`, inside the same menu-string-table region
+(`~0x2035a000`-`0x2035f000`) `notes/diode-matrix.md`/this thread's own earlier sessions had already
+located. Unlike the still-unwalked menu *name* table, these five labels had real, direct code references —
+all landing within a ~1.7 KB function at `0x200a94c8`, renamed `ui_version_screen_draw_and_compare`.
+
+That function does two things: draws the 5 labeled version fields, and (in an earlier branch) compares two
+4-byte version structs — `DAT_200a9ba4` (holds `0x203ff76c`, the "current/installed" struct, renamed
+`g_screen_display_scratch_buf` since it turned out to be a generic per-screen scratch buffer reused by
+unrelated screens too — see below) and `DAT_200a9ba8` (holds `0x20404654`, the "update-candidate" struct,
+renamed `g_update_candidate_version_struct`) — via a 4-byte memcmp-style helper (`FUN_2017c81e`), to decide
+whether to draw an "update available" banner. The 5 displayed fields read from the *current* struct at
+fixed offsets `+0xa0`/`+0xa4`/`+0xa8`/`+0xac`/`+0xb0` = Main CPU / **Front CPU** / DSP Program / DSP Data /
+FPGA (order confirmed by matching each label string's exact byte length — 9/10/12/9/5 characters — against
+the draw loop's own length arguments, since the loop order in code doesn't match the labels' storage order
+in the string table).
+
+**A real methodology near-miss**: `references_to` on the "current" struct's Front-CPU field
+(`0x203ff76c+0xa4` = `0x203ff810`) turned up 3 writers, but 2 of them (inside `FUN_20042f3c` and
+`FUN_20043f48`) turned out to be completely unrelated screens (a band-scope/memory-channel scanner and an
+SWR/power-meter-style ADC reader respectively) that happen to reuse the exact same scratch-buffer address
+for their own, differently-typed data at the same byte offset — confirmed by checking each writer's own
+containing function via `references_to` on the *function* address itself (both resolve to entries in a
+screen-dispatch function-pointer table, the same pattern as the already-known 279-entry system command
+table), not by assuming the struct's purpose from its address alone. Renamed the struct
+`g_screen_display_scratch_buf` precisely to flag this reuse for future sessions — don't assume writes to
+its `+0xa0`-`+0xb4` range are version-related without checking which screen's populate-callback is doing
+the writing.
+
+### The real writer: `ui_version_screen_populate_fields` (`0x2004366c`, renamed from `FUN_2004366c`)
+
+The third writer was the real one. Confirmed via `references_to` on its own address (a `DATA` reference
+from `0x20190214`, a screen-dispatch table slot — i.e. this function is a per-screen "populate my fields"
+callback, invoked when the version-info screen is opened, not a generic tick). It writes all 5 fields:
+
+- **Main CPU** (`+0xa0`, 4 bytes): a straight 4-byte memcpy from `DAT_2004372c` — which, read directly,
+  turned out to hold the *literal ASCII bytes* `"1.42"`, not a pointer at all. This is the main firmware's
+  own compiled-in version string (matches this exact v1.42 image) — cosmetic/build-time, no live query
+  needed, as expected.
+- **Front CPU** (`+0xa4`..`+0xa7`, formatted specially): `*(iVar1+0xa4) = *(DAT_20043734+1) + '0'`, then a
+  literal `'.'`, then two more digit-plus-`'0'` conversions from `DAT_20043734+2`/`+3`. **`DAT_20043734`,
+  read directly, holds `0x203dca96`** — instantly recognizable as the exact same address already found
+  and named `g_frontpanel_latched_status` earlier this session (the struct sitting `0x20` bytes before the
+  confirmed `SCIF3` rx buffer, previously known only as the key-bit-scan's shadow-cache base). So the
+  Front-CPU version's 3 source bytes live at offsets `+1`/`+2`/`+3` of that *same* struct — a genuinely
+  different field than the `+0xd`-`+0x11` shadow-cache bytes the key scanner uses, but the same base
+  address, confirming this struct really is a shared, multi-field "latched front-panel status" record.
+- **DSP Program/Data/FPGA** (`+0xa8`/`+0xac`/`+0xb0`): straight 4-byte copies from `DAT_20043738`
+  (`+6`/`+0x13`/`+0x20`) — not traced further this session, presumably the already-identified DSP/FPGA
+  component version fields from `notes/multi-cpu-images.md`.
+
+### Tracing how `g_frontpanel_latched_status+1..+3` actually gets its bytes — a real boot-time SCIF3 handshake
+
+`references_to` on `g_frontpanel_latched_status+1` (`0x203dca97`) found a real `WRITE` at `0x2002afa0`,
+inside a function immediately renamed `scif3_frontpanel_init_and_latch_version` (from `FUN_2002af80`).
+That function:
+
+1. Calls `scif3_rx_buffer_reset_defaults` (from `FUN_2002aeec`) — fills `g_scif3_rx_status_buffer`
+   (`0x203dcab6`, the confirmed live `SCIF3` rx buffer `scif3_frame_dispatch_by_type` writes into) with a
+   default pattern: byte 0 = 0, bytes 1-12 = `0x20` (ASCII space), bytes `0xd`-`0x1d` = 0, bytes
+   `0x1e`-`0x1f` = 1 — i.e. a "blank/unpopulated" placeholder before any real reply arrives.
+2. Calls `scif3_driver_init()` (already named from an earlier session).
+3. Calls `scif3_frontpanel_identify_handshake` (from `FUN_20037424`) — **the real find**. This function
+   sets a status-flag bit (`0x80` in `DAT_20037588`) and a byte (`5`) in a separate control field, then
+   loops calling `scif3_driver_pump_tick` (renamed from `FUN_200373ac`, with a ~0x4b-tick timeout) until
+   that flag clears. Decompiling the pump function's own bit-`0x80` branch showed exactly what triggers:
+   once its internal counter reaches `5` (matching the value just written), it constructs and sends — via
+   `scif3_send_frame`, renamed from `FUN_20037214` — a genuine **outbound**, `0xFE`-framed packet with type
+   byte **`0xF0`**. `0xF0` is the exact type `scif3_frame_dispatch_by_type` already special-cases on
+   *receive* (clears the same `0x80` bit, sets others) — the two sides of one real handshake. So this is a
+   confirmed **main-CPU-initiated "are you there / identify yourself" request sent to the front panel**,
+   with the call blocking (bounded by a real timeout) for its reply.
+4. After the handshake call returns, copies `g_scif3_rx_status_buffer+1..+12` into
+   `g_frontpanel_latched_status+1..+12` at matching offsets — i.e. whatever the front panel's reply put
+   into the rx buffer (via frame types landing at those same offsets — type *is* the destination offset in
+   `scif3_frame_dispatch_by_type`, so types `0x01`/`0x05`/`0x07`/`0x0b` specifically) gets latched into the
+   struct `ui_version_screen_populate_fields` later reads bytes `+1`-`+3` of.
+
+Confirmed this whole handshake is **boot-once, not a live per-visit query**:
+`scif3_frontpanel_identify_handshake` has exactly one caller (`scif3_frontpanel_init_and_latch_version`),
+which itself has exactly one caller (`cold_boot_hw_init` — the same function that already runs
+`boot_check_mode1_combo`/`boot_check_mode5_combo` for the service-mode combo). Visiting the version-info
+screen later just displays whatever got latched at that one boot-time exchange, not a fresh query.
+
+**Answer to the user's question**: the main CPU learns `IC501`'s firmware version through a genuine,
+one-shot `SCIF3` handshake at cold boot — it sends an outbound `0xF0` "identify" frame, blocks for the
+front panel's reply (with a timeout), and latches specific reply bytes into a status struct that the
+version-info screen later formats and displays as `"Front CPU: X.YZ"`. It is a real live query of the
+actual attached hardware, not a stored/cosmetic value — but it only happens once per power-on, not each
+time the menu is opened. **Not yet decoded**: exactly which frame type(s) the front panel's reply uses, and
+what the still-uncopied byte 0 of the rx buffer (type `0x00`) might carry.
+
+### Checking for a firmware-write mechanism (handout goal 2) — real negative result, not exhaustive
+
+With the outbound-handshake mechanism now confirmed, the natural next check was whether the *same* outbound
+path (or any other) could carry a chunked firmware image rather than just a tiny status handshake.
+`scif3_send_frame` (the low-level frame-construction primitive `scif3_frontpanel_identify_handshake` and
+this thread's other outbound sends. all funnel through) has exactly 3 call sites — and all 3 are inside
+`scif3_driver_pump_tick`, which is in turn `scif3_send_frame`'s *only* caller. So the entire outbound
+`SCIF3` driver is fully enclosed in these two functions. Reading through `scif3_driver_pump_tick`'s other
+branches (triggered by status bits `0x08`/`0x10`/`0x20`/`0x40`, separate from the `0xF0`/`0xF1` handshake
+path): every one sends a single frame of at most ~33 bytes (matching the known packet size), built from a
+small fixed or short computed buffer — nothing resembling a chunked-write loop, no size/offset header
+fields being walked, no erase/program-shaped sequence anywhere in this call graph.
+
+**This is a real, checked negative result for goal 2** — no firmware-image-write mechanism to the front
+panel exists in the confirmed outbound-`SCIF3` code path. It is **not** a whole-image sweep, though: this
+only rules out the one outbound driver found via `scif3_send_frame`'s call graph. If `IC501` can be
+field-updated at all, either the mechanism lives somewhere this session didn't reach, or (increasingly
+plausible given how narrow and simple this driver turned out to be) it genuinely isn't field-updated over
+`SCIF3` at all — factory-programmed once, matching one of the handout's original open questions.

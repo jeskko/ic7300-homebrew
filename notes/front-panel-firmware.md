@@ -42,13 +42,40 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   binutils, built from plain upstream source — recipe in the history file). Neither has been pointed at a
   confirmed real target yet.
 
+- **Resolved, 2026-09-07 — how the main CPU gets the front-panel version shown on the version-info
+  screen.** `scif3_frontpanel_identify_handshake` (`0x20037424`, renamed from `FUN_20037424`) runs exactly
+  once, at cold boot (called only from `scif3_frontpanel_init_and_latch_version`/`0x2002af80`, itself
+  called only from `cold_boot_hw_init`): it sends a genuine **outbound** `0xF0`-type frame over `SCIF3`
+  (the same `0xFE`/`0xFD`-framed protocol, via `scif3_send_frame`/`0x20037214`) and blocks with a timeout
+  waiting for the front panel's reply. Whatever comes back lands in `g_scif3_rx_status_buffer`
+  (`0x203dcab6`, the same buffer `scif3_frame_dispatch_by_type` writes into) at the per-type offsets;
+  bytes 1-12 of that reply then get copied into a separate "latched" struct,
+  `g_frontpanel_latched_status` (`0x203dca96`) — and bytes 1-3 of *that* struct are exactly what
+  `ui_version_screen_populate_fields` (`0x2004366c`, renamed from `FUN_2004366c`) formats as
+  `<digit>.<digit><digit>` and displays as `"Front CPU:"` on the version-info screen
+  (`ui_version_screen_draw_and_compare`, `0x200a94c8`, renamed from `FUN_200a94c8`) — matching the known
+  `"SX3765 Vx.xx-xxx"` version-string format. **So yes, it's a real live query of `IC501` itself, not a
+  cosmetic/stored value** — but it only happens once per boot, not on every visit to the version-info
+  screen. Full trace in `notes/front-panel-firmware-history.md`'s "How the main CPU gets the front-panel
+  version" section.
+- **Checked, 2026-09-07 — no firmware-image-write mechanism found for the front panel (not exhaustive).**
+  `scif3_send_frame` (the only outbound-frame-construction primitive found) is called exclusively from
+  `scif3_driver_pump_tick` (`0x200373ac`, renamed from `FUN_200373ac`), which is in turn the *only* caller
+  of `scif3_send_frame` — a fully self-contained, narrow outbound driver. Every send in it is a single
+  bounded frame (≤33 bytes, matching the known packet size) triggered by a simple status-bit flag or the
+  boot-time `0xF0`/`0xF1` handshake above — no loop, no offset/size-header parsing, nothing shaped like an
+  erase/program sequence. This is a real negative result for the handout's goal 2, but not a whole-image
+  sweep — it only rules out this specific call graph, not every possible path.
+
 ## Open questions
 
-- **Where real `IC501` firmware actually lives, if the update container carries it at all.** Not yet
-  checked: whether the update file's "Front CPU" version field (`FUN_200a94c8`'s `+0xa4`) is ever compared
-  against anything read live from `IC501` itself (e.g. over `SCIF3`) rather than just assumed — this is the
-  natural next thread, not more RL78 disassembly of a file already ruled out.
-- Whether `IC501` is field-updated at all, or factory-programmed once and never touched by this mechanism.
+- **Where real `IC501` firmware actually lives, if the update container carries it at all.** Checked one
+  specific angle 2026-09-07 (see above): the update file's "Front CPU" version field
+  (`ui_version_screen_draw_and_compare`'s `+0xa4`, in the update-candidate struct
+  `g_update_candidate_version_struct`) is compared against the *live-queried* struct above, confirming the
+  comparison is real and meaningful — but this doesn't itself locate an image; still open.
+- Whether `IC501` is field-updated at all, or factory-programmed once and never touched by this mechanism —
+  leaning further towards "never updated over `SCIF3`" after the negative result above, but not settled.
 - **The exact `SCIF3` type→offset→field mapping (which bit is `MENU`, which is `FUNCTION`, etc.) is still
   not fully decoded**, but a real, verified piece of it now exists: see the resolved item below —
   buffer offset `0xd`-`0x11` (bits 0-39) is a physical-key bitfield, and `g_scif3_bit_to_keycode_table`
