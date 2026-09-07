@@ -63,30 +63,91 @@ Observed sequence, mapped onto the traced code:
    but this confirms the reset event itself is real and exactly as hypothesized, not a full power-cycle
    that would wipe RAM.
 
-## Checked a real lead for the update-progress dialog renderer — not it, but real infrastructure found (2026-09-08)
+## `FUN_200aa750` IS the real update-dialog renderer — full chain confirmed, correcting the section below (2026-09-08)
+
+**This corrects the "not it" conclusion originally written in this section (kept below, struck through in
+spirit but left for the record) — the user pushed further with direct memory reads and found the real
+connection this session's own investigation missed.**
 
 User's hunch: `FUN_200aa750` (called from `FUN_200ab148`) might render the update-progress dialogs from
-the video sequence above, since it has progress-bar-shaped code (`value * 300 / 0xff` width scaling,
-matching the recording-storage screen's real progress bar) and is called from the same top-level screen
-dispatcher tail (`switchD_1807b5d4::default` in `FUN_20080380`) that also runs
-`ui_version_screen_draw_and_compare`.
+the video sequence above, since it has progress-bar-shaped code and is called from the same top-level
+screen-dispatcher tail that also runs `ui_version_screen_draw_and_compare`. First pass traced its dispatch
+state to `FUN_20038450`'s menu-item-property mapping and concluded (wrongly) that this was unrelated to
+firmware updates — a coincidental value match confused two different numbering axes (menu-*item-index* vs.
+item-*property-byte*, which happen to share small integers like `0x1c` for unrelated items).
 
-Traced its actual dispatch state (`*pcVar3` at `g_radio_ui_state_base+0x7dc`) to its real writer,
-`FUN_20038450` — which derives the value entirely from **the currently-selected settings-menu item's
-property byte** (read from a per-item table, `DAT_2001a050 + item_index*0x10 + 6`, mapped into 12
-categories by value-range checks). That's a menu-item-property lookup, unrelated to
-`firmware_update_main`'s own progress state.
+**User found the real evidence directly**: read `DAT_200ab2d0` (the array `FUN_200aa750`'s specific
+`uVar9 = *(byte*)(DAT_200ab2d0 + property_byte*0x4c)` line indexes) and found it resolves to `0x2032c91c`
+— exactly the base of the real message-string table this file's opening section already knew held
+`"Checking the file"`/`"Updating MAIN CPU firmware"`/`"Updating DSP/FPGA firmware"`. Computing the exact
+record offsets confirmed it precisely: property byte `0x1c` (record index 28, stride `0x4c`) lands exactly
+on `"Updating MAIN CPU firmware."`; `0x1d` (record 29) lands exactly on `"Updating DSP/FPGA firmware."` —
+both at the record's `+4` field, both landing at the identical remainder within the stride, no fudging.
 
-**Conclusion: this is a generic "contextual warning/hint dialog for whichever settings-menu item is
-currently selected" system, not the firmware-update-progress dialog renderer specifically** — a real,
-distinct piece of UI infrastructure that happens to share widget IDs and a progress-bar drawing pattern
-with what the update dialogs use, which is why it looked promising. Not fully ruled out as *involved*
-somehow (the real message-string table this section's own opening lists — `"Checking the file"`,
-`"Updating MAIN CPU firmware"`, `"Updating DSP/FPGA firmware"` — still has zero static references anywhere
-in the image, so its actual consumer remains reached only via a computed/indexed lookup no direct search
-has found), but the concrete evidence found here points away from it, not toward it. A good-faith,
-well-motivated hunch given the surface pattern match; worth recording so a future session doesn't re-chase
-the same lead without this context.
+**User's second find, mid-session: the dialogs are genuinely bilingual.** Found a Shift-JIS string at
+`0x2035fb94` decoding to `"DSP/FPGAのファームウェアを書き換えて"` ("...is rewriting the DSP/FPGA
+firmware...") and noticed the record at `0x2032d1bc` (= record 29's own body) has *two* language pointers,
+not one. Dumping the full 76-byte record for both items confirmed the real layout — `{flag(4), english_ptr
+(+4), ...unused (7 slots)..., japanese_ptr(+0x24), japanese_suffix_ptr(+0x28), ...unused (7 slots)...}` —
+and decoding the Japanese pointers directly gives an exact match for both items:
+- Item/record `0x1c` (`0x47`, see below): English `"Updating MAIN CPU firmware."`, Japanese
+  `"メインCPUのファームウェアを書き換えて"` + shared suffix `"います。"`.
+- Item/record `0x1d` (`0x48`): English `"Updating DSP/FPGA firmware."`, Japanese
+  `"DSP/FPGAのファームウェアを書き換えて"` + the same shared suffix `"います。"`.
+
+**Resolved the earlier confusion by checking the real numbering axes separately.** The property byte
+(`0x1c`/`0x1d`) that indexes into `g_status_message_table` is a *different* number from the menu-*item
+index* passed to the activation APIs. Scanned the per-item table (`0x2018b8f0`, stride `0x10`) for items
+whose own property byte (`+6`) equals `0x1c`/`0x1d`/`0x1e`, and found a clean, consecutive trio:
+
+| Item index | Property byte | Message (English) |
+|---|---|---|
+| `0x47` | `0x1c` | `"Updating MAIN CPU firmware."` |
+| `0x48` | `0x1d` | `"Updating DSP/FPGA firmware."` |
+| `0x49` | `0x1e` | `"Firmware updating has completed."` |
+
+**Found the real activation call sites** by searching the raw disassembly for `mov r0, #0x47`/`#0x48`
+immediately followed by a call to the activation API (the same literal-value-search technique used
+elsewhere this session) — both land inside `FUN_2005b2a0`, the same function already found this session
+while tracing the `"Fup_AutoEnd_3765"` marker's trigger-setter (previously named
+`mode_transition_sequencer_fup_autoend_setter`, **renamed `firmware_update_progress_dialog_sequencer`** —
+its real identity was this the whole time). Its states map exactly onto the observed sequence:
+- State `0x3b`→`0x3c` transition activates item `0x47` ("Updating MAIN CPU firmware").
+- State `0x3c` activates item `0x48` ("Updating DSP/FPGA firmware") — but only when a flag,
+  `g_fup_dsp_phase_sync_flag` (`0x20390308` — a byte in the *same* small cluster as
+  `g_fup_autoend_trigger_flag`), equals `2`. State `0x3c` then unconditionally advances to `0x3d` and *also*
+  sets `g_fup_autoend_trigger_flag` — the two threads (update-progress dialogs, post-reboot marker) turn out
+  to be driven by the exact same function, one state apart.
+- State `0x3d` activates item `0x49` ("Firmware updating has completed.").
+
+**The full synchronization with `firmware_update_main` itself, confirmed by direct listing, not inferred**:
+`g_fup_dsp_phase_sync_flag`'s real writer is inside `firmware_update_main`'s own body (`0x20025f44`) —
+`*(byte*)0x20390308 = 2`, written right after the `chunk_needs_update` loop, gated so it only fires when a
+DSP/FPGA chunk actually needs updating. `firmware_update_main` then **busy-waits** on this same byte
+(`0x20025f5c`-`64`: `do {} while (*(byte*)0x20390308 == 2);`) until `firmware_update_progress_dialog_
+sequencer` (running as a separate task) consumes it in its own state `0x3c`. This is a real, literal
+task-to-task handshake — not a guess.
+
+**This is now a fully closed loop**, tying together three previously-separate threads from this project:
+the real update-dialog message table (bilingual, exact-match confirmed), the real dialog-activation call
+chain (`ui_show_message_dialog`/`ui_show_message_dialog_with_timeout` → `ui_activate_menu_item` →
+`ui_active_item_category_dispatch` → `ui_status_notification_tick` → `ui_status_message_render_rows`,
+functions renamed this session), and the `"Fup_AutoEnd_3765"` post-update-reboot marker (whose trigger-
+setter turns out to be this exact same sequencer function). Renamed 8 functions/globals in Ghidra to match;
+see each one's own plate comment for the full derivation.
+
+**What's still open**: the "Checking the file." message (property/index `0x61`) hasn't been traced to its
+own activating item or call site the same way — a natural, well-scoped next step using the exact same
+technique (find which item has property byte `0x61`, then search the disassembly for `mov r0, #<that item>`
+followed by a call to the activation APIs). Also open: exactly what sets `g_fup_dsp_phase_sync_flag` to `1`
+(for the "Main CPU" phase, item `0x47`) — only the `=2` write (DSP/FPGA phase) was found inside
+`firmware_update_main`; the "Main CPU" activation might be triggered unconditionally by a different,
+earlier point in the same function, or by whatever calls `firmware_update_main` in the first place.
+
+## Checked a real lead for the update-progress dialog renderer — not it, but real infrastructure found (2026-09-08) — SUPERSEDED, see section above
+
+The section below was this session's *first* pass at `FUN_200aa750`, which reached the wrong conclusion.
+Kept for the record per this project's correction convention — read the section above for the real answer.
 
 ## The SPI-NOR flash driver (`0x20024xxx`)
 
