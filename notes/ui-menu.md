@@ -11,7 +11,7 @@ pass this same session and has now been corrected against the actual pointer var
 | Finding | Address(es) | Status |
 |---|---|---|
 | **Factory "FRONT CHECK MODE" screen** — a numbered list of 13 real physical front-panel buttons | title at `0x20197153`, list at `0x20196f00`+; selector `FUN_2003a540` (7 states, `0x2c`-`0x32`, from `FUN_20013070()`) | ✅ button names confirmed, screen-select mechanism traced; the actual GPIO/key-matrix scan code itself not yet chased |
-| **Generic touchscreen "list menu" widget** — one reusable set of functions drives QUICK MENU, MEMORY MENU, and presumably every other list-style menu screen, operating on a global "current list" pointer pair | widget code at `0x2004f0e4`-`0x2004f7xx`; bound, in this static snapshot, to the table at `0x2018f0ec` (72-byte/`0x48` records) | 🟡 full selection/navigation flow traced end-to-end (see below); the actual **per-item unique action** the flow ultimately triggers sits in fields that are blank (zeroed) in the static image — likely runtime-populated, the same "can't go further without live hardware" signature this project has hit elsewhere |
+| **Generic touchscreen "list menu" widget** — one reusable set of functions drives QUICK MENU, MEMORY MENU, REC/SET, Meter Type, SELECT, and presumably every other list-style menu screen, operating on a global "current list" pointer pair | widget code at `0x2004f0e4`-`0x2004f9xx`; bound, in this static snapshot, to the table at `0x2018f0ec` (72-byte/`0x48` records) | ✅ full selection/navigation/commit flow traced end-to-end through real, named, decompiled code, including three distinct "on commit" action patterns (direct config-byte write, delegated setter call, confirm-dialog-then-cycle-state) — see below |
 
 ## The "FRONT CHECK MODE" factory button list
 
@@ -73,15 +73,32 @@ this snapshot):
    QUICK MENU), stores the target item index into a "pending selection" state field, and calls
    `FUN_2004f0e4`, which just marks the widget dirty for redraw.
 
-**Where this dead-ends statically**: the fields that would carry each item's actual *unique action*
-(the container's `+0x18` "on commit" callback, and items' own `+0x08` handler) are all **zero in this
-static image** for every record sampled so far. This is the same signature as several other genuinely
-runtime-populated structures already documented elsewhere in this project (`kernel_start`'s mystery
-task descriptor, the multi-display attach bitmask) — plausibly filled in during screen construction at
-runtime rather than being compile-time constants, which would mean the real per-item action dispatch
-needs live hardware (JTAG) to observe, not more static reading. Not fully certain yet — worth checking
-a few more of the ~46+ total item records first (only indices 1-4 have been read) in case a later one
-in the table *does* carry a non-null value statically.
+**Update, same session — the "dead end" was a disassembly gap, not a runtime-only field.** Records
+13/14's own `+0x04`/`+0x0c` function pointers (`0x2004f858`, `0x2004f864`, `0x2004f888`, `0x2004f898`)
+pointed into bytes Ghidra had simply never disassembled — the classic "empty function list doesn't mean
+no code" gap, invisible until something actually reads the function-pointer table (which Ghidra's
+static analyzer has no way to follow on its own). Fixed via `tools/ghidra_scripts/FixArmThumbMode.java`
+(which needed its own fix first — `disassemble(start)` alone only follows control flow and stops at
+the first return with no traced successor, leaving the later independent stub functions in the range
+undefined; the script now sweeps every mode-aligned address in the range instead of one call). With
+real code now disassembled, decompiled, and named, **three concrete "on commit" action patterns are
+now confirmed**:
+
+| Function | Screen | Action |
+|---|---|---|
+| `meter_type_commit_direct_value` (`0x2004f864`) | Meter Type | **Direct commit**: copies the selected value straight into a live config byte (`*(byte*)(DAT_2004f730+6) = *(byte*)(DAT_2004f720+3)`), then calls `menu_widget_mark_dirty` |
+| `select_screen_commit_via_setter` (`0x2004f898`) | SELECT | **Delegated commit**: calls an external setter function (`FUN_2003fcac`) with the selected value instead of writing a byte directly, then also marks dirty |
+| `menu_item_confirm_and_cycle_state` (`0x2004f8f4`) / `menu_cycle_state_confirm_callback` (`0x2004f8b8`) | (unidentified screen, indices beyond what's been read) | **Confirm-then-cycle**: picks one of 4 message-string IDs (`0x4f`-`0x52`) based on the current state and calls `ui_show_message_dialog` (`0x200198bc`, newly named — sets up a real popup-dialog descriptor and a "dialog pending" flag the render loop must check) with a callback; on confirm, the callback advances the state 0→1→2→3→0 and calls an external apply function (`FUN_2003d574`) |
+
+This directly answers the original question for several real cases: pressing a settings-menu item can
+either write straight to a live config byte, delegate to a setter function, or pop a confirmation
+dialog before cycling to the next state — three different, now-named, code-level patterns rather than
+one guessed-at mechanism. `ui_show_message_dialog` in particular looks like a genuinely reusable finding
+(a real popup/dialog subsystem entry point) worth checking for at other call sites throughout the
+firmware. The earlier concern that these fields might be runtime-populated (like `kernel_start`'s
+mystery task descriptor or the multi-display attach bitmask) turned out not to apply here — but that
+pattern is real elsewhere in this project, so still worth keeping in mind if a *different* record's
+action field turns out to be genuinely zero after disassembly is fixed there too.
 
 ## More screens found by reading further into the table
 
@@ -112,26 +129,28 @@ further out, and it does — plus real new screen names surfaced:
 
 This table clearly encodes a good chunk of the real menu/settings screen tree, with actual title/
 subtitle strings recoverable directly from records rather than needing separate correlation to the
-216-item CI-V/EEPROM table or the raw label pool. That's real, if partial, progress toward the original
-question ("what do the different menu buttons trigger") — screen *names* are falling out cleanly; the
-per-item *action taken on press* is still the missing piece (see "where this dead-ends statically"
-above).
+216-item CI-V/EEPROM table or the raw label pool. Combined with the three confirmed "on commit" action
+patterns above, both halves of the original question ("what do the different menu buttons trigger") now
+have real, code-level answers for at least these screens — screen *names* and their *on-press actions*
+are both falling out of the same table.
 
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the
-   position-lookup table's largest observed index). Check whether any record anywhere has a non-null
-   `+0x08`/`+0x18` action-callback — would settle whether the per-item action dispatch is genuinely
-   runtime-only or just null for the 12 or so items sampled so far. ~~Figure out why title strings were
-   identical across the QUICK MENU items~~ — resolved well enough by records 11-14: real per-record
-   subtitles do vary (`"Meter Type"`, `"SELECT"`), so the QUICK MENU repetition looks like a genuine
-   shared-category-label coincidence (see hypothesis above), not a struct-decoding error.
+   position-lookup table's largest observed index) — now worth doing precisely *because* records 13/14
+   turned out to hide real, previously-undisassembled code once actually read; later records likely do
+   too. Each new record read is now a two-step process: read the raw bytes to find its function
+   pointers, then (if they land on undefined bytes) queue a `FixArmThumbMode.java` fix before they can
+   be decompiled — same pattern that paid off for records 13/14.
 2. Whether this table is the "walker" that was missing to connect `notes/diode-matrix.md`'s 216-item
    CI-V/EEPROM value table to the separate menu-name string pool (open question 6 there) — still not
    confirmed; the string pool this table points into (`~0x20359xxx`-`0x2035dxxx`) may or may not be the
    same pool diode-matrix.md found (`~0x2035a000`-`0x2035f000`) — worth checking directly.
 3. The "FRONT CHECK MODE" factory screen's other 6 sibling states (`0x2c`-`0x30`, `0x32`) are other
    factory/service screens, not yet identified at all.
-4. `FUN_2004f5a0` (the QUICK MENU container's own init/setup callback), records 13/14's own distinct
-   init callbacks (`0x2004f858`/`0x2004f888`), and `FUN_2004f0f0`'s caller chain (how does a real touch
-   event on the touchscreen actually reach `FUN_2004f610`?) aren't traced — that's the piece that would
+4. Which screen `menu_item_confirm_and_cycle_state` (`0x2004f8f4`) actually belongs to isn't identified
+   yet — it wasn't reached via any record read so far, only via `menu_widget_mark_dirty`'s call site at
+   `0x2004f940` (itself not yet tied to a specific record). `FUN_2004f5a0` (the QUICK MENU container's
+   own init/setup callback), records 13/14's own distinct init callbacks (`0x2004f858`/`0x2004f888`),
+   and `menu_widget_commit_selection`'s caller chain (how does a real touch event on the touchscreen
+   actually reach `menu_widget_activate_focused_item`?) aren't traced — that's the piece that would
    connect this whole widget to an actual physical touch coordinate.

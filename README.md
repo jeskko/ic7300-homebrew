@@ -293,17 +293,20 @@ class) matching the shape of the radio's own SD directory-reading code.
   IC-9700's JTAG connector and full pinout are identical to the
   IC-7300's own (`10FLT-SM2-TB`) — see `notes/hardware-debug-access.md`.
   Genuine cold-start effort, no prior art existed for this radio going in.
-- 🟡 **UI menu/touchscreen system, first look, 2026-09-07**: a factory "FRONT CHECK MODE" self-test
+- ✅ **UI menu/touchscreen system, first look, 2026-09-07**: a factory "FRONT CHECK MODE" self-test
   screen lists all 13 real physical front-panel buttons by name (`MENU` is button 9, `QUICK` is button
   12), reached via a 7-state factory-screen selector. Separately, found and correctly decoded (after
   catching and fixing a self-made record-alignment error — see `notes/ui-menu.md`'s "Correction") a
   generic, reusable touchscreen **list-menu widget** (72-byte records) that drives QUICK MENU, MEMORY
-  MENU, REC/SET, and other real screens — traced its full selection/navigation flow end-to-end through
-  real decompiled code (visible-item scan → focus resolution → activate → commit/redraw) and recovered
-  several real screen/setting names directly from the table (`"Meter Type"`, `"SELECT"`, `"REC/SET"`).
-  The one piece that dead-ends statically: the fields that would carry each item's actual unique
-  on-press action are zero in every record sampled so far — possibly genuinely runtime-populated, same
-  signature as a couple of other structures this project has already needed live JTAG for. See
+  MENU, REC/SET, Meter Type, SELECT, and other real screens — traced its full selection/navigation/
+  commit flow end-to-end through real, named, decompiled code (visible-item scan → focus resolution →
+  activate → **on-commit action** → redraw), confirming **three distinct on-press action patterns**:
+  a direct live-config-byte write, a delegated external setter call, and a confirm-dialog-then-cycle-
+  state flow (which also turned up a genuine, reusable popup/dialog subsystem entry point,
+  `ui_show_message_dialog`). Getting there needed fixing two real never-disassembled code gaps with
+  `tools/ghidra_scripts/FixArmThumbMode.java` — which itself needed a bug fixed first (its single
+  `disassemble()` call only followed control flow and stopped at the first return, leaving later
+  independent functions in the same range undefined; it now sweeps the whole range). See
   `notes/ui-menu.md`.
 
 ## Layout
