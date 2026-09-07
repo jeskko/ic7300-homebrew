@@ -12,7 +12,7 @@ pass this same session and has now been corrected against the actual pointer var
 |---|---|---|
 | **Factory "FRONT CHECK MODE" screen** — a numbered list of 13 real physical front-panel buttons | title at `0x20197153`, list at `0x20196f00`+; selector `FUN_2003a540` (7 states, `0x2c`-`0x32`, from `FUN_20013070()`) | ✅ button names confirmed, screen-select mechanism traced; the actual GPIO/key-matrix scan code itself not yet chased |
 | **Generic touchscreen "list menu" widget** — one reusable set of functions drives QUICK MENU, MEMORY MENU, REC/SET, Meter Type, SELECT, and presumably every other list-style menu screen, operating on a global "current list" pointer pair | widget code at `0x2004f0e4`-`0x2004f9xx`; bound, in this static snapshot, to the table at `0x2018f0ec` (72-byte/`0x48` records) | ✅ full selection/navigation/commit flow traced end-to-end through real, named, decompiled code, including three distinct "on commit" action patterns (direct config-byte write, delegated setter call, confirm-dialog-then-cycle-state) — see below |
-| **Physical-button-press chain** — traced from a real key press through to a queued screen-open request, for `MENU` and `QUICK` specifically | `ui_input_poll_tick` (`0x2002fca8`) → `key_event_resolve_and_route` (`0x2002ef98`) → `system_command_dispatch` (`0x2002ed9c`) + its 279-entry `g_system_command_table` (`0x2018d9e0`) → `menu_key_command_handler`/`quick_key_command_handler` → `ui_queue_screen_open_request` (`0x2002fd44`) | ✅ full chain traced and named through real decompiled code; 🟡 the final hand-off (does the pending-request flag really get picked up and fed into the list-widget's `DAT_2004f728`/`DAT_2004f720`?) is a strong hypothesis, not independently confirmed — see below |
+| **Physical-button-press chain** — traced from a real key press through to a queued screen-open request, for `MENU` and `QUICK` specifically | `ui_input_poll_tick` (`0x2002fca8`) → `key_event_resolve_and_route` (`0x2002ef98`) → `system_command_dispatch` (`0x2002ed9c`) + its 279-entry `g_system_command_table` (`0x2018d9e0`) → `menu_key_command_handler`/`quick_key_command_handler` → `ui_queue_screen_open_request` (`0x2002fd44`) | ✅ chain up to the queued request traced and named through real decompiled code; ❌ the actual final hand-off that switches the visible screen is **not** what was first guessed — checked the real consumer (`FUN_2002fd94`) and it turns out not to be it either (see "Correction" below) — genuinely unresolved |
 
 ## The "FRONT CHECK MODE" factory button list
 
@@ -190,12 +190,27 @@ physical button press (MENU=9, QUICK=12 per FRONT CHECK MODE)
      (`*DAT_2002f758 |= 0x80`) for something else to notice.
 ```
 
-**Where this stops being fully confirmed**: the two pointers each handler passes to
-`ui_queue_screen_open_request` are exactly shaped like the `DAT_2004f728`/`DAT_2004f720` pair the list
--menu widget (earlier in this file) reads its current table/state from — strongly suggestive that
-whatever polls the "request pending" flag next tick is what actually assigns those two globals and
-hands off to the widget system, closing the loop back to `menu_widget_activate_focused_item` and
-friends. That last hand-off step (who reads the pending flag, and does it really write
-`DAT_2004f728`/`DAT_2004f720`) has **not** been independently verified yet — a strong, well-evidenced
-hypothesis, not a confirmed fact. Checking it is the natural next step if this thread gets picked up
-again.
+**Correction, same session — the hand-off hypothesis above was wrong, checked and retracted.** Went
+looking for the consumer of the "request pending" flag (`references_to` on `DAT_2002f758`) and found a
+real one, `FUN_2002fd94`, sitting right after `ui_queue_screen_open_request`. Decompiling it settled the
+question, just not the way expected:
+
+- The two values `ui_queue_screen_open_request` stores are **not** data-table pointers shaped like
+  `DAT_2004f728`/`DAT_2004f720` — they're **callback function pointers**, called directly
+  (`(**(code**)(request+4))()`). Reading what `menu_key_command_handler` actually passes
+  (`DAT_200333a0` → `0x200327bc`, `DAT_2003339c` → `0x20032780`) and decompiling both targets shows
+  small precondition-style helper functions (bit-flag checks, status codes 0/2/3) — nothing that
+  resembles setting up the list-widget's table pointer.
+- Worse for the hypothesis: `FUN_2002fd94`'s branch logic only calls **either** callback when a stored
+  flag byte (the request's `+0xe` field, set from `ui_queue_screen_open_request`'s 4th argument) equals
+  `2`. Both `menu_key_command_handler` and `quick_key_command_handler` pass that argument as `0`, which
+  unconditionally lands on a branch that just clears the pending flag and posts what looks like an
+  audio-tone acknowledgment (`FUN_2001cbac`/`FUN_2001cbe4`) — **neither callback fires** for these two
+  buttons' actual requests.
+
+So this specific consumer is real and does something, but it is not the mechanism that switches the
+visible screen. **The genuine final hand-off to the list-widget system (or whatever actually redraws
+the screen after MENU/QUICK is pressed) remains unresolved** — an honest open question, not a confirmed
+link. The rest of the chain above (button → poll → resolver → command table → per-button handler →
+queued request) stays solid; only this last step is now correctly marked as still open rather than
+"probably this."

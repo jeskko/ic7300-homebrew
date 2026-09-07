@@ -311,7 +311,11 @@ class) matching the shape of the radio's own SD directory-reading code.
   from the main idle loop's input poll through a massive raw-input resolver, a key-code lookup, a
   genuinely new **279-entry system-wide command dispatch table** (`g_system_command_table`), and each
   button's own command handler, to a queued screen-open request — five newly-named functions and the
-  command table itself, all confirmed through real decompiled code. See `notes/ui-menu.md`.
+  command table itself, all confirmed through real decompiled code. **Checked the final hand-off and
+  corrected the earlier guess**: the queued request's two values turned out to be callback function
+  pointers (to small precondition helpers), not the list-widget's data pointers as first assumed, and
+  the one real consumer found doesn't actually call either callback for these two buttons' requests —
+  what genuinely switches the visible screen is still unresolved. See `notes/ui-menu.md`.
 
 ## Layout
 
