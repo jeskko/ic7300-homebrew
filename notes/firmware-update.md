@@ -405,14 +405,49 @@ full power cycle), so a marker written just before triggering that exact reset w
 the very next boot — precisely what `fup_autoend_marker_check_and_clear` looks for.
 
 **Two concrete gaps left, both good next steps**:
-1. **Who sets `g_fup_autoend_trigger_flag` (`0x20390307`) to `2`?** Not yet traced — presumably
-   `firmware_update_main` or something it calls on success. This is the missing link connecting the
-   already-fully-understood update mechanism to this newly-found restart marker.
+1. **Who sets `g_fup_autoend_trigger_flag` (`0x20390307`) to `2`?** ~~Not yet traced~~ **Found, 2026-09-07**
+   (see below) — not `firmware_update_main` itself, a separate mode-transition state machine.
 2. **Who reads `DAT_2005dfdc`/`DAT_2005dfe0` after a successful marker match?** No reader found anywhere in
    `body.bin`'s static call graph — consistent with this project's established pattern of generic/indirect
    (message- or task-based) consumption defeating direct xref tracing (see [[kernel-rtos]]'s task-activation
    dead ends). Whatever shows an "update complete" state (or similar) almost certainly reads one of these
-   flags several layers removed from any single traceable literal reference.
+   flags several layers removed from any single traceable literal reference. **Reconfirmed independently,
+   2026-09-07**: still genuinely zero readers anywhere.
+
+## Gap 1 resolved, and checked against a "reboot then push" hypothesis (2026-09-07)
+
+User's hypothesis: maybe the flash write and the component-firmware push are two separate phases — write
+flash, reboot, then compare versions at boot and push updates to whatever's stale (DSP/FPGA/front panel).
+Checked directly, at the two places such a mechanism would have to live:
+
+**The one confirmed component push (DSP, `chunk_transport_send_data`) already rules this out for that
+component.** It runs *synchronously inside `firmware_update_main` itself* — read chunk from SD file, verify
+against current flash content/MD5, write flash block **and** push to DSP over the parallel handshake bus,
+all in one pass, no reboot in between. Not a deferred boot-time step.
+
+**Traced who sets `g_fup_autoend_trigger_flag` to `2`** (the exact gap flagged above) — found a real writer:
+a small 11-state boot/mode-transition sequencer, `FUN_2005b2a0` (dispatched via an 11-entry function-pointer
+table, `0x2019b7d8`-`0x2019b800`, one slot per state `0x33`-`0x3d`). Its state `0x3c` sets the trigger flag
+to `2` when a separate flag 2 bytes further into the same small cluster (`0x20390309`, read via
+`DAT_2005b970`) is nonzero, or to `1` otherwise. That secondary flag itself gets reset to `1` unconditionally
+by `FUN_2005dd2c` (called from `FUN_2002b29c`, the already-established power-state main-loop dispatcher) —
+i.e. it looks like a normal per-boot reset, with `FUN_2005b2a0`'s own state machine being what actually
+changes it away from that default under specific conditions not yet fully pinned down. This function's
+overall shape (calls into `operating_mode_change_dispatch`, calls a `FUN_2000a17c(2)`-style cleanup on error
+paths) reads as a mode-transition/power-down sequencer, not obviously "did an update just run" on its own —
+the "Fup_AutoEnd" naming strongly implies *some* tie to firmware updates, but the exact condition wasn't
+fully pinned down this session.
+
+**Re-confirmed the consumer side is still a dead end** (independently, not just re-citing the old note):
+`DAT_2005dfdc`/`DAT_2005dfe0` are read *only* from within `fup_autoend_marker_check_and_clear` itself —
+zero readers anywhere else in the whole image.
+
+**Answer to the "reboot then push" hypothesis**: no such mechanism was found at either place it would need
+to live. The one push found happens synchronously, not after a reboot; and the post-update-reboot marker
+this hypothesis would need is a real, traced mechanism up through "trigger gets set," but its *consumption*
+side goes nowhere — whatever this marker was meant to drive next isn't reachable by any tracing done so far.
+Regardless of trigger mechanism, the front panel specifically still has no outbound chunked-write transport
+at all (`notes/front-panel-firmware.md`), so this doesn't change that conclusion either way.
 
 **Methodological note, worth remembering for future sessions**: extending Ghidra's memory map to the chip's
 real, datasheet-confirmed RAM extent (rather than just what's covered by a static image dump) is not purely

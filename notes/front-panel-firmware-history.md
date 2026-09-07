@@ -455,3 +455,20 @@ the real updater's own per-chunk trigger). The version-info screen is display-on
 separate, manually-triggered mechanism with its own unfound trigger condition; and the front panel
 specifically has no outbound firmware-write transport at all — independently reconfirmed this session on
 top of the prior session's finding.
+
+### Follow-up, same day: checked a "flash write, reboot, then compare-and-push" two-phase hypothesis too
+
+User's natural next hypothesis: maybe the push isn't triggered by the interactive menu at all, but by a
+boot-time reconciliation step after the flash write completes and the radio reboots. Checked directly —
+full derivation in `notes/firmware-update.md`'s "Gap 1 resolved" section, short version here:
+
+- The one confirmed push (DSP, via `chunk_transport_send_data`) already contradicts a two-phase model for
+  that component — it runs synchronously inside `firmware_update_main` itself, no reboot in between.
+- There genuinely is a "did we just reboot right after an update" detection mechanism (the
+  `"Fup_AutoEnd_3765"` top-of-RAM marker, `notes/firmware-update.md`) — exactly the infrastructure this
+  hypothesis would need. Found its trigger-setter this session (`mode_transition_sequencer_fup_autoend_setter`,
+  renamed from `FUN_2005b2a0`) — but its consumer side is a re-confirmed dead end: the two flags it sets on
+  a successful marker match have zero readers anywhere else in the whole image.
+
+Same conclusion as the interactive-menu check above: no boot-time compare-and-push mechanism found either,
+checked at the specific place it would need to live.
