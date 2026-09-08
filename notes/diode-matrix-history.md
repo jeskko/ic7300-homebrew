@@ -816,3 +816,743 @@ the region-code table's mapping to named versions isn't the simple direct one as
 this derived table as fact** — still worth checking directly (e.g. against the user's own board's diode
 population and its known market variant), just not via re-reading the parts list again — that's now been
 done as carefully as it can be from this document.
+
+## 9th session — three long-open "consumer not traced" questions resolved (Open Questions 3/4/5); D408/411/414/417/420 re-confirmed unresolved via fresh fallback tooling and cross-thread checks
+
+Picked up specifically to re-attack the 5 fully-unknown diodes plus 4 open questions, prompted by a large
+amount of unrelated RE work (menu-system tracing, RTTY/SSTV thread, front-panel-protocol work, CI-V dispatch
+work, UI touchscreen widget work) having happened since this file was last touched — on the theory that some
+of that work may have incidentally disassembled or documented a missing link back to this investigation.
+Read `notes/ui-menu.md`, `notes/kernel-rtos.md`'s RTTY thread, `notes/front-panel-firmware.md`, and the
+README Status section first for full context on what's new.
+
+**Method, before touching any specific diode**: re-ran `references_to` fresh (live Ghidra xrefs) on all 5
+known alias/table addresses (`DAT_2003c7f8`, `DAT_2003c800`, `DAT_2003ea4c`, `DAT_2003c858`, `DAT_2003c85c`)
+— returned the exact same closed set of consumer addresses as every previous session, confirming Ghidra's own
+analysis hasn't picked up anything new since the last sweep. Cross-checked this independently against
+`scratch/superset_142.sqlite` (the full ARM+Thumb superset disassembly built by `tools/superset_disasm.py`,
+regenerated 2026-09-07 per `tools/README.md` — confirmed current) via direct SQL queries for literal-pool
+loads (`ldr Rd,[pc,#imm]`) targeting these 5 addresses: identical closed set, zero new hits — this
+independently confirms Ghidra isn't missing anything the superset tool would catch (per this project's own
+methodology lesson about code that exists in the binary but was never disassembled by Ghidra). Went one step
+further than any previous session: swept the whole image for `movw`/`movt` immediate-pair loads of these
+same 5 addresses' 16-bit halves (in case some function forms the pointer without ever using a PC-relative
+literal load) — zero hits. Also directly searched for hardcoded literal loads of the *live* runtime addresses
+these pointers resolve to this build (`0x20390214`/`0x20390210`/`0x20390212`/`0x203def29`) — zero hits, ruling
+out any function bypassing the alias-pointer indirection entirely.
+
+### Open Question 5 resolved: the D406/D409 classification byte feeds a live DSP command word
+
+`*DAT_2003c858` resolves (read directly, this build) to `0x203def00` — recognized this address immediately:
+it's the exact same "live DSP shadow config" struct base `notes/kernel-rtos-history.md`'s RTTY thread already
+mapped as `DAT_200b1ca0`, read by `dsp_param_table_rebuild_from_settings` (`0x200b232c`, real entry
+`0x200b18c0`). Decompiling that function again with this specific offset in mind: it reads
+`*(char*)(iVar4+0x29)` (`iVar4` = the same `0x203def00` base) — exactly the byte `FUN_2003c530` writes the
+D406/D409 classification result to (`*(undefined1*)(DAT_2003c858+0x29)` in `FUN_2003c530`'s own decompile,
+confirmed address-identical). The read value is shifted `<<6` and OR'd together with 3 other 2-bit fields
+(struct offsets `+0x2a6`, `+0x2a7`, `+0x2a8`, each masked `&3`) into one packed word, tagged with opcode byte
+`0x22` (`CONCAT13(0x22, ...)`) and stored to `DAT_200b1cb8[3]` — slot 3 of the same 24-word DSP command table
+`dsp_cmd_table_init`/`dsp_param_sync_tick` already fully mapped by the multi-cpu-images/RTTY threads. The
+function's last statement is an unconditional call to `dsp_param_sync_tick()`, which diffs this table against
+its last-synced shadow and pushes any changed word to the DSP chip over `SCIF5`.
+
+**What this means**: D406/D409's post-scan classification (0=neither, 1=D406 present, 2=D409-present-only) is
+not just local CPU-side bookkeeping — it's packed as a real 2-bit sub-field of a live DSP configuration word
+that gets continuously synced to the DSP chip, the same mechanism this project's RTTY thread already
+confirmed drives things like passband edges and mode-specific parameters. The other 3 packed 2-bit fields
+(`+0x2a6`/`+0x2a7`/`+0x2a8`) weren't identified — out of scope for this specific question, but a plausible
+next lead if this word's DSP-side meaning (opcode `0x22`) is ever recovered (e.g. from the DSP's own object
+code, `dsp_program.bin`/`dsp_data.bin`, referenced in `notes/multi-cpu-images-history.md`).
+
+### Open Question 4 resolved: D403's raw bit value only ever bounds a CTCSS-tone cycle
+
+`FUN_2003c5c4`'s only caller was already known (`get_type1_type2_designation`/`FUN_200134b4`). Chased one
+level further this session: that function itself has exactly 3 real callers, all decompiled in full —
+`FUN_2000b98c` (`0x2000b9d0`), `FUN_200189e8` (`0x20017db8`), `FUN_20065dec` (`0x20065d74`). All 3 use the
+`'1'`/`'2'` (`0x31`/`0x32`) return value purely as the upper bound of a linear search / cycling loop over a
+CTCSS-tone table, passed straight into the same generic "select item N with wraparound" helpers
+(`FUN_20017c50`, `FUN_20006398`) already seen gating the meter-cycle function in the next section below.
+`FUN_2000b98c` in particular is a clean confirmation: it parses a 3-character command string, looks up a tone
+frequency in a table (`DAT_2000c288`) bounded by `get_type1_type2_designation()`'s 49-vs-50 count, and returns
+the matched index — textbook CI-V/menu "resolve CTCSS tone name to table index" code. `FUN_20065dec` does the
+same bounding for what looks like an encoder/dial-driven tone-selection UI handler. **No consumer beyond the
+already-documented CTCSS-tone-count mechanism exists anywhere** — this closes the question definitively rather
+than just re-asserting the existing finding.
+
+### Open Question 3 resolved: `DAT_2003c85c`'s consumer found, but it's unreachable dead code
+
+`FUN_2003c5d4`'s only caller was already known to be inside `FUN_2000a5f0` (renamed nowhere yet) — but tracing
+one level further: `FUN_2000a5f0(param_1)` is a boolean gate checked against a numeric `param_1`, with two
+special cases — `param_1==9` (gated on an unrelated flag, `*DAT_2000a7ec & 1`) and `param_1==10` (gated on
+`FUN_2003c5d4() != 0`, i.e. D416 present AND the `DAT_2003c85c` lookup is non-zero). `FUN_2000a5f0` itself has
+5 real callers (`FUN_2000a774`→`FUN_2000a6d8`, `FUN_2000a794`, `FUN_2000ba54`→`FUN_2000ba0c`,
+`FUN_20032fb0`→`FUN_20032f8c`, `FUN_20033078`→`FUN_20033054`), several of which visibly cycle through an
+11-item list (`param_1` / loop bound `0`-`0xa`/`10`) skipping any item for which `FUN_2000a5f0` returns
+nonzero — the shape of a "select next enabled item, wrapping" UI selector, structurally similar to (but not
+confirmed to be) a settings/mode cycling widget. Exact feature identity of items 9/10 not pinned down.
+
+**The key finding, though**: `DAT_2003c85c`'s index (`DAT_2003c800+2`) was independently confirmed this
+session to be the region_code byte, not some separate raw diode index — `FUN_2003c0ec` (already documented,
+re-read closely this session) contains `puVar1[2] = (char)diode_region_code_lookup(*(undefined4*)(DAT_2003c800+4))`,
+i.e. it writes the *resolved* region_code (the same 0-7-valid-range value from `DAT_2003c7fc`'s table used
+throughout this whole file) into that exact offset, confirmed by a second independent reader
+(`FUN_2003c4a4`, which indexes a per-region table array, `DAT_2003c808`, with the identical
+`*(byte*)(DAT_2003c800+2)` expression). Since `DAT_2003c85c`'s only non-zero entries sit at indices 13 and 15,
+and region_code's confirmed valid range is 0-7 (`DAT_2003c7fc` = `[0,1,2,0,3,4,5,6,0,7,0,0,0,0,0,0]`), **this
+specific D416-gated path can never evaluate non-zero on any diode combination this firmware's own tables can
+produce** — a real, traced consumer, but one that is dead code in practice on any real hardware. Worth
+flagging as a genuinely new *kind* of finding for this project: not "no consumer found" and not "confirmed
+live effect," but "consumer found, and it's provably unreachable" — a third bucket this file hadn't needed
+before.
+
+### D408/D411/D414/D417/D420 — re-confirmed unresolved, including targeted checks of every new cross-thread lead the task specifically flagged
+
+With the alias-address reference set reconfirmed closed (see Method above), specifically checked each
+lead the orchestrating session's brief called out as a possible missing link, rather than relying on the
+closed-reference-set argument alone:
+
+- **The touchscreen list-menu widget's per-item availability callback**, `FUN_2004f250` (`notes/ui-menu.md`)
+  — decompiled: it only tests the widget's own record table (`DAT_2004f728`-based) byte at offset `+0x1c`,
+  bit 0. No reference to any diode-scan alias, no plausible indirect path either (the value it tests comes
+  from the widget's own static per-item data, not a runtime diode read). Ruled out cleanly.
+- **`g_system_command_table`** (`0x2018d9e0`, 279 entries, `notes/ui-menu.md`) — dumped and parsed all 279
+  `{command_id, handler}` pairs directly from memory. Zero handler addresses fall inside the diode-matrix
+  code cluster (`0x2003b000`-`0x2003f000`), and none match any of the already-enumerated diode-consumer
+  function addresses. Doesn't rule out a handler calling *into* the already-known consumer chain (e.g.
+  `FUN_2003df34` is already known to be called from "at least 4 places" per the existing notes), but no
+  *direct* new consumer sits in this table.
+- **CI-V `1A 05` settings bridge** (`dsp_param_table_rebuild_from_settings`'s sibling, `civ_cmd_1a05_handler`
+  / `0x2000dcb4`, per `notes/kernel-rtos-history.md`'s RTTY thread) — re-read the existing trace: it feeds the
+  same 216-item value table (`DAT_2000e230`) and passes the item's own code straight through to
+  `menu_item_value_set_by_format_type`/`menu_item_value_set_simple`. Dumped the full 216-entry table this
+  session (see below) and confirmed the field that trace called `region_code` is actually just the item's own
+  numeric code (`0x24`-`0xf6` range, matching `FUN_2003df34`'s dispatch codes exactly) passed through
+  verbatim — no additional masking or gating logic beyond what's already documented; not a new bridge into
+  the diode bits.
+- **`ui_show_message_dialog`** (`0x200198bc`) — has ~38 real callers; not walked individually (would be
+  redundant given the closed alias-reference-set result above — none can test a diode bit without going
+  through one of the 5 now-conclusively-enumerated alias addresses). Flagging this explicitly as a
+  **shortcut taken**, not an exhaustive per-caller check, in case a future session wants to verify it
+  directly rather than trust the inference.
+- **The menu-item name string table** (`~0x2035a000`-`0x2035f000`) vs. the 216-item value table
+  (`DAT_2000e230`/`0x2018a698`) — dumped and parsed the full 216-entry table directly from memory (4
+  bytes/entry: format_type_byte, flag_byte, item_code 16-bit). Spot-checked `references_to` on two sample name
+  strings already found by the RTTY thread (`"RTTY Decode USOS"` @ `0x2035c390`, `"RTTY Mark Frequency"` @
+  `0x2035cfd1`): **zero static references to either**, matching the RTTY thread's own "computed-table-access
+  wall" finding exactly. No static bridge from the name pool to the value table found this session either —
+  Open Question 6 remains open (see diode-matrix.md's Open Questions for the precise wording).
+
+**Conclusion**: D408, D411, D414, D417, D420 remain genuinely unresolved. This is now the *third* session
+(7th, 8th, 9th) to reach this conclusion via a different set of methods each time, most recently including a
+whole-image superset-disassembly cross-check and a dedicated sweep of every specific new lead this session's
+brief called out — a strong, well-supported negative result, not a gap in searching. `chunk5_tail.bin` and
+`base.dat` remain the only literally-unchecked firmware content (not attempted this session either — out of
+scope given the time spent on the resolved questions above). Live JTAG verification remains the most
+promising next step for any of these five diodes, same conclusion as every prior session.
+
+**Not reached this session**: Open Questions 1 and 2 (region-code-to-country-name reconciliation, the
+0-7-vs-public-Version-#-up-to-12 mismatch) and Open Question 7 (`chunk5_tail.bin`/`base.dat` never checked)
+— no new work done on these, time was spent entirely on Questions 3/4/5 and the D408/411/414/417/420
+re-confirmation above.
+
+## 10th session — the factory-reset/defaults mechanism found and decompiled end to end; D423 gets a new, concrete consumer; D408/411/414/417/420 checked against this genuinely new code path, still nothing
+
+Prompted by the observation that this project had never actually identified the Partial-reset/All-reset
+functions the real manual documents (`IC-7300_ENG_FM_12b.pdf` pp. 14-3/14-4), nor the hardware
+`CLEAR`+`V/M`-at-power-on forced-reset path — a new thread, not a continuation of the diode-hunt proper, but
+one whose defaults-selection logic was worth checking against the diode matrix per the task brief. Found and
+traced the whole chain; the hardware boot-time combo was **not** found (see below).
+
+### Finding the two confirm-dialog strings and the message-ID table that owns them
+
+Raw string search turned up all four of the manual's quoted UI strings in one small cluster:
+`"Reset All Edges?"` (`0x2035ec24`), `"Reset to the default settings?"` (`0x2035ec58`),
+`"Partial Reset?"` (`0x2035ec8c`), `"All Reset?"` (`0x2035ec9c`) — right alongside the SD-card file-manager's
+own confirm strings (`"Delete all memo pads?"` etc.), confirming these all share one generic confirm-dialog
+message-ID table. Walking each string's single `DATA` xref back one level (the string pointer sits inside a
+record, not referenced directly by code) and cross-checking against `ui_status_message_render_rows`
+(`0x200aa750`, already named from the firmware-update thread) — which indexes
+`DAT_200ab2d0 + message_id*0x4c` (a **76-byte-stride table**, base resolves to `0x2032c91c` this build) —
+pins down the message IDs precisely: **`0x52`** = "Reset to the default settings?" (a generic string, reused
+by an unrelated per-item confirm-and-cycle feature elsewhere — not reset-specific despite the name), **`0x54`**
+= "Reset All Edges?", **`0x57`** = "Partial Reset?", **`0x59`** = "All Reset?". Confirmed `ui_show_message_dialog`
+(`0x200198bc`)'s first argument really is this same message-ID space by checking `FUN_200199d0` (a second,
+narrower entry point that just stages `{id, callback}` into the dialog struct for a widget's generic
+"activate" handler to pick up and forward) — only 12 real callers project-wide, making this a far more
+tractable search surface than every `ui_show_message_dialog` call site directly.
+
+### "Reset All Edges" (User Band Edge screen) — fully traced, confirms the widget-table hypothesis
+
+`FUN_2003331c` (a previously-undefined function — Ghidra had never disassembled these bytes; created it fresh
+the same way `notes/ui-menu.md`'s "empty function list doesn't mean no code" lesson describes) is the
+User-Band-Edge screen's "Reset All Edges" button/list-item, referenced only from a table entry
+(`0x20033408`, `PARAM` reference) exactly matching the generic touchscreen list-widget infrastructure
+`notes/ui-menu.md` documents. It unconditionally calls `FUN_20045e94()`, which shows the `"Reset All Edges?"`
+(`0x54`) confirm dialog with callback `FUN_20045e68`. On confirm, that callback calls `FUN_20045800()`, which
+loops all 11 user band-edge slots (`FUN_200457ec(i)`: `*(u32*)(DAT_20045ea8 + i*8 + 0xde4) = 0xFFFFFFFF` — the
+same sentinel this project already knows means "blank/unused" for these slots) and clears a handful of
+trailer/header bytes, then calls `FUN_2004577c` to recompute which slot index is "current" after the wipe.
+This is a small, self-contained, fully-confirmed reset function in its own right — not diode-gated at all,
+no scan-value reference anywhere in this specific chain.
+
+### Partial Reset / All Reset — the real trigger chain, end to end
+
+**Partial Reset** (`0x57`): `FUN_20041c38` unconditionally calls `FUN_200199d0(0x57, PTR_FUN_20042670)`.
+The callback (`PTR_FUN_20042670` → `FUN_20041c0c`) calls `FUN_2000a17c(1)` then `FUN_2002b818(3)`.
+`FUN_2002b818(param_1)` does `*DAT_2002b4fc = param_1` (`= 3` here) then two generic UI-transition calls.
+
+**All Reset** (`0x59`): its trigger, `FUN_20041c9c`, was **another undisassembled gap** — Ghidra had left the
+whole function (52 bytes, right after `FUN_20041c70`) as raw undefined bytes; the project's own fallback
+(`arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000` on the real `body.bin`, per
+`tools/README.md`) confirmed it as real ARM code and gave ground truth before creating the function in Ghidra.
+It checks a flag byte (`[0x20390218+5]`): if already set, tail-calls `FUN_2003e5f0(0)` directly (a
+skip-the-dialog fast path); otherwise it tail-calls `ui_show_message_dialog(0x59, 0x20041c70, 0, 0)` directly
+— explaining why this specific call didn't show up in the initial `references_to(ui_show_message_dialog)`
+sweep (38 hits, all direct `bl`s) at all: it's a `b` inside code Ghidra hadn't disassembled yet, invisible to
+any static reference search until the gap is fixed. The confirm callback, `FUN_20041c70`, sets that same flag
+to 1 and calls `FUN_2003e5f0(0)`.
+
+**The key link**: `*DAT_2002b4fc` (resolves to `0x20390310`) turned out to be the *exact same* address as
+`DAT_2002a158`, the "system mode request" byte `system_mode_request_dispatch` (`0x2002a6b8`, already fully
+documented in `notes/kernel-rtos-history.md`'s 30th session) switches on — just two different literal-pool
+copies of one pointer, this project's standard pattern. So writing `*DAT_2002b4fc = 3` is a real, if indirect
+(polled, not called), trigger: the next time `sys_monitor_task`'s poll loop runs `system_mode_request_dispatch`,
+its `case 3` fires `FUN_2002a698()` (Partial), and (independently, via whatever sets the same variable to `5`
+for All Reset — not traced back further than "some path reaches value 5 too, given `case 5` exists and does
+the parallel All-Reset-shaped work"; the All-Reset button's own path to writing `5` specifically into this
+variable, as opposed to Partial's directly-observed `3`, wasn't nailed down to a single instruction this
+session — a real gap, flagged honestly rather than assumed) `FUN_2002a678()` runs instead. Both call the same
+EEPROM write (`FUN_2001e484`, tag `16000`) with different source buffers/lengths, then both call
+**`FUN_2002a4c8(param_1)`** — 0 for Partial, 1 for All — which is the real bulk-reset function.
+
+### `FUN_2002a4c8` — the actual bulk-reset function, and the real defaults table
+
+`FUN_2002a4c8(reset_type)` clears a large number of live-state struct fields directly (channel/mode/squelch
+working state, DSP-adjacent flags, etc.) and, critically, calls `FUN_2003ddd4(reset_type)`, which loops item
+codes `0`–`0x145` (326 items) calling `FUN_2003dcc0(item_code, reset_type)` for each. **This is the literal
+default-value table the task asked about.**
+
+`FUN_2003dcc0` indexes `DAT_2003ea50 + item_code*0x40` — a **64-byte-stride, 326-entry table** whose base
+(`0x20190ecc` this build) is the *same address* `notes/diode-matrix.md`'s already-documented 13-row band-edge
+min/max table uses (there as `DAT_2000f0c4`, read by `is_feature_enabled_for_region`/`FUN_2000edb0`) — i.e.
+this is one canonical per-item-code record table serving double duty: min/max sub-fields for band-edge-shaped
+items, and (freshly read this session, item 0's record) a live-value pointer (`+0`), a type byte (`+4`:
+1=byte/2=short/4=word/else=blob-copy via `FUN_2017c710`), a literal default value (`+8`), and — unexpectedly —
+string pointers at `+0x28`/`+0x2c`/`+0x34`/`+0x38` landing squarely in the `0x2035axxx`–`0x2035fxxx` name-string
+pool this file's Open Question 6 has been chasing. **Not confirmed as the missing name-table link** (didn't
+chase further this session — out of scope for this thread — but flagged here since it's a real, concrete new
+lead for that question, worth a fresh look).
+
+For each item, `FUN_2003dcc0` normally just writes the table's own literal default (`+8`) into the live
+pointer (`+0`) per its type byte. **Six item codes get special-cased instead of the generic table default** —
+and this is where the diode matrix comes back in:
+
+- **Item `0x73`: `if ((*DAT_2003ea4c & 0x8000) == 0 || item != 0x73) { normal path } else { *live = 1; }`**
+  — `DAT_2003ea4c` is one of the diode-scan-value's confirmed aliases (`DAT_2003c7f8`/`DAT_2003c800`/
+  `DAT_2003ea4c`/`DAT_2003c858`), and bit `0x8000` is bit 15 = **D423**. So: **when D423 is present, item
+  `0x73`'s default on reset (either Partial or All — this branch doesn't check `reset_type`) is forced to `1`
+  instead of whatever the generic table says.** This is a real, new, concrete consumer of D423 — not just
+  "gates feature-code checks" (the existing, vaguer characterization) but specifically "picks item `0x73`'s
+  factory-reset default value." Item `0x73`'s actual menu-item identity is still unresolved (same open
+  problem as the rest of `is_feature_enabled_for_region`'s item codes), so this doesn't yet name the Emergency
+  Mode feature, but it's a materially stronger, more specific piece of evidence for the same hypothesis.
+- **Items `0x22`/`0x32`/`0x79`: gated on `FUN_2003bcdc()`**, which is `diode_region_code_lookup(...) == 0` —
+  i.e. **region_code == 0** (the diode-matrix.md region table's "no diode combination maps here" default/
+  unmapped code). When true, these three items' reset defaults are forced to `3`, `1`, and `0x6c` (108)
+  respectively, overriding the generic table value. **A second, independent, real consumer of the diode-derived
+  region_code inside the reset/defaults path** — not just band/TX tables and the menu-enable gatekeeper, but
+  the factory-reset default-value selection itself.
+- **Item `0x4b`: on Partial reset only (`reset_type == 0`)**, its default comes from a live-mirror byte
+  (`*(byte*)(0x203dee04 + 0x91)`, a single, un-traced-further reference — `references_to` on its own
+  literal-pool address found exactly one hit, inside this same function) instead of the table value; on All
+  reset it uses the generic table default like everything else. Not chased further (single reference, low
+  value for the time spent) — flagged as a loose end, not a diode/region consumer as far as traced.
+- Checked `is_feature_enabled_for_region` (`0x2003df34`, the sibling function `notes/diode-matrix.md` had
+  previously described together with `FUN_2003dcc0` as one "master gatekeeper" pair) fresh, specifically to
+  see whether it also participates in the *defaults* path — it doesn't: it only ever tests bit 0 (D401) and
+  bit 5 (D416) for its own, disjoint set of item codes (`0x24`–`0xf6`, matching its existing documentation
+  exactly), never bit 15. **Correction to the existing note's phrasing**: "`FUN_2003df34`/`FUN_2003dcc0`...
+  real, direct input (bit 15)" reads as if both functions test bit 15 — only `FUN_2003dcc0` does; `df34`'s own
+  gating is bits 0/5 only, for entirely different item codes. Not a factual reversal of anything already
+  concluded (D423 is still real, still bit 15, still gates item-code overrides), just a precision fix on
+  which of the two functions does which part.
+
+**A real discrepancy worth flagging, not resolved this session**: `FUN_2002a4c8` calls `FUN_20045800()` (the
+same "Reset All Edges" wipe documented above) **unconditionally**, regardless of `reset_type` — i.e. by this
+reading, **both Partial and All Reset wipe every user band edge**, even though the real manual explicitly
+lists "User Band Edge" among the settings **Partial reset preserves**. Possible explanations not
+distinguished here: the manual is right and something else (not reached this session) restores/skips this for
+Partial reset specifically; the call is conditioned on something upstream of what was traced; or this is a
+genuine firmware behavior the manual's wording doesn't quite match. Flagging honestly as unresolved rather
+than picking one.
+
+Also confirmed, more positively, that `FUN_2002a4c8` **does** implement an asymmetry matching the manual's
+framing: three calls (`FUN_2003d5e4`/`FUN_2004bf24`/`FUN_2001f400`) run only when `reset_type == 0` (Partial)
+and are skipped for All Reset — not decompiled further this session, but structurally consistent with
+"Partial reset does less than All reset," the manual's core distinction.
+
+### D408/D411/D414/D417/D420 against this new code path — still nothing
+
+Checked every function in this newly-traced chain (`FUN_2003dcc0`, `FUN_2003df34`/`is_feature_enabled_for_region`,
+`FUN_2002a4c8`, `FUN_2003ddd4`, `system_mode_request_dispatch`, both button-trigger functions and both confirm
+callbacks) for any test of bits 10/11/12/13/14 (D408/D411/D414/D417/D420) against any of the diode-scan-value
+aliases. Found none — the only bits tested anywhere in this whole reset/defaults path are bit 0 (D401), bit 5
+(D416), and bit 15 (D423), plus the derived region_code (weight bits 1/2/4/8 = D404/D407/D410/D413). This is a
+genuinely new code path (never previously examined by this project, since the reset mechanism itself had never
+been located) reaching the same negative result as every prior session's whole-firmware sweep — a real,
+independent reconfirmation, not a repeat of old ground.
+
+### The hardware `CLEAR`+`V/M`-at-power-on forced-reset path — not found this session
+
+Went looking for this specifically (the task's third target) but did not find it. `cold_boot_hw_init`
+(`0x2002afc0`) does contain a cluster of real, already-named-from-a-prior-session boot-time button-combo
+checks (`boot_check_mode1_combo`, `boot_check_mode5_combo`, `boot_check_challenge_response` — all three fully
+documented in `notes/kernel-rtos.md`'s "Factory/service mode" section, 30th session) that run in the same
+place `*DAT_2002b4fc` gets zero-initialized at cold boot — but all three are **service-mode entry combos**
+(`MENU`+`FUNCTION`+shorted REMOTE jack, and two others), not the manual's `CLEAR`+`V/M` all-reset combo, and
+none of them touch `*DAT_2002b4fc`/`*DAT_2002a158` at all (they write a different variable, `DAT_2002a4a4`,
+the idle-loop-selector). No fourth, `CLEAR`+`V/M`-shaped combo check was found nearby or elsewhere this
+session — genuinely not located, not just unconfirmed. This remains open for a future session (or JTAG): the
+manual's boot-time forced-reset path may poll physical key-matrix state through a completely different
+mechanism than the SCIF3 front-panel-status-buffer bits `boot_check_mode1_combo`'s cluster reads (e.g. a
+dedicated GPIO read of `CLEAR`/`V-M` specifically, not yet located), or may not exist as a distinct boot-time
+code path in `body.bin` at all (possibly handled entirely by the front-panel's own separate firmware/MCU
+before the main CPU is even up — consistent with this project's existing multi-CPU findings).
+
+**Files touched this session**: `notes/diode-matrix.md` (new "Factory reset / restore-defaults mechanism"
+section, D423's living-table entry updated, Open Questions updated) and this history file. No git commit made
+— left for the user's own review, per this project's standing instruction. Two previously-undefined code
+regions were disassembled and named in the live Ghidra project as part of this work (`FUN_2003331c`,
+`FUN_20041c9c` — the latter recovered via `arm-none-eabi-objdump` ground truth before being defined in Ghidra,
+per this project's established ARM/Thumb-gap workflow); no `.bin`/binary files were modified, only the Ghidra
+project's own analysis database.
+
+## 11th session — testing a new user lead: Japan's 4630 kHz/CW-only Emergency behavior. Confirmed real via firmware strings; exact gating code not found
+
+Prompted by a specific, concrete piece of the user's own domain knowledge (real amateur radio operator): Japan's
+IC-7300 variant reportedly has a special emergency-frequency function tied to **4630 kHz, CW-only**, layered on
+top of an all-regions Emergency-Mode-shaped behavior (**reduced TX power, tuner accepting worse SWR/match**).
+4630 kHz is Japan's real disaster-communication frequency (JARL's network) — a concrete, testable claim, not
+vague. Read this file's own D423 row and the 9th/10th session entries first per the task brief.
+
+### Confirming the frequency-encoding convention before searching
+
+Checked how this firmware actually stores frequency literals before guessing at 4630's representation:
+decompiled `FUN_2003bd80` (RX band-edge clamp, already in this file) and confirmed via `mcp__ghidra__memory`
+decimal search that known band edges (`7300000`, `7000000`, `5255000` — 7.3 MHz/7.0 MHz/5.255 MHz) all hit
+cleanly as **plain 32-bit little-endian Hz integers** at the expected `0x20193xxx`/`0x20198xxx` band-table
+addresses. This is the confirmed convention this firmware uses for frequency comparisons — searched for 4630
+kHz in this exact form (`4630000` / `0x46A6D0`) first, then kHz-scale (`4630`), then float/double
+(`4.630`/`4630000.0`). **All came back with zero hits** — a real negative, not a search-method failure (the
+sanity-check literals above prove the method works on this exact kind of value).
+
+### Found the feature anyway — as real UI strings, not a numeric literal
+
+Broadened to string search (`"4630"`, `"Emergency"`, `"EMG"`) across the whole image and got immediate, strong
+hits, all inside the already-known `~0x2035a000`-`0x2035f000` UI name/message pool (the same pool this file's
+Open Question 6 has been chasing) plus one more small cluster at `0x2032a000`:
+
+- `"You can transmit on 4630 kHz for "` (`0x2035e518`) directly followed in memory by `"Emergencies."`
+  (`0x2035ea7c`) — these are two separate null-terminated strings concatenated at render time into **"You can
+  transmit on 4630 kHz for Emergencies."**, confirmed by reading the raw bytes directly (not an OCR/inference
+  read — this is a literal ASCII string in `body.bin`).
+- Three more standalone `"4630kHz"` strings (`0x20359ae0`, `0x2035fac0`, `0x2032a036`).
+- `"EMERGENCY"` (`0x2035a5c4`) and `"Emergency"` (`0x2035a81c`) as standalone strings.
+- Reading wider context around `0x2035a5c4` turned up something unexpected and useful: `"EMERGENCY"` sits
+  **inside a real menu-category name list** — `...RX..TX..TX DELAY....DISPLAY.EMERGENCY...KEYER
+  MEMORY....RTTY MEMORY.RTTY...` — i.e. it reads as a genuine SET-mode category name sitting in sequence with
+  other real IC-7300 category names, not just a one-off status message.
+- The `0x2032a000` cluster is a small, self-contained **bilingual status-indicator string table**: Shift-JIS
+  `"非常通信モード"` (literally "Emergency Communication Mode" — 非常 hijō/emergency, 通信 tsūshin/
+  communication, モード mōdo/mode) with **no English translation** (a blank padded field, where the table's
+  other rows, e.g. `"TUNER"`/`"チューナー"`, have both languages populated), plus `"4630kHz"`, `"TUNER"`, and
+  two pre-combined display strings `"4630kHz / TUNER"` and `"4630kHz / チューナー"`. The missing English
+  string is itself real, if circumstantial, evidence this is JP-only — consistent with D423/D420 being the two
+  confirmed JP-only diodes.
+
+Decoded the Shift-JIS by hand from the raw hex bytes (`94 f1 8f ed 92 ca 90 4d 83 82 81 5b 83 68` →
+非常通信モード) — cross-checked against the standard Shift-JIS code table, not guessed from vibes.
+
+### Tracing the status-indicator code — real, but hit a wall past one layer
+
+`references_to` on the `0x2032a09c`/`0x2032a058` string addresses found a real code consumer:
+`FUN_2009060c`, a status-bar/icon-text renderer. It reads a byte from a global UI-status struct
+(`DAT_20090a18` → `0x2040376c` this build; `+0x7f8` = icon "kind" selector, `+0x7f9` = a separate
+English/Japanese display-language byte) and switches on it — `case 6` is confirmed, by walking the real ARM
+listing at `0x20090790`-`0x200907cc` (`ldr r2,[0x20090a40]` etc.), to be the "4630 kHz / Tuner" indicator,
+picking between the Japanese-only string cluster based on the language byte. This confirms the string cluster
+is live, referenced UI code, not orphaned data — a real, if partial, win.
+
+Tried to go one level further — find what sets that `+0x7f8` byte to `6` (i.e. what actually *triggers* this
+indicator) — and hit a genuine dead end: `references_to` on the computed absolute address (`0x20403f64`)
+returned a long list of "WRITE" hits, but decompiling several of them showed completely unrelated code (a
+meter/frequency-display string-building switch statement on an unrelated variable, `DAT_2003a538`/
+`DAT_2003a4a8`, nothing resembling the expected struct or offset). Concluded this is very likely a coincidental
+address match rather than a real trace (possibly a mislabeled switch-table data reference, per this project's
+existing "Ghidra reference type on computed addresses can be misleading" experience) — flagged honestly as an
+unresolved trace rather than forced into a story. **D423's own known consumers were checked directly instead**:
+item `0x73` (the one concrete, already-traced D423 consumer) resolved via its own name-string field
+(`+0x28` in the 326-item defaults table, same table/mechanism this file's Open Question 6 flagged as a new lead
+last session) to **`"Display Language"`** — not Emergency Mode, not a frequency, ruling it out cleanly. Checked
+the other D423-gated item codes the same way (`0x22`, `0x32`, `0x71`, `0x79`, and the `0x94`/`0xe5` pair from
+the `0x8f-0x93/0x94/0xe5` range) — none have name strings or record shapes matching this feature either;
+`0x94`/`0xe5` are word-typed records with plausible-looking large numeric values but no name string at all, and
+`0xe5`'s own gating in `is_feature_enabled_for_region` (re-read fresh) tests bits 0/5 (D401/D416) only, matching
+that function's already-documented general-coverage-style gating — not D423.
+
+### What this session did and didn't establish
+
+Also searched directly for `"CW mode"` / `"only in CW"` near the 4630 kHz strings and read ~700 bytes of the
+surrounding string-pool context by hand — no CW-restriction wording found anywhere nearby. The user's CW-only
+recollection is **not disconfirmed**, just not independently corroborated by any firmware string this session
+found — worth being precise about, since the frequency and tuner/emergency wording *did* get directly
+confirmed while the CW-specific detail didn't.
+
+**Not attempted this session**: any search for the broader, all-regions "reduced power + relaxed tuner
+matching" Emergency-Mode-shaped behavior the user described as separate from the JP-specific 4630 kHz/CW case.
+Time went entirely into confirming/tracing the JP-specific lead. This remains genuinely open — a real next
+step would start from `notes/kernel-rtos.md`'s `tuner_engage_gpio_toggle`/`tuner_freq_and_txstate_precheck`
+section looking for a TX-power-scaling table or a tuner SWR/matching-tolerance constant, neither of which was
+searched for this session.
+
+**Bottom line**: the user's lead is **confirmed real** — this is not a coincidence or a misremembered detail.
+The firmware contains a genuinely named, JP-flavored "Emergency Communication Mode" (非常通信モード) feature
+concretely tied to 4630 kHz and to the tuner, referenced from live status-bar-rendering code. What remains
+unresolved: the precise trigger/gating logic (attempted and hit a real wall, not skipped), whether it's
+D423-specific as opposed to something else, the CW-only detail specifically, and the broader all-regions
+reduced-power behavior (not investigated this session, not the same thing as a negative result).
+
+**Files touched this session**: `notes/diode-matrix.md` (D423 living-table entry corrected — item `0x73` is
+"Display Language", not Emergency Mode; new "4630 kHz Emergency Communication Mode" section added; Open
+Question 6 updated) and this history file. No git commit made — left for the user's own review. No ARM/Thumb
+disassembly gaps were hit this session (all code inspected was already disassembled by Ghidra), so nothing was
+queued in `scratch/armthumb_fix_requests.txt`. No `.bin` files or the Ghidra project's binary contents were
+modified — only comments/notes in this repo.
+
+## 12th session — systematic Shift-JIS sweep, per the "turn the 4630kHz technique into a tool" task brief
+
+Task: take the 11th session's by-hand discovery method (a Shift-JIS status string with no adjacent English
+translation, unlike its sibling rows, was the real signal that led to the 4630 kHz "Emergency Communication
+Mode" find) and turn it into a systematic, repeatable, whole-image sweep, then chase whatever it flags.
+
+### The tool
+
+Built `tools/sjis_string_scan.py`. Confirmed the real firmware path first (`tools/README.md` + existing
+`scratch/unpacked/` contents) rather than re-deriving it — `scratch/unpacked/142/body.bin`, base `0x20005000`,
+matching `superset_disasm.py`'s own default/example usage.
+
+Single left-to-right tokenizer walks the whole 3,738,392-byte image once, greedily consuming runs of printable
+ASCII (`0x20`-`0x7E`) and/or Shift-JIS lead/trail pairs (lead `0x81`-`0x9F`/`0xE0`-`0xFC`, trail `0x40`-`0x7E`/
+`0x80`-`0xFC` excluding `0x7F`) that actually decode under Python's `shift_jis` codec — precomputed once into a
+~30k-entry lookup table so the hot loop is dict lookups, not repeated try/except decodes. Runs under 3 real
+characters are discarded (`--min-chars 3`, the project's own "adjust as needed" threshold — chosen because an
+earlier `--min-chars=2` trial was dominated by stray 2-byte coincidences, while 3 still keeps real short labels).
+Every kept run is classified `jp` (contains at least one real kanji/kana codepoint — Hiragana/Katakana, half-
+width kana, CJK ideographs, or fullwidth forms — the plausibility filter the task asked for, since plenty of
+byte pairs decode "validly" as Shift-JIS without ever landing on a real character), `ascii` (pure printable
+ASCII), or `sjis_other` (valid Shift-JIS pairs, no real kanji/kana — kept for audit, not treated as a candidate).
+
+Result: **126,603 total runs** — 107,785 `ascii`, **18,474 `jp`**, 344 `sjis_other`.
+
+### Sanity-checking against the known-good calibration hits
+
+`--check 0x2032a014 0x2032a07a` (非常通信モード / チューナー) confirmed both addresses show up as `jp`
+candidates before trusting anything else the tool produced, per the task's explicit instruction. Both did.
+
+### A real bug caught during calibration, not after
+
+The pairing check ("does the preceding NUL-delimited field contain plausible English") initially computed the
+span between the single nearest preceding NUL and the run's own start — which is trivially empty by
+construction in these back-to-back tables, since a field's text begins immediately after its own opening NUL.
+Manually re-verifying the known 非常通信モード/チューナー calibration pair against a byte-exact hex dump (not
+just trusting the tool's own report) caught this: `find_preceding_field` needed to look at the field bounded by
+the *second*-nearest NUL, not the nearest one. Fixed before trusting the sweep's "unpaired" output at all — see
+the tool's own docstring for the full before/after. This also **overturned the 11th session's own headline
+finding**: 非常通信モード does have a real English pair, `"EMERGENCY MODE"`, sitting exactly one 0x22-byte slot
+back — the 11th session's by-hand read had made the identical off-by-one mistake, stopping at the (trivially
+empty) span immediately before the Japanese text rather than checking one slot further back. Full narrative,
+and the live-code confirmation via `FUN_2009060c`'s cases 1/2/4/5/6 all sharing the same `+lang_byte*0x22`
+indexing convention, is in `notes/diode-matrix.md`'s new 12th-session section — not duplicated here.
+
+### Characterizing the noise honestly
+
+Of the 18,474 `jp` candidates: **7,110 + 1,372 = 8,482 (46%) fall inside the two large, already-confirmed pure-
+ARM-code blocks** (`0x20005000`-`0x200ca000`, `0x200d1000`-`0x200fd000`) — almost certainly coincidental decodes
+of instruction bytes, not real text, given those blocks contain no known string data. Only **4,920 (27%)** fall
+inside the known real string-pool/data range (`0x2018e000`-`0x2035d000`); the rest scatter across font/glyph
+data and other non-text blocks. Within the string-pool range, 3,492 of 4,920 (71%) are flagged `paired=0`
+("no adjacent English found").
+
+Ranking the longest unpaired candidates (a natural first instinct for "most interesting") turned out to
+surface almost entirely a **Shift-JIS character/glyph enumeration table** around `0x20336000`-`0x20341000` —
+long, dense runs of what look like most of the common-use kanji set in near-sequential JIS code order,
+clearly font/glyph metadata, not UI strings. Recognized this from the output itself (not assumed) by hex-
+dumping a sample and recognizing it as an enumeration, not prose — a real, correctly-identified noise source,
+worth calling out explicitly since naive "longest string" ranking would otherwise waste an entire session
+chasing font tables.
+
+Narrowing to the three known real-text ranges (`0x20329000`-`0x2032c000`, `0x2032c000`-`0x2032e000`,
+`0x20359000`-`0x20360000`) and reading the unpaired hits directly surfaced two more candidate clusters, both
+chased and both resolved as **false positives of the pairing heuristic, not new features**:
+
+1. A run of ~13 consecutive JP-only SET-menu category names (`0x2035a880`-`0x2035a9b8`: "トーンコントロール/
+   送信帯域幅" [Tone Control/TX Bandwidth], "RTTYデコードログ表示" [RTTY Decode Log Display], "交信録音/再生"
+   [QSO Recording/Playback], "VOICE送信録音", "ディスプレイ設定" [Display Settings], "VOICE送信設定",
+   "RTTYデコードログ設定", "CW-KEY設定", "機能設定" [Function Settings, appears twice], "RTTYデコード設定",
+   "オーディオスコープ設定" [Audio Scope Settings], "スコープ設定", "スキャン設定") — all ordinary, already-
+   public IC-7300 SET-menu items, not hidden features. Hex-dumping the wider region (`0x2035a600`-`0x2035a9c0`)
+   showed why: this part of the pool is **not** per-item English/Japanese pairs at all — it's a flat list of
+   distinct menu/category names where each entry is monolingual (some entries English-only, like `"User Band
+   Edge"`/`"Preset Name"`/`"Date/Time"`, others Japanese-only, like this cluster), evidently because each name
+   is simply stored in whichever language it was authored in for this particular breadcrumb level, not a
+   bilingual-pair table like `0x2032a000`.
+2. `0x2035fac0` (`"4630kHz非常通信用周波数での送信ができ..."`) — already covered above/in diode-matrix.md:
+   genuinely paired with the known English 4630 kHz message, just via the `0x2032c91c` pointer table rather
+   than adjacency. Confirmed by hex-dumping the *English* message-table region (`0x2035e480`-`0x2035eb00`)
+   directly and finding it is itself a long, separate, contiguous **all-English** run (RTTY Decode Log, QSO
+   Recorder, Voice TX, "You can transmit on 4630 kHz for ", "Emergencies.", dozens more dialog/error strings)
+   sitting well before the corresponding **all-Japanese** run this sweep flagged (`0x2035ed9c`-`0x2035fd04`,
+   same messages, same relative order, confirmed by eye) — i.e. this whole message pool is genuinely
+   block-separated by language for long stretches, not interleaved, so a proximity check will systematically
+   misfire across most of it. `references_to` on `0x2035fac0` resolving to record 90/field `+0x28` of the
+   `0x2032c91c` table (whose `+0x04`/`+0x08` fields are the already-known English message) confirmed the real
+   pairing mechanism directly, not just inferred it.
+
+**Net characterization, stated plainly per the task's ask for an honest negative**: outside the one small,
+genuinely interleaved table this whole thread started from (`0x2032a000`), proximity-based pairing is
+unreliable across this image — both large clusters checked here turned out to be tool false positives, not
+new findings. The sweep's real value this session was (a) catching and correcting the 11th session's own
+off-by-one error inside the one table where proximity pairing *does* apply, and (b) a clean, well-characterized
+negative for the broader "spray the whole image and expect more hidden features to fall out" hope — nothing
+else flagged panned out as new.
+
+### Chasing the corrected finding with real Ghidra analysis
+
+Full chain, condensed in `notes/diode-matrix.md`'s 12th-session section (not repeated in full here):
+`FUN_2009060c` cases 4/5/6 all read the same field (`DAT_20090a20` → `"EMERGENCY MODE"`/`0x22`-offset
+"非常通信モード", by language byte) that cases 1/2 use for the already-trusted ALL RESET/PARTIAL RESET
+pairs — confirming the pairing structurally and by shared code convention. The case-selector byte itself
+(icon "kind", `0x20403f64` this build) is set by `FUN_20037c10` from bits 2/3 of a status byte at
+`0x203de175` (aliased `DAT_2002b45c[1]`/`*(DAT_20038290+1)`). That byte is cleared by the already-documented
+`factory_reset_apply_defaults` (`0x2002a4c8`) and set by the already-documented `system_mode_request_dispatch`
+(`0x2002a6b8`)'s previously-uncommented mode-request-value-4 branch, which in turn depends on two variables
+(`DAT_2002b46c`/`DAT_2002b470`) with **no writer found anywhere in the image** — the same "populated via an
+untraced message/event mechanism, or needs JTAG" dead end `notes/kernel-rtos-history.md`'s 30th session already
+hit one variable earlier in this same chain (`DAT_2002a158`). Not a new dead end, just one level further into
+an already-known one.
+
+**D408/D411/D414/D417/D420 checked against this entire chain — a real, independent negative.** Read all four
+functions' full decompiled bodies end to end (not a keyword grep): zero references to any diode-scan-value
+alias or `region_code` anywhere in `FUN_2009060c`, `FUN_20037c10`, `system_mode_request_dispatch`, or
+`factory_reset_apply_defaults`. This specific Emergency-Mode-indicator toggle mechanism is region-independent
+as far as this chain reaches — consistent with, though not proof of, the user's own point (made mid-session)
+that the broader reduced-power/relaxed-tuner-matching behavior might be an all-regions feature rather than
+diode-gated at all.
+
+### The separate "Emergency" SET-menu category — bounded check only, per the user's mid-session correction
+
+The user corrected an earlier conflation risk mid-session: the standalone `"EMERGENCY"`/`"Emergency"` SET-
+menu-category strings (`0x2035a5c4`/`0x2035a81c`) are a different feature from the JP-only 4630 kHz cluster,
+despite sharing the English word "Emergency," and shouldn't be assumed diode-gated. Did a bounded (not
+exhaustive) follow-up: both strings resolve via `references_to` to one record in a 24-byte-stride generic
+SET-category table starting near `0x20190200` (`{type-tag byte (mostly 0x09), 4 name-pointer fields, 1
+callback pointer}`); the Emergency record's callback (`0x20042f3c`) is a generic "render up to 4 sub-items"
+page handler shared by several neighboring categories, parameterized by an external page-type byte, not by
+anything specific to Emergency. Did not trace further (would need the specific item-list data this generic
+renderer walks for the Emergency page, out of scope for remaining session time) — a real, partial structural
+placement, not a gating answer. Still genuinely open.
+
+**Files touched this session**: `tools/sjis_string_scan.py` (new tool), `tools/README.md` (new documentation
+section), `notes/diode-matrix.md` (new 12th-session section, Open Question 6 addendum, correcting the 11th
+session's "no English counterpart" claim), this history file. No git commit made — left for the user's own
+review, per this project's standing instruction. No ARM/Thumb disassembly gaps were hit this session (all
+code inspected was already disassembled correctly by Ghidra), so nothing was queued in
+`scratch/armthumb_fix_requests.txt`. No `.bin` files or the Ghidra project's binary contents were modified —
+only comments/notes in this repo and the two new/edited files under `tools/`.
+
+## 13th session — Emergency Mode / Tuner traced end to end for the 4630kHz side; real user manual text sharpens and confirms the whole feature; EEPROM-write and boot-populate steps still not found
+
+Task brief asked to pick up the 12th session's dead end (`FUN_2009060c`'s trigger bottoming out in two
+read-only variables, `DAT_2002b46c`/`DAT_2002b470`, no writer found) using a brand-new, concrete lead: the
+user described the real menu flow from actual hardware use — `MENU > SET > Others > Emergency > Tuner > OK`,
+device restarts, an orange "E" badge appears top-left. Partway through the session the user additionally
+pasted the real Japanese manual page for "非常通信モードの運用" (Emergency Communication Mode operation),
+which sharpened the task significantly — see below.
+
+### The manual text, and what it changed
+
+The pasted manual confirmed: `MENU > SET > Others > Emergency` (非常通信) is **one shared screen** with two
+independent checkboxes, `"4630kHz"` and `"チューナー"` (Tuner) — not two separate menu categories, correcting
+an ambiguity the 11th/12th session entries left open (they treated "Emergency" the SET-menu category and
+"4630kHz Emergency Communication Mode" as two separate, only loosely related threads; they're the same
+screen, two checkboxes on it). The manual explicitly states: 4630kHz mode **forcibly switches the operating
+mode to CW**, and Tuner mode **expands the antenna tuner's matching range to start tuning even at SWR ≥ 3**
+(normally requires ≤3) and, **specifically for the IC-7300, limits max TX output to 50 W**. Both directly
+confirm the user's original domain-knowledge claim (predating this whole project thread) about the "reduced
+power + relaxed tuner matching" all-regions Emergency Mode. The flow for either checkbox: tap it, tap `OK`
+(dismisses a warning dialog), tap a *separate* `"≪再起動してセット≫"` ("Restart to Set") button, the radio
+reboots, mode is now active; un-checking both and repeating cancels it.
+
+### Locating the Emergency category's actual sub-items (task 1)
+
+Picked up from the 12th session's placement of the Emergency category's home record (`0x2019024c`, inside
+the 24-byte-stride category table starting `~0x20190200`) and its generic renderer, `FUN_20042f3c` — a
+"render up to 4 sub-items" handler parameterized by a byte at `DAT_20042658+0xb`. Traced `DAT_20042658`
+itself: it's a **fixed pointer constant** (`0x203de174`, the *same* physical struct base already known as
+`DAT_2002b45c` from the 12th session's Emergency-indicator chain) — not a per-category cursor as the 12th
+session's phrasing implied. So `DAT_20042658+0xb` = `0x203de17f`, a single fixed byte.
+
+Traced who writes `0x203de17f`: only one direct writer besides `factory_reset_apply_defaults` (which zeros
+it) — `emergency_screen_checkbox_state_sync`'s neighbor `FUN_2005815c` (called from
+`system_mode_request_dispatch`'s tail, right before `operating_mode_change_dispatch`), which syncs this byte
+from a companion field at offset+0x13 (`0x203de187`) whenever the current value exceeds `0x12` (18) — i.e.
+this byte doubles as "current operating mode" (values 0-18) and "current SET-menu page ID" (values ≥19, the
+renderer subtracts `0x13` to get a 0-based page index) in the same physical byte. This reconciles cleanly
+with `FUN_20042f3c`'s own `- 0x13` arithmetic, but tracing *which* literal page-ID value corresponds to
+Emergency specifically, and how the outer category-list navigation writes offset+0x13 per-category, was not
+completed (the one writer found for offset+0x13, `FUN_2003dcac`, only zeroes it as part of factory reset).
+
+Rather than keep chasing this generic page-index plumbing, pivoted to the newly-supplied manual text and
+worked from the two checkboxes' own warning-dialog strings instead — a much more direct and productive path
+(see below). **Net for task 1**: did not cleanly nail the item-list data structure the generic renderer walks
+for the Emergency page specifically (that remains open, same as the 12th session left it), but *did* locate
+and confirm both real sub-item names ("4630kHz" and "Tuner") via their warning-dialog text, and traced both
+items' actual UI-action code — arguably a more useful resolution to the spirit of the question than the
+literal item-list table would have been.
+
+### The Tuner warning dialog — a new firmware string, confirms the manual's "50 W" claim directly
+
+The existing 12th-session message-ID table work (`0x2032c91c`, 76-byte stride, already pinned `0x54`/`0x57`/
+`0x59` for the Reset dialogs and `0x5a` for the 4630kHz warning, "You can transmit on 4630 kHz for
+Emergencies.") was extended one message ID further: **`0x5b`** reads, assembled from 4 fragments at
+`0x2035f7dc`/`0x2035f8a0`/`0x2035f7b8`/`0x2035e6f8`: *"Expands max. matching ratio for Emergencies. Output
+power is limited to max. 50W. Danger! Never get close to the antenna during TX."* This is the Tuner-mode
+warning dialog, and its text is a **direct firmware-string confirmation** of the manual's 50 W claim (and
+close paraphrase of the SWR-matching-range claim) — stronger evidence than a numeric constant would have
+been, since it's literally the on-screen warning text.
+
+### The confirm-callback chain — hit and resolved a real ARM/Thumb disassembly gap
+
+Searched for what calls `ui_show_message_dialog` with these two message IDs (`0x5a`/`0x5b`) via a hex search
+for the ARM `mov r0,#imm` encodings (`5a 00 a0 e3`/`5b 00 a0 e3`) — found both at `0x20041d4c`/`0x20041d38`.
+Ghidra's own `inspect.listing`/`inspect.decompile` at this address range (`0x20041cfc`-`0x20041d68`) returns
+**raw undefined bytes**, not instructions — a real ARM/Thumb-adjacent disassembly gap, this project's
+established pattern. Followed the documented fallback: ran `arm-none-eabi-objdump -D -b binary -m arm
+--adjust-vma=0x20005000` against `scratch/unpacked/142/body.bin`, which disassembles this region cleanly as
+plain ARM32 (`ldrb`/`cmp`/`beq`/`ldr`/`b` — a checkbox-state dispatch that decides whether to show `0x5b` or
+`0x5a` based on a separate context byte at `0x20390211`, then tail-calls `ui_show_message_dialog` with the
+callback loaded from literal-pool slot `0x20042680` in both branches). Queued
+`0x20041cfc 108 arm` in `scratch/armthumb_fix_requests.txt` for the user to apply via the Ghidra GUI script.
+
+Confirmed via this ground truth: **both** the `0x5a` and `0x5b` dialogs use the *same* confirm-callback,
+`0x20041cd0` (renamed `emergency_screen_warning_ok_callback`) — it just sets a generic "confirmed" flag
+(`*(DAT_20042664+6)` = `*0x2039021e` = 1), not distinguishing which checkbox. Its sibling
+`all_reset_confirm_callback` (already named, 10th session) is structurally identical but writes
+`*(DAT_20042664+5)` = `*0x2039021d` instead — confirming this pair of bytes (`0x2039021d`/`0x2039021e`,
+offsets +5/+6 of the shared page-context struct `0x20390218`) is reused as a generic "OK confirmed for
+current item slot" scratch flag across *several* different confirm dialogs (Partial Reset, All Reset,
+4630kHz, Tuner), not a dedicated pair of "is 4630kHz checked"/"is Tuner checked" bits as first hypothesized.
+
+### The real bit-specific commit — found, for the 4630kHz side
+
+Since the shared OK-callback doesn't set the bit-specific target, looked instead at the *separate*
+"restart to set" button, per the manual's distinct step. Found a small cluster of generic "Others"-list
+OK-handlers referenced from a literal-pool/table region around `0x2018b1a8` (the same infrastructure
+already used for Partial/All Reset): `FUN_2000de50` unconditionally calls `FUN_2002b818(3)` — confirming
+this cluster really is the shared "Others" action list (`FUN_2002b818(3)` is the already-documented Partial
+Reset trigger). Its immediate neighbor, `0x2000de64` (renamed `emergency_mode_restart_commit`): guarded by
+`*DAT_2000e238 & 0x4000`, reads a pending 0/1 value from `*(DAT_2000d23c+3)`, and if valid, writes it via
+`*DAT_2000e24c` — confirmed (by reading the literal pool value directly) to be the **exact same physical
+address** as `*DAT_2002b46c` (`0x2039021d`), the 4630kHz-target byte `system_mode_request_dispatch`'s
+already-documented `uVar11==4` branch reads — then calls `FUN_2002b818(4)`, writing mode-request value 4
+into `DAT_2002a158`/`DAT_2002b4fc` and running the shared restart machinery.
+
+This is a real, concrete, ground-truth confirmation of the task brief's predicted shape for the 4630kHz
+checkbox: **checkbox tap → warning dialog OK → restart-to-set button → stages pending value → requests
+system-mode-4 → (already-documented) `system_mode_request_dispatch`'s mode-4 branch commits the value into
+the persistent status bits (`0x203de175` bit 3) → full subsystem restart.** Decompiled `FUN_2002b818` itself
+(`*DAT_2002b4fc = param_1; FUN_20041dd8(); FUN_20017390();`) and both of its callees — **neither is an EEPROM
+call**: `FUN_20041dd8` sets an interrupt-guarded notification bit, `FUN_20017390` clears an unrelated
+11-slot pointer array. **No EEPROM write was found anywhere in this specific commit chain** — a real,
+honest negative for half of the task 2 hypothesis.
+
+Also found and renamed `emergency_screen_checkbox_state_sync` (`0x2002ae6c`) — runs in the *opposite*
+direction (guarded by the same `0x4000` bit under a different alias, `DAT_2002b4e0`, matching this project's
+established "one physical flag, several DAT_ names" pattern): when the Emergency screen opens, it reads the
+live persistent bits (`0x203de175` bits 2/3) and copies them **into** the two staging bytes, seeding the
+checkbox display from the currently-committed mode. This confirms `0x2039021d`/`0x2039021e` are UI scratch
+state, refreshed from the live bits on screen-open, not themselves EEPROM-backed — consistent with (and
+explaining) why no direct EEPROM consumer was ever found for them.
+
+**Could not isolate a Tuner-specific sibling of `emergency_mode_restart_commit`** (something writing
+`0x2039021e`/`*DAT_2002b470` the same way, from a pending checkbox value). Checked the next two candidates in
+the same OK-handler cluster — `FUN_2000de28` (calls `FUN_20030008`, an unrelated bit-3 set in a totally
+different `DAT_200306c4` struct) and `FUN_2000dea4` (calls `FUN_2002b818(1)`, mode-request value 1, also a
+different feature) — neither fits. Genuinely not found this session, open for a future one.
+
+### Boot-time EEPROM populate (task 3) — still not found; one assumption in the brief corrected
+
+Checked `notes/kernel-rtos.md` directly for the "general EEPROM-settings-load-at-boot mechanism" the task
+brief said this project had already mapped there — **it hasn't**: a direct grep for "eeprom" in that file
+returns zero hits. This is a correction to the brief's assumption, not a finding about the firmware.
+Checked `notes/eeprom-catalogue.md` instead — its one documented combined-settings loader (`FUN_2006cb84`,
+loading into a struct based at `0x203b31e0`, roughly `0x1a80` bytes total) does **not** reach `0x203de174`
+(the offset would be ~`0x2af94` bytes, far past that struct's end) — ruled out by simple address arithmetic,
+not exhaustive search. Spot-checked two `PARAM`-tagged references to the `0x203de174` struct base
+(`FUN_200092f0`, `FUN_200278f0`) that looked superficially promising — neither turned out to be an EEPROM
+call; both are small, unrelated field-setters. Did not have session budget to sweep the ~50 of 73 total
+`FUN_2001e510` call sites `notes/eeprom-catalogue.md` itself flags as still unsampled, nor to read
+`cold_boot_hw_init` line-by-line looking for this specific struct. **Net: the 12th session's dead end for
+`DAT_2002b46c`/`DAT_2002b470` (no writer besides `system_mode_request_dispatch`'s own mode-4 branch) is
+NOT closed.** What's new is a concrete, real UI-side *caller* of that mode-4 request
+(`emergency_mode_restart_commit`) — genuine forward progress — but the EEPROM round-trip (write at menu-OK
+time, read back at a real cold boot) that would explain how this survives an actual power cycle remains
+unconfirmed, flagged honestly rather than forced to fit.
+
+### Diode/region gating (task 5) — checked, real clean negative, same as always
+
+Read the full decompiled bodies of every function newly traced this session
+(`emergency_screen_warning_ok_callback`, `emergency_mode_restart_commit`, `emergency_screen_checkbox_state_sync`,
+`FUN_2002b818`, `FUN_20041dd8`, `FUN_20017390`, `FUN_20042f3c`, `FUN_20041f20`) — **zero references** to any
+diode-scan-value alias (`DAT_2003c7f8`/`DAT_2003c800`/`DAT_2003ea4c`/`DAT_2003c858`) or to `region_code` in
+any of them. D408/D411/D414/D417/D420 specifically: none of these functions touch any diode bit at all
+(not just these five), so this new chain neither confirms nor further narrows those five diodes — same
+shape as every prior session's check. Looked for, but did not find, a region-conditional visibility check
+specifically hiding the "4630kHz" checkbox for non-JP regions (the structurally natural prediction, since
+4630kHz is JP-only per D420/D423 while Tuner should be universal) — the one plausible "is this item enabled"
+gate reachable from the generic renderer, `FUN_20041f20`, tests unrelated item codes (`0x5d`/`0x5e`/`0x5f`/
+`0x61`/`0x129`-`0x138`) against a **different** struct (base `0x203de4cc`, not `0x203de174`), and is only
+called for "type 2" items in `FUN_20042f3c`'s render loop — the checkboxes render as "type 1" items, which
+never reach this gate at all. So `FUN_20041f20` is very likely the wrong function regardless of its own
+content, and no better candidate was found in the time available. Region-conditional visibility for the
+4630kHz checkbox remains unconfirmed — not found, not disconfirmed.
+
+### Orange "E" badge (task 4) — not investigated
+
+No time was spent on this; genuinely open, not a negative result.
+
+### Bonus — functional confirmation (task 6)
+
+**50 W power limit: confirmed directly via firmware string** (message `0x5b`'s text, above) — stronger
+evidence than a numeric constant would have been. **SWR≥3 threshold**: not searched for at all this session.
+**CW-mode force**: not conclusively found, but one real, new, partial lead: `FUN_200132c4` —
+`if ((*(byte*)(DAT_200134e0+1) & 8) != 0 && param_1 == DAT_200134f4) return 0` (called from `FUN_200132f0`,
+an "is candidate operating-mode value selectable" gate) — is a genuine consumer of bit 3 (4630kHz) of the
+same `0x203de175` status byte, not found by any prior session. Could not confirm this actually implements
+"force CW" specifically: the excluded value's static RAM content this build (`0x46a5f0`) doesn't read as a
+small mode-enum constant, so either `DAT_200134f4` is populated dynamically at runtime with a real mode
+value, or this reading of the gate's purpose/direction is incomplete. Recorded as a real, partial lead, not
+a confirmed closure — worth a fresh look in a future session (start by finding who writes `DAT_200134f4`).
+
+### Renames and comments (Ghidra database)
+
+- `FUN_2000de64` → `emergency_mode_restart_commit` (+ plate comment with the full chain).
+- `FUN_20041cd0` → `emergency_screen_warning_ok_callback` (+ plate comment, including the objdump-verified
+  dual dialog-ID wiring and the ARM/Thumb gap).
+- `FUN_2002ae6c` → `emergency_screen_checkbox_state_sync` (+ plate comment).
+
+**Files touched this session**: `scratch/armthumb_fix_requests.txt` (queued one fix line, `0x20041cfc 108
+arm`), `notes/diode-matrix.md` (new "Emergency Mode / Tuner (all-regions)" section, Open Question 6/11
+updates), `notes/diode-matrix-history.md` (this entry). Ghidra database: 3 renames + 3 plate comments (listed
+above), no destructive changes. No git commit made — left for the user's own review, per this project's
+standing instruction.
