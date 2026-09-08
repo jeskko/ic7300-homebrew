@@ -41,7 +41,7 @@ Bit numbering per the confirmed scan-result layout: row-bottom bit =
 | D416 | bottom, col3 | 5 | ✅ confirmed | Gates the general-coverage RX unlock (0.030–74.8 MHz, 13-segment table), combined with region code 5 or 6. Also gates a separate 2-entry lookup (`DAT_2003c85c`, values 2/3 at indices 13/15) — **consumer found, 9th session, but the gate is provably dead code**: it feeds `FUN_2000a5f0(10)`, one branch of a generic ~10/11-item menu-cycle "is item N enabled" gate (called from at least 5 places, shape-consistent with a settings cycling selector); but `DAT_2003c85c` is indexed by the confirmed region_code (`DAT_2003c800+2`, written by `FUN_2003c0ec` as `diode_region_code_lookup`'s result), whose confirmed valid range is 0-7 — indices 13/15 (the table's only non-zero entries) can never be reached by any real diode combination, so this D416-gated path always evaluates to disabled in practice |
 | D417 | middle, col3 | 13 | ❓ unknown | **Exhaustively searched across all 10 known firmware versions** — no consumer found. Populated only on EUR/ITR/KOR (`[#03][#05][#06]`) per parts list |
 | D419 | bottom, col2 | 6 | ✅ confirmed | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D422.** Present (D422 absent) → continuous TX 0.1–74.8 MHz, exactly the mod-guide's "open TX" figure. Populated on all versions per parts list |
-| D420 | middle, col2 | 14 | ❓ unconfirmed | User hypothesis: language-related. **Exhaustively searched across all 10 known firmware versions** — no consumer found. **Confirmed Japan-only (`Only [#01]`) per parts list** — matches D423, supporting the user's original "D420/D423 both JP-only" domain-knowledge lead |
+| D420 | middle, col2 | 14 | ✅ confirmed (16th session) | **Gates visibility of the "4630kHz" Emergency-mode checkbox itself.** Direct raw-bit test (`*DAT_2003ea4c & 0x4000`, bit 14 = D420) in `settings_item_diode_region_gate` (`0x2003e108`, ex-`FUN_2003e108`) — D420 absent (bit clear) → item excluded from the settings list entirely (never inserted, not just disabled); D420 present (bit set) → included. Confirmed Japan-only (`Only [#01]`) per parts list, so this reads as "4630kHz Emergency Communication Mode is JP-exclusive," matching the manual/domain-knowledge framing from the start. See the new 16th-session section below for the full call chain |
 | D422 | bottom, col1 | 7 | ✅ confirmed | **Selects the TX frequency-range table in `FUN_2003bd34`/`FUN_2003be94`, together with D419.** Present (D419 absent) → continuous TX 1.6–54 MHz (fills the HF/6m gap only, not the full 0.1–74.8 MHz range the user's external claim attributed to D422 alone) |
 | D423 | middle, col1 | 15 | ✅ confirmed | Real, direct input (bit 15) to `FUN_2003dcc0` (`is_feature_enabled_for_region`/`FUN_2003df34` is a separate, sibling function gating bits 0/5 only for a disjoint set of item codes — see 10th-session correction below) — gates item-code overrides including at least `0x22/0x32/0x4b/0x71/0x73/0x79` and the `0x8f-0x93/0x94/0xe5` range. **10th session**: found a second, more concrete role — `FUN_2003dcc0` is also the factory-reset defaults-table applicator (see "Factory reset / restore-defaults mechanism" below), and D423 present forces item `0x73`'s reset default to `1` there. **11th-session correction**: item `0x73`'s own name string (read directly out of the same 326-item table, offset `+0x28`) is **`"Display Language"`**, not a frequency or Emergency-Mode toggle — so this specific D423 consumer picks the factory-reset *display-language* default (almost certainly forcing Japanese on a JP-model unit), not the Emergency Mode feature itself. The "Emergency Mode" name is still real and still firmware-confirmed (see the new "4630 kHz Emergency Communication Mode" section below), but the *link* from that named feature back to a specific `is_feature_enabled_for_region`/`FUN_2003dcc0` item code remains unresolved — don't read the 10th session's "sits directly in the same gatekeeper" framing as having identified *which* item code is Emergency Mode; it hadn't |
 
@@ -197,7 +197,18 @@ schematic's N/A positions). Mapped onto the user's diode numbers:
 
 **No consumer found** for D408, D411, D414, D417, D420 despite this —
 checked identically across all 10 known firmware versions (`111`
-through `142`). **Re-confirmed fresh, 9th session**, via 3 independent
+through `142`). **Superseded for D420, 16th session**: a real consumer exists
+(`settings_item_diode_region_gate`, `0x2003e108`, tests `*DAT_2003ea4c & 0x4000`) that every
+one of these `references_to`-based alias sweeps should have caught (`DAT_2003ea4c` is
+explicitly one of the 5 swept addresses) and didn't — **directly verified this session**:
+`references_to(0x2003ea4c)` returns only 4 hits (`0x2003dc84`/`0x2003dce8`/`0x2003df3c`/
+`0x2003e23c`), and `0x2003e108` is not among them even though its decompile plainly shows
+the read. A real, confirmed gap in Ghidra's static xref database for this load site, not a
+methodology mistake by any prior session — worth remembering for any future "no consumer
+found" negative in this file: an exhaustive `references_to` sweep is only as complete as
+Ghidra's own reference analysis, which can silently miss a real read. See the 16th-session
+section below for how this consumer was actually found (via the settings-list "walker"
+function, not via any alias sweep). **Re-confirmed fresh, 9th session**, via 3 independent
 methods, all agreeing: (1) `references_to` on all 5 alias addresses
 (`DAT_2003c7f8`/`DAT_2003c800`/`DAT_2003ea4c`/`DAT_2003c858`/
 `DAT_2003c85c`) returns the exact same closed set of consumers as
@@ -888,6 +899,132 @@ disabling isn't wired up for kind `0x1e` at all).
 disassembly gaps were hit this session (both `FUN_20042458` and `FUN_2008cff8` were already fully
 disassembled/decompiled by Ghidra). No git commit made.
 
+## 16th session — found the walker; D420 confirmed as a direct raw diode-bit gate on the "4630kHz" item, not a region-code test
+
+Picked the 15th session's remaining thread back up: the last unreached piece was whatever populates
+`DAT_200426b0` (the resolved index array `settings_list_item_kind_renderer` reads `uVar11` from) and/or the
+page's item count/bounds. Found it, and it resolves the D420 question outright.
+
+**Why 9 sessions of `references_to` sweeps missed this.** `DAT_200426b0`, `DAT_20042664`, `DAT_200426ac`,
+and `DAT_20042658` are never write targets anywhere in the program *under those symbol names* — confirmed
+directly, all-READ, 0 WRITE hits on all four. Not because no writer exists, but because these four are
+compile-time-fixed pointers into a shared, reusable "current settings screen" singleton (never repointed;
+only the pointed-to *contents* get rewritten per category switch), and the real writer's own private
+literal-pool copies of the *same pointer values* — `DAT_2003ea44`, `DAT_2003ea48`, `DAT_2003ea64`,
+`DAT_2003ea60`/`68`/`6c`/`70` — live roughly `0x4400` bytes away, in a different part of ROM, so Ghidra's
+xref database never linked the two call sites together even though they read/write the exact same RAM.
+Confirmed identical by direct memory read: `DAT_20042664` (`0x20390218`) == `DAT_2003ea48`;
+`DAT_20042658` (`0x203de174`) == `DAT_2003ea44`; `DAT_200426b0` (`0x203da12e`) == `DAT_2003ea64`. Separately,
+and worse: **the diode-bit consumer itself sits behind an address (`DAT_2003ea4c`) that *is* one of the
+project's 5 already-tracked alias addresses, and Ghidra's own `references_to` on it still misses the read**
+— directly re-verified this session: `references_to(0x2003ea4c)` returns only 4 hits
+(`0x2003dc84`/`0x2003dce8`/`0x2003df3c`/`0x2003e23c`), and the real consumer at `0x2003e108` (whose decompile
+plainly shows `*DAT_2003ea4c & 0x4000`) is not among them. A genuine gap in Ghidra's static xref database
+for this particular load site — worth remembering for any future "no consumer found despite exhaustive
+`references_to` sweep" negative in this file; the sweep is only as complete as Ghidra's own analysis.
+
+**`settings_list_builder`** (renamed from `FUN_2003e5f0`, entry `0x2003e5f0` — Ghidra's own auto-detected
+function boundary for this address is corrupted, implausibly running to `0x2005ea37` [~115 KB], almost
+certainly a mis-merged jump-table region; treat any full-range decompile with suspicion, the analysis below
+is from the real item-loop block, `~0x2003e690`-`0x2003e858`) is the long-sought walker. Body: clears the
+152-slot (`0x98`) `DAT_2003ea64`/`DAT_200426b0` scratch array, then loops `item_index = 0..N-1` over the
+*current category*'s raw item source (`DAT_2003ea70[category_id]`, a ROM registry of
+`{u32 item_count; u32 quick_flags_table_ptr; u32 reserved}`, 12 bytes/entry, base `0x201993e0` — confirmed
+directly by reading `DAT_2003ea70`'s own pointer value), calling `settings_item_visibility_filter(item_index)`
+per item. An item that fails the filter is **never appended** — a real remove-from-list, not a disabled
+flag — confirming the 15th session's structural prediction exactly. Items that pass get their raw
+`{kind:u16, val:u16}` quick-flags record copied *verbatim* into the output array; `val` becomes the
+`uVar11` catalog index `settings_list_item_kind_renderer` later uses against the `0x2018ed48` name/kind
+table — i.e. **this confirms the gate operates on the exact same catalog indices sessions 13-15 already
+pinned down** (5 = "4630kHz", 6 = "Tuner").
+
+**`settings_item_visibility_filter`** (renamed from `FUN_2003e29c`, `0x2003e29c`) has a handful of
+category-specific "hide item 0" special cases (categories `0x19`/`0x1a`/`0x1d`/`0x3d`/`0x3e`, all confirmed
+operating-mode/hardware-state checks via `FUN_2005e714`/`FUN_2005e8ac`/`FUN_200588d0`/`FUN_2005eab0` —
+unrelated to diode/region), but every category, including these, always falls through to one universal
+per-item check: `settings_item_diode_region_gate(&quick_flags_table[item_index])`.
+
+**`settings_item_diode_region_gate`** (renamed from `FUN_2003e108`, `0x2003e108`) — **this is the gate**.
+Full decompile (directly re-verified, not taken on trust):
+
+```c
+undefined4 settings_item_diode_region_gate(char *param_1)
+{
+  ...
+  if (cVar1 == '\x01') {           // kind 1: pure region-feature gating
+      // val ∈ {0x21,0x42,0x4c,0x4d,0x4e,0x6a} → is_feature_enabled_for_region(code), excludes when enabled
+      // val==0x21 inverted: excludes on a config byte at DAT_2003ea3c+0x22
+  }
+  else if (cVar1 == '\x02') {      // kind 2: val itself is the is_feature_enabled_for_region() code
+      iVar3 = is_feature_enabled_for_region(*(undefined2 *)(param_1 + 2));
+      if (iVar3 != 0) { uVar4 = 1; }
+  }
+  else if (cVar1 == '\x03') {
+      if (*(short *)(param_1 + 2) == 5) {
+          if ((*DAT_2003ea4c & 0x4000) == 0) { uVar4 = 1; }   // D420 absent → EXCLUDE
+          else                                { uVar4 = 0; } // D420 present → include
+      }
+      else if (*(short *)(param_1 + 2) == 7) {
+          // unrelated hardware/model nibble-compare between DAT_2003ea44+1 and DAT_2003ea48+5/+6
+      }
+  }
+  return uVar4;      // 0/0xff = include, 1 = exclude
+}
+```
+
+`DAT_2003ea4c` is one of this project's four confirmed diode-scan-value aliases (alongside
+`DAT_2003c7f8`/`DAT_2003c800`/`DAT_2003c858`). **Bit `0x4000` = bit 14 = D420**, per this file's own
+confirmed scan-bit layout table (row-middle, `16-col` = `16-2` = bit 14) — read using this project's
+established "1 = diode present" convention throughout. So: **D420 absent (bit clear) → item excluded from
+the built list entirely (never inserted — not merely disabled/grayed) → the "4630kHz" checkbox is not on
+the Emergency screen at all. D420 present (bit set) → included, checkbox appears.** This is a direct raw
+bit-14 test on the live diode-scan value — **not** a resolved `region_code` (`DAT_2003c800+2`) test, and
+**not** an `is_feature_enabled_for_region()` call (that gatekeeper is used right next to it, for `kind`
+1/2 items, in the very same function — so this isn't "the only kind of gate available here," it's a
+deliberate different mechanism for this specific item). Directly answers the session's opening question:
+**it's the diode, not the resolved region code.**
+
+**Independently re-verified, this session, byte-for-byte** (not taken from the trace alone): `DAT_2003ea70`
+resolves to `0x201993e0`; category `0x22`'s registry record, at `0x201993e0 + 0x22*0xc = 0x20199578`, reads
+`item_count=3, table_ptr=0x20199160`; the quick-flags table at `0x20199160` reads
+`03 00 05 00 | 03 00 06 00 | 03 00 07 00` — three real `{kind=3, val}` records, `val` = 5/6/7, matching the
+decompile exactly (record 0 = the diode-gated one, `val=5`; record 1, `val=6`, matches no case in the gate
+→ always included, consistent with the already-confirmed-clean "Tuner" item; record 2, `val=7`, hits the
+separate hardware/model nibble-compare, an as-yet-unidentified third settings item in this same category —
+open, minor, not investigated this session).
+
+**One remaining inferential step, flagged honestly**: the link from registry category id `0x22` to the
+*Emergency* screen specifically was not closed via a hard string/label xref (the 13th session's known
+`0x18`-byte-stride "Emergency" category record at `0x20190248`, holding the `"EMERGENCY"`/`"Emergency"`
+name-string pointers, doesn't itself store a numeric category id anywhere in its fields — directly
+re-checked, all 6 fields are either `0x01010009`-shaped padding, string pointers, or the generic page
+renderer `0x20042f3c`). The identification instead rests on **two independent, convergent, non-inferential
+matches**: (1) `settings_list_builder(0)` — the exact function whose category-scoped item list this whole
+chain traces — is called directly from `emergency_screen_warning_ok_callback` (`0x20041cd0`, the confirmed,
+13th-session-verified OK-handler for *both* the 4630kHz and Tuner warning dialogs, messages `0x5a`/`0x5b`)
+right after it sets the Tuner "confirmed" flag; (2) the category's own item shape — exactly 3 quick-flags
+records, one diode-gated (`val=5`), one clean (`val=6`), one hardware-gated (`val=7`) — lines up with
+`val=5`/`val=6` being the already-independently-confirmed catalog indices 5/6 = "4630kHz"/"Tuner" (nailed
+down directly by the 15th session via the checkbox-state byte identity, not by anything in this session's
+chain). Treat "category `0x22` = the Emergency screen" as very strongly evidenced but not closed by a
+literal string xref — the one honest gap left in an otherwise fully-traced, byte-verified chain.
+
+**Net assessment**: the 4630kHz visibility question is resolved. **D420 is confirmed** — status updated in
+the living-reference table above from "❓ unconfirmed" to "✅ confirmed." It is a genuine, direct diode-bit
+consumer (the first ever found for D420 across 16 sessions), reached through a completely different route
+(the settings-list walker/filter machinery) than every prior session's search targets (tap-handlers, render
+dispatch, checkbox-state reads, the name/kind catalog table itself) — all of which really were clean, as
+those sessions concluded; the gate was simply one level further upstream, in the per-item *inclusion*
+decision the walker makes before any of those other paths ever run.
+
+**Files touched this session**: `notes/diode-matrix.md` (D420 living-reference row, the "No consumer
+found" correction, Open Question 11 addendum, this section), `notes/diode-matrix-history.md` (16th-session
+narrative entry). Ghidra database: 3 renames (`FUN_2003e5f0` → `settings_list_builder`, `FUN_2003e29c` →
+`settings_item_visibility_filter`, `FUN_2003e108` → `settings_item_diode_region_gate`) + substantial plate
+comments on all three plus an `EOL` comment at `0x20199160`, all independently re-verified this session by
+direct decompile/memory reads rather than taken on the tracing subagent's word alone. No new ARM/Thumb fix
+queued. No git commit made.
+
 ## Open questions
 1. Country/market name correlation to internal region codes 1-7 is
    still not fully pinned: the derived arithmetic mapping (see
@@ -1058,3 +1195,7 @@ out to have real consumers, so none of this is necessarily final.
     Every reachable piece of code touching these two specific items (kind-render, tap-handler, checkbox-state
     read) is now checked and clean of any diode/region test. The gate, if real, has to live in the still-
     unfound `DAT_200426b0`-populating walker function — narrower than before, but still not found.
+    **16th session: RESOLVED.** Found the walker (`settings_list_builder`, `0x2003e5f0`) and its per-item
+    filter (`settings_item_visibility_filter`, `0x2003e29c` → `settings_item_diode_region_gate`,
+    `0x2003e108`). D420 (bit 14, `0x4000`) is tested directly there — see the new 16th-session section
+    below for the full, verified chain. D420 is now ✅ confirmed, not just narrowed.

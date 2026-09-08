@@ -1773,3 +1773,123 @@ addendum), `notes/diode-matrix-history.md` (this entry). Ghidra database: 1 rena
 above. No destructive changes. No new ARM/Thumb disassembly gaps were hit this session (both functions
 inspected were already fully disassembled/decompiled by Ghidra), so nothing new was queued in
 `scratch/armthumb_fix_requests.txt`. No git commit made, per the user's standing instruction.
+
+## 16th session — D420 confirmed: found the settings-list "walker," and it's a direct diode-bit test, not a region-code test
+
+The user asked, directly, the exact question this whole 13th-16th-session thread had been circling without
+answering: for the "4630kHz" visibility gate, is the enabler a diode, or is it the region code resolved
+*from* the diode matrix? Delegated the remaining trace (finding whatever populates `DAT_200426b0`/item
+count, the one piece sessions 13-15 never reached) to a subagent, then independently re-verified every
+material claim by direct decompile/memory read before writing anything up — this session's finding is a
+positive, not another negative, and the bar for accepting it needed to be high.
+
+### Why the walker was invisible to 9 sessions of `references_to` sweeps
+
+Two separate, compounding blind spots, both confirmed directly rather than assumed:
+
+1. `DAT_200426b0`/`DAT_20042664`/`DAT_200426ac`/`DAT_20042658` (the symbols the 13th-15th sessions' xref
+   sweeps were built around) are never write targets *under those names* anywhere in the program — all-READ,
+   confirmed by a fresh `references_to` sweep on all four. They're compile-time-fixed pointers into a
+   shared, reusable "current settings screen" singleton; the real writer holds its own private literal-pool
+   copies of the identical pointer values under different symbol names (`DAT_2003ea44`/`DAT_2003ea48`/
+   `DAT_2003ea64`/`DAT_2003ea60`/`68`/`6c`/`70`) roughly `0x4400` bytes away, so Ghidra's xref database never
+   linked the two call sites even though they touch the same RAM. Confirmed identical by direct memory read:
+   `DAT_20042664`(`0x20390218`)==`DAT_2003ea48`, `DAT_20042658`(`0x203de174`)==`DAT_2003ea44`,
+   `DAT_200426b0`(`0x203da12e`)==`DAT_2003ea64`.
+2. Separately — and this is the more consequential one — the diode-bit consumer itself reads
+   `DAT_2003ea4c`, an address that *is* one of the 5 diode-scan aliases every prior session's exhaustive
+   sweep explicitly targeted, and **`references_to` on it still doesn't surface the read**. Directly
+   re-verified this session: `references_to(0x2003ea4c)` → 4 hits (`0x2003dc84`/`0x2003dce8`/`0x2003df3c`/
+   `0x2003e23c`); the real consumer at `0x2003e108`, whose decompile plainly shows `*DAT_2003ea4c & 0x4000`,
+   is not among them. A genuine, confirmed gap in Ghidra's own reference analysis for this load site — not
+   a methodology mistake by sessions 4-15, whose "no consumer found for D420" conclusions were accurate
+   given the tooling available. Worth remembering going forward: an exhaustive `references_to` sweep is
+   only as complete as Ghidra's own analysis of that address's readers.
+
+### The chain: `settings_list_builder` → `settings_item_visibility_filter` → `settings_item_diode_region_gate`
+
+`settings_list_builder` (`FUN_2003e5f0`, `0x2003e5f0` — Ghidra's auto-detected function boundary for this
+entry point is corrupted, running implausibly to `0x2005ea37`; the real logic lives in
+`~0x2003e690`-`0x2003e858`, everything past that is a mis-merged jump-table region and was not trusted)
+clears the 152-slot `DAT_2003ea64` scratch array, then loops over the current category's items (source:
+`DAT_2003ea70[category_id]`, a ROM registry of `{item_count; quick_flags_table_ptr; reserved}` triples,
+base `0x201993e0` — read directly, confirmed) calling `settings_item_visibility_filter(item_index)` per
+item. A failing item is never appended to the output array — genuinely removed, not disabled — matching the
+15th session's structural prediction exactly. Passing items get their raw `{kind:u16, val:u16}` record
+copied verbatim; `val` becomes the catalog index (`uVar11`) `settings_list_item_kind_renderer` later reads
+against the `0x2018ed48` table, tying this directly back to the already-confirmed catalog indices 5/6 =
+"4630kHz"/"Tuner".
+
+`settings_item_visibility_filter` (`FUN_2003e29c`, `0x2003e29c`) has a few category-specific special cases
+(all confirmed operating-mode/hardware checks, unrelated to diodes), but always falls through to one
+universal call: `settings_item_diode_region_gate(&quick_flags_table[item_index])`.
+
+`settings_item_diode_region_gate` (`FUN_2003e108`, `0x2003e108`) is the actual gate. Re-decompiled directly
+to confirm (not taken from the subagent's report alone):
+
+```c
+else if (cVar1 == '\x03') {
+    if (*(short *)(param_1 + 2) == 5) {
+        if ((*DAT_2003ea4c & 0x4000) == 0) { uVar4 = 1; }   // D420 absent -> EXCLUDE
+        else                                { uVar4 = 0; } // D420 present -> include
+    }
+    else if (*(short *)(param_1 + 2) == 7) {
+        // unrelated hardware/model nibble-compare, DAT_2003ea44+1 vs DAT_2003ea48+5/+6
+    }
+}
+```
+
+`0x4000` = bit 14 = D420 per this project's own confirmed scan-bit layout (row-middle, column 2). Read with
+the established "1 = diode present" convention: **D420 absent → item excluded from the built list entirely
+(never inserted) → checkbox doesn't appear; D420 present → included.** This is a raw diode-bit test, sitting
+in the same function as (but structurally distinct from) `is_feature_enabled_for_region()` calls used for
+neighboring `kind 1`/`kind 2` items — so the firmware author had `is_feature_enabled_for_region()` available
+right there and deliberately used a direct bit test instead for this specific item.
+
+### Independently re-verified, byte-for-byte, this session
+
+`DAT_2003ea70` → `0x201993e0`. Category `0x22`'s registry record at `0x201993e0 + 0x22*0xc = 0x20199578` →
+`item_count=3, table_ptr=0x20199160`. Table at `0x20199160`: `{kind=3,val=5}`, `{kind=3,val=6}`,
+`{kind=3,val=7}` — `val=5` is the diode-gated record (matches the already-confirmed "4630kHz" catalog index
+5), `val=6` matches no case in the gate → always included (matches the already-confirmed-clean "Tuner",
+catalog index 6), `val=7` hits the separate hardware/model nibble-compare (an unidentified third item in
+this category, not investigated further this session).
+
+### The one remaining inferential step
+
+Category `0x22` → "the Emergency screen" isn't closed by a literal string/label xref: the 13th-session
+"Emergency" category record (`0x20190248`, `0x18`-byte stride, holding the `"EMERGENCY"`/`"Emergency"`
+string pointers) doesn't itself store a numeric category id in any of its 6 fields — re-checked directly,
+they're padding, string pointers, or the generic page-renderer address (`0x20042f3c`). Instead this rests
+on two independent, convergent, non-inferential matches: `settings_list_builder(0)` is called directly from
+`emergency_screen_warning_ok_callback` (`0x20041cd0`, the already-confirmed OK-handler for both the 4630kHz
+and Tuner warning dialogs), and the category's 3-item shape (one diode-gated, one clean, one hardware-gated)
+lines up exactly with the independently-confirmed catalog indices 5/6. Strongly evidenced, not
+string-xref-closed — the one honest gap in an otherwise fully byte-verified chain.
+
+### Net assessment
+
+The 4630kHz-visibility question this thread opened with is answered: **it's the diode (D420), not the
+resolved region code, and not `is_feature_enabled_for_region()`.** D420 moves from "❓ unconfirmed, no
+consumer found across 15 sessions" to "✅ confirmed" in the living-reference table — the first real
+consumer ever found for it, reached via a route (the settings-list walker/filter machinery) that no prior
+session's search had tried, one level upstream of every path those sessions correctly found clean
+(tap-handlers, render dispatch, checkbox-state reads, the name/kind catalog itself).
+
+### Renames and comments (Ghidra database)
+
+- `FUN_2003e5f0` → `settings_list_builder` (+ plate comment: the walker's role, why it was invisible to
+  prior xref sweeps, the item-copy mechanism, the corrupted auto-detected function-boundary warning).
+- `FUN_2003e29c` → `settings_item_visibility_filter` (+ plate comment on the category special-cases and the
+  universal fallthrough call).
+- `FUN_2003e108` → `settings_item_diode_region_gate` (+ plate comment with the full kind-1/2/3 breakdown,
+  the D420 bit-14 identification, and the registry-table cross-check).
+- `EOL` comment at `0x20199160` documenting the 3-record quick-flags table and its category/registry
+  linkage.
+
+**Files touched this session**: `notes/diode-matrix.md` (D420 living-reference row updated to confirmed,
+"No consumer found" list corrected with an explanation of the xref-analysis gap, Open Question 11
+addendum, new 16th-session section), `notes/diode-matrix-history.md` (this entry). Ghidra database: 3
+renames + 4 plate/EOL comments, listed above, all independently re-verified by direct decompile/memory
+reads rather than accepted from the tracing subagent's report alone. No new ARM/Thumb disassembly gaps
+queued. No git commit made, per the user's standing instruction.
