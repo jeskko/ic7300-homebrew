@@ -93,4 +93,14 @@
 #define RZA1H_RIIC2_BASE 0xFCFEE800
 #define RZA1H_RIIC_SIZE  0x00000044
 
+/* scif.c -- matches ~/Downloads/rza1.svd's SCIF0-7 base addresses, +0x800
+ * apart each. Real confirmed roles (notes/ic7300-signal-chain.md): SCIF0
+ * is the CI-V UART, SCIF1 the service/calibration link, SCIF3 the
+ * front-panel link, SCIF5 the DSP link -- all eight wired identically in
+ * rz_a1h.c regardless (nothing in scif.c depends on channel role). */
+#define RZA1H_SCIF0_BASE 0xE8007000
+#define RZA1H_SCIF_STRIDE 0x800
+#define RZA1H_SCIF_COUNT 8
+#define TYPE_RZA1H_SCIF "rza1h-scif"
+
 #endif

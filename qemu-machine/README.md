@@ -138,6 +138,34 @@ memory-mapped-register reads/writes, continue/interrupt) — see `tools/test_irq
 worked example. QMP's `human-monitor-command` → `info registers` also still works for a
 read-only spot-check.
 
+## SCIF UART output (extension-roadmap item 4, done 2026-09-08)
+
+Eight real SCIF instances (`scif.c`), one per real hardware channel, with real known roles
+per `notes/ic7300-signal-chain.md`: SCIF0 is the CI-V UART, SCIF1 the service/calibration
+link, SCIF3 the front-panel link, SCIF5 the DSP link. No `emu/peripherals/` Python original
+exists for this one — genuinely new work, not a port. Deliberately minimal (matching this
+item's own scope): no baud-accurate transmit pacing, no IRQ line wired to the GIC yet, just
+enough real register modeling (masked FIFO-status bits always reporting "ready" so a
+polling-based driver never blocks) to make transmitted bytes observable. Every transmitted
+byte is always logged (`-d unimp`, `rza1h-scif<N>: TX ..`) regardless of whether a real
+chardev is attached, and each channel also takes an optional real backend via
+`serial_hd(i)` — pass e.g. `-serial stdio -serial null -serial null -serial pty` positionally
+for channels 0-3 the normal QEMU way.
+
+**One real scare chasing this down, worth recording so it isn't re-investigated**: a handful
+of post-SCIF boot snapshots landed at a PC that looked like an early-boot hang in IRQ mode
+(e.g. `0x200051c0`, `CPSR` mode `0x12`) — genuinely alarming on first sight, distinct from
+every prior snapshot this session. Traced with `LR` (the IRQ-banked `r14`, holds the
+interrupted return address): it pointed straight back at `0x200b93ac`, the idle loop itself.
+**Not a regression** — OSTM0's real 64us tick period (`CMP`=32000 at `ostm.c`'s 500MHz) means
+the CPU spends a healthy fraction of real time actually inside the ISR, so a plain 2-second
+wall-clock sample landing mid-ISR is statistically expected, not a hang; confirmed by
+continuing another 200ms and seeing a normal idle-loop PC again. SCIF's presence didn't cause
+this — it was already possible before, just never observed in this session's smaller sample
+of earlier snapshots. **Lesson for later sessions**: don't conclude "stuck" from a single
+snapshot showing IRQ-mode CPSR near the start of RAM -- read `LR` first, it settles whether
+this is a real hang or just an ordinary ISR-in-progress snapshot.
+
 ## Extension roadmap
 
 Items 1 and 2 from the original plan are both **done** (2026-09-08, second pass) — see the
@@ -159,6 +187,9 @@ untouched boot) and statically (direct disassembly of the arming code at `0x200b
    plain-storage ones (CPG ×2 clusters, MTU2, RIIC0-2). Spot-checked against a live boot
    (masked set/clear + `PNOT` toggle on GPIO, `CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear on
    L2C, plain roundtrip on the rest) — no regression on the IRQ-delivery test either.
-4. Now that (1)-(3) are done: SCIF UART output, then the same downstream roadmap
-   `emu/README.md` already lists (SD-card/VFS testing for `sdk/roadmap.md`'s Phase 0, the big
-   payoff).
+4. ~~SCIF UART output~~ — done, same day: `scif.c`, see its own section above.
+5. Now that (1)-(4) are done, the same downstream roadmap `emu/README.md` already lists:
+   SD-card/VFS testing for `sdk/roadmap.md`'s Phase 0, the big payoff. Real SCIF traffic
+   hasn't actually been observed yet in a boot run (nothing's confirmed to write to any SCIF
+   channel during the portion of boot exercised so far) — worth a longer real-time run with
+   `-d unimp` to see if anything shows up before assuming a driver needs to be poked manually.

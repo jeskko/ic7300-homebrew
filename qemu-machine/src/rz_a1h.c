@@ -38,6 +38,7 @@
 #include "system/address-spaces.h"
 #include "system/memory.h"
 #include "system/reset.h"
+#include "system/system.h"
 #include "target/arm/cpu-qom.h"
 
 #include "rz_a1h.h"
@@ -223,6 +224,21 @@ static void rza1h_init(MachineState *machine)
     add_plain_ram_region(sysmem, "rza1h.riic0", RZA1H_RIIC0_BASE, RZA1H_RIIC_SIZE);
     add_plain_ram_region(sysmem, "rza1h.riic1", RZA1H_RIIC1_BASE, RZA1H_RIIC_SIZE);
     add_plain_ram_region(sysmem, "rza1h.riic2", RZA1H_RIIC2_BASE, RZA1H_RIIC_SIZE);
+
+    /* Extension-roadmap item 4: eight real SCIF UARTs, matching real
+     * hardware addresses/count (see rz_a1h.h). serial_hd(i) hands channel
+     * i whichever `-serial`/`-chardev` backend the command line gave it,
+     * or NULL (scif.c's own CharBackend handling degrades gracefully --
+     * TX is always logged regardless, see its own comment). */
+    for (i = 0; i < RZA1H_SCIF_COUNT; i++) {
+        DeviceState *scif = qdev_new(TYPE_RZA1H_SCIF);
+
+        qdev_prop_set_uint32(scif, "channel", i);
+        qdev_prop_set_chr(scif, "chardev", serial_hd(i));
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(scif), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(scif), 0,
+                                RZA1H_SCIF0_BASE + i * RZA1H_SCIF_STRIDE, 0);
+    }
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }
