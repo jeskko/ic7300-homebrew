@@ -383,6 +383,15 @@ class) matching the shape of the radio's own SD directory-reading code.
   Architected so every future peripheral (SCIF UART, timer/IRQ, SD card, GPIO/EEPROM) is purely
   additive. Building it also surfaced and fixed a real `0x2c`-byte address-offset bug in
   `notes/base-loader.md`'s own offset table. See `emu/README.md`.
+- ✅ **Escalated to a real custom QEMU machine, 2026-09-08**: the Unicorn emulator hit a genuine
+  engine limitation (chunked `emu_start` calls corrupt ARM/Thumb state, blocking the one thing
+  needed to unblock `body.bin`'s real `WFE` wait — a correctly-delivered periodic timer
+  interrupt). `qemu-machine/` is a from-scratch QEMU machine (real `arm_gic` + two real `OSTM`
+  timers at the real hardware addresses) that boots real, unmodified firmware deep into
+  `body.bin`, independently cross-validated against the Unicorn emulator's own trace (both
+  reach the exact same real addresses). Whether a real GIC IRQ actually wakes the `WFE`-parked
+  CPU is not yet conclusively confirmed (a GDB-scripting reliability gap this session, not a
+  demonstrated QEMU problem). See `qemu-machine/README.md`.
 
 ## Layout
 
@@ -400,6 +409,8 @@ class) matching the shape of the radio's own SD directory-reading code.
   cross-version verification script. See `tools/README.md`.
 - `emu/` — a minimal Unicorn Engine-based firmware emulator, MVP reached 2026-09-08. See
   `emu/README.md`.
+- `qemu-machine/` — a custom QEMU machine for the same SoC, escalated to once `emu/` hit a
+  real Unicorn engine limitation around interrupt delivery. See `qemu-machine/README.md`.
 - `ghidra_project/` (git-ignored) — fresh Ghidra project (`icom1`),
   created and in active use this session: `base.dat` + both A/B slots'
   `chunk1.ttf`/`chunk2.ttf`/`chunk3.dat` imported alongside `body.bin`.
