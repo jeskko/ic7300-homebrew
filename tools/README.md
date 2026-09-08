@@ -38,6 +38,7 @@ tools/
   verify_all.py     cross-check against all 10 releases + existing refs
   arm_thumb_scan.py    per-window ARM-vs-Thumb region classifier (objdump heuristic)
   superset_disasm.py   full per-address ARM+Thumb disassembly, persisted to SQLite
+  sjis_string_scan.py   whole-image Shift-JIS/ASCII string sweep, flags JP text with no adjacent English
 ```
 
 ## ARM/Thumb disassembly-ambiguity tooling
@@ -143,3 +144,53 @@ without an independent check. Combined with the bookmark sweep and the direct-bo
 **this closes out ARM/Thumb-bug-hunting across the entire currently-analyzed image** — no known-broken
 address exists anywhere in it. Re-open only if newly-analyzed code (a region Ghidra hasn't touched yet)
 shows a real problem later.
+
+## Shift-JIS / bilingual-string sweep tooling
+
+Built 2026-09-08 after a real, previously-unknown JP-only firmware feature (the "4630 kHz Emergency
+Communication Mode" — see `notes/diode-matrix.md`) was found by hand, by noticing one Shift-JIS status
+string had no adjacent English translation unlike every sibling row in the same small table. This tool
+turns that technique into a repeatable whole-image sweep instead of a one-table manual check.
+
+```
+python3 tools/sjis_string_scan.py scratch/unpacked/142/body.bin \
+    --out scratch/sjis_scan_142.sqlite --check 0x2032a014 0x2032a07a
+```
+
+**How it works**: a single left-to-right tokenizer walks the whole image once, greedily consuming runs of
+printable ASCII and/or Shift-JIS lead/trail byte pairs that actually decode under the `shift_jis` codec
+(precomputed into a lookup table so the hot loop is dict lookups, not repeated try/except). Runs under 3 real
+characters are discarded (`--min-chars`, adjustable). Every kept run is classified `jp` (contains at least one
+real kanji/kana codepoint — the plausibility filter that excludes byte pairs which decode "validly" as
+Shift-JIS without ever landing on a real character), `ascii`, or `sjis_other` (valid pairs, no real kanji/kana
+— audit-only, not a text candidate). Results persist to SQLite (`runs`, `jp_candidates` tables) — see the
+script's own docstring for query examples. Always pass `--check <known-good addresses>` before trusting a
+sweep's output on a new release; it exits nonzero if any expected hit is missing.
+
+**Pairing check**: for each `jp` candidate, the tool looks at the NUL-delimited table *slot immediately
+before* it (not the trivially-empty gap between the nearest preceding NUL and the candidate's own start —
+an off-by-one that produced a real false negative during this tool's own calibration, see the
+`find_preceding_field` docstring) for plausible English text, with a weaker fallback that checks any
+plausible-English ASCII run within `--window` bytes on either side.
+
+**Known limitation, found and fully characterized 2026-09-08 — read before trusting "no adjacent English"
+output broadly**: the proximity-based pairing check is only valid for small, tightly-packed, genuinely
+per-item-interleaved tables — confirmed against the `0x2032a000` status-indicator cluster (English slot,
+Japanese slot, English slot, Japanese slot, ...). It does **not** hold across the much larger
+`0x2035a000`-`0x2035f000` UI name/message pool, which instead uses either (a) long block-separated runs (a
+whole run of English fields, then a separate whole run of Japanese fields for the same messages in the same
+relative order — confirmed for the dialog/error-message section), or (b) a genuinely non-adjacent
+pointer-record table (the `0x2032c91c`, 76-byte-stride bilingual message table documented in
+`notes/firmware-update.md` — confirmed for at least one record, where the "unpaired" Japanese text's real
+English pair sits in the *same table record*, just a different field, nowhere near it in the raw bytes).
+Sweeping the 142 release found **18,474** `jp` candidates out of 126,603 total runs; only ~27% (4,920) fall
+inside the known real string-pool address range (`0x2018e000`-`0x2035d000`) — ~46% land inside the two large
+pure-ARM-code blocks and are almost certainly coincidental decodes of instruction bytes, not real text. Of
+the in-range candidates, most of the very longest ones turned out to be a Shift-JIS glyph/character
+enumeration table (`~0x20336000`-`0x20341000`), not UI strings. **Practical upshot**: treat an "unpaired"
+flag as a real signal worth chasing only inside a small, fixed-stride, structurally-obvious table like
+`0x2032a000`; outside that, cross-check via `references_to` and the record structure directly (as
+`notes/diode-matrix.md`'s 12th session did) before trusting it. Full sweep narrative, the two false-positive
+clusters chased and ruled out, and the real correction this tool's calibration step caught (an overturn of an
+earlier session's own by-hand "no English counterpart" claim) are in `notes/diode-matrix-history.md`'s
+12th-session entry.
