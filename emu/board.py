@@ -12,6 +12,8 @@ from unicorn import Uc
 
 from . import flash_image as flash_image_mod
 from .core import Cpu
+from .peripherals.gpio import GpioBlock
+from .peripherals.ostm import Ostm
 from .peripherals.registry import PeripheralRegistry
 from .peripherals.spi_boot import SpiBootStatus
 from .peripherals.stub import StubPeripheral
@@ -63,6 +65,13 @@ class Board:
         self.registry.register(
             "spi_boot_status", SpiBootStatus.base, SpiBootStatus.size, SpiBootStatus()
         )
+        # One wide claim covering the whole PORT_BASE/IBC_BASE register cluster (see
+        # gpio.py's own docstring for the exact sub-ranges) rather than one entry per
+        # register -- there are well over a hundred of those.
+        self.gpio = GpioBlock()
+        self.registry.register("gpio", 0xFCFE3000, 0x00005000, self.gpio)
+        self.ostm1 = Ostm(base=0xFCFEC400)
+        self.registry.register("ostm1", self.ostm1.base, self.ostm1.size, self.ostm1)
 
         self._trace_log: list[int] = [] if trace else None  # type: ignore[assignment]
         self.cpu = Cpu(trace=self._on_trace if trace else None)
