@@ -127,11 +127,24 @@ static void rza1h_init(MachineState *machine)
     /* OSTM0 -- the one real timer this slice exists to validate. Interrupt
      * ID 134 is Renesas's own reference HAL's INTC_ID_OSTM0TINT, confirmed
      * to be an absolute GIC interrupt ID -- see ostm.c's own file comment
-     * for the full derivation. */
+     * for the full derivation. `qdev_get_gpio_in(gic, N)`'s N is *not*
+     * that absolute ID, though -- confirmed 2026-09-08 by cross-checking
+     * hw/arm/fsl-imx6.c's own IRQ #defines (e.g. FSL_IMX6_UART1_IRQ used
+     * directly as a gpio-in index) against arm_gic's own gic_set_irq():
+     * external gpio-in index 0 maps to absolute interrupt ID GIC_INTERNAL
+     * (32, the first SPI) -- i.e. gpio-in index = absolute ID - 32. Wiring
+     * `qdev_get_gpio_in(gic, 134)` directly (this code's first version)
+     * silently wired OSTM0's line to absolute ID 166, not 134 -- confirmed
+     * the hard way: GICD_ISPENDR4 (covering IDs 128-159) never showed the
+     * bit set no matter how the distributor/CPU-interface/ICFGR were
+     * configured via a manual GDB-driven test (qemu-machine/tools/
+     * test_irq.py), because the line was never reaching an interrupt
+     * inside that window at all. */
     ostm0 = qdev_new(TYPE_RZA1H_OSTM);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(ostm0), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(ostm0), 0, RZA1H_OSTM0_BASE);
-    sysbus_connect_irq(SYS_BUS_DEVICE(ostm0), 0, qdev_get_gpio_in(gic, 134));
+    sysbus_connect_irq(SYS_BUS_DEVICE(ostm0), 0,
+                       qdev_get_gpio_in(gic, 134 - RZA1H_GIC_NUM_INTERNAL));
 
     /* OSTM1 -- found needing this same session: base.dat's GPIO-pin-settle
      * routine (FUN_2002b878, see emu/peripherals/gpio.py's docstring for
@@ -142,7 +155,8 @@ static void rza1h_init(MachineState *machine)
     ostm1 = qdev_new(TYPE_RZA1H_OSTM);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(ostm1), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(ostm1), 0, RZA1H_OSTM1_BASE);
-    sysbus_connect_irq(SYS_BUS_DEVICE(ostm1), 0, qdev_get_gpio_in(gic, 135));
+    sysbus_connect_irq(SYS_BUS_DEVICE(ostm1), 0,
+                       qdev_get_gpio_in(gic, 135 - RZA1H_GIC_NUM_INTERNAL));
 
     for (i = 0; i < ARRAY_SIZE(rza1h_io_regions); i++) {
         const struct RzA1hIoRegion *r = &rza1h_io_regions[i];

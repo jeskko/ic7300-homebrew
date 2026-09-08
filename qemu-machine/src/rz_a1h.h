@@ -30,6 +30,15 @@
  * real interrupt ID this machine wires up (134 for OSTM0, see ostm.c). */
 #define RZA1H_GIC_NUM_IRQ  192
 
+/* Number of GIC-internal interrupt IDs (SGIs 0-15 + PPIs 16-31) that
+ * precede the first SPI -- arm_gic's own gic_set_irq() offsets every
+ * external qdev_get_gpio_in() index by this much to get the absolute
+ * interrupt ID (confirmed against hw/intc/arm_gic.c and cross-checked
+ * against hw/arm/fsl-imx6.c's own IRQ #defines, which are pre-subtracted
+ * the same way). Not IC-7300-specific -- this is generic to any board
+ * wiring a device straight to arm_gic by absolute interrupt ID. */
+#define RZA1H_GIC_NUM_INTERNAL 32
+
 /* OSTM0's real base address (emu/peripherals/ostm.py's OSTM_BASE for
  * instance 0). See ostm.c for the real interrupt ID (134) this device's
  * IRQ output gets wired to. */
