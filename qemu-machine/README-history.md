@@ -473,3 +473,136 @@ on its own after 60 real seconds** — genuinely stuck here, not a graceful one-
 was simply slow. `sdcard_file_rpc_dispatch_task`'s own struct fields are still zero at this
 point — the actual payoff is closer than it's ever been (past the entire cold-boot branch
 gate) but not yet reached. See README.md's current Status section for the concrete next step.
+
+## 2026-09-09: SCIF3 TXI made real (three bugs, two of them a repeated pointer-indirection
+## gotcha), then a genuinely deeper blocker found underneath
+
+Picking up exactly where the previous section left off: `scif3_frontpanel_identify_handshake`
+stuck in its 75-count retry loop, `scif.c` having no TX-completion IRQ modeled at all. Before
+committing to a full virtual front-panel RX responder, the Status section's own flagged
+question ("does the timeout path lead anywhere new") got a real answer via live testing.
+
+**First real check — is the retry counter genuinely stuck, or just slow?** Booted with a GDB
+stub, used `qemu-machine/tools/gdbrsp.py` (interrupt+read+continue in a loop) to poll the
+counter `scif3_frontpanel_identify_handshake`'s own do-while checks (`*pbVar2 < 0x4b` in the
+decompile). First attempt read the literal address `0x200375c0` directly and saw a constant
+value across 20+ real seconds — looked damning, but this was the **first instance of a real
+methodology mistake this session made twice**: `DAT_200375c0` is itself a *pointer variable*
+(its stored value is the real counter's address, not the counter itself), exactly the same
+shape `DAT_2003758c` and several other globals in this driver already have. Re-read correctly
+(dereference first): the real counter, at whatever address the pointer held that boot
+(`0x203fc60f` that run), was genuinely `0` and genuinely never advanced across the same 20+
+seconds — with real OSTM0-driven scheduler activity visibly happening around it (PC repeatedly
+landing in the real IRQ vector/dispatcher region). A cheap forced-write test (`gdbrsp.py`'s
+`write_memory`, bumping the counter directly to `0x4b` then `0x0c`) confirmed the *shape* of
+the timeout path is real and reachable — PC did move past the function's first loop into a
+second one — but that second loop turned out to share the exact same underlying blocker
+(`FUN_200374e4`'s busy check unconditionally returns "busy" while status bit `0x02` is set),
+so this shortcut didn't avoid the real investigation, just located it precisely.
+
+**Root cause, once traced**: `scif3_driver_pump_tick`'s very first line is
+`if ((*DAT_20037588 & 2) != 0) return;` — a busy flag. The only code anywhere in the image that
+clears it is inside the ISR `scif3_send_frame` itself explicitly arms via a confirmed generic
+`gic_enable_irq(id)` helper (`FUN_200b8308`, confirmed by its own trivial decompile:
+`*(GICD_base + (id>>5)*4 + 0x100) = 1<<(id&0x1f)` — exactly `GICD_ISENABLERn` semantics) called
+with the literal `0xec` (236). Since `scif.c` had zero IRQ output at all, that ISR could never
+run, and the driver became a permanent no-op after its very first send. This is a genuinely
+deeper root cause than the Status section's previous framing ("no virtual front panel for the
+RX side") — the real first blocker is TX *completion*, not the reply.
+
+**Deriving TXI3's real GIC ID independently, and getting an unplanned cross-check**: `0xec`=236
+already told us the ID directly, but to build the fix properly (and to generalize to all 8 SCIF
+channels, matching this project's own "wire it once, correctly, for all instances" habit from
+`riic.c`), the ID was independently re-derived from `~/Downloads/rza1.svd`'s `ICDISR6`/`ICDISR7`
+register fields, using the exact same "register-index×32+bit" formula that already gave OSTM0
+its confirmed-correct ID 134 (`ICDISR4`, `OSTM0TINT` at bit 6 → 4×32+6=134). `ICDISR7`'s own
+fields give SCIF-n's group as `BRIn=221+4n, ERIn=222+4n, RXIn=223+4n, TXIn=224+4n` — TXI3 lands
+on exactly 236, a genuine two-independent-derivations-agree confirmation, not a coincidence
+chased backwards from the answer.
+
+**Bug 1 — not wired at all.** Added `qemu_irq irq` to `RZA1HScifState`, `sysbus_init_irq()` in
+`rza1h_scif_init()`, and wired each of the 8 channels in `rz_a1h.c`'s SCIF creation loop to
+`qdev_get_gpio_in(gic, RZA1H_SCIF_TXI_BASE0 + i*RZA1H_SCIF_TXI_STRIDE - RZA1H_GIC_NUM_INTERNAL)`
+(`RZA1H_GIC_NUM_IRQ` raised from 224 to 256 to cover TXI7=252). First version fired the IRQ with
+a bare `qemu_irq_pulse()` on every FTDR write, copying `ostm.c`'s pattern.
+
+**Bug 2 — pulse vs. level, the exact bug `riic.c`'s own file comment already documents.**
+Live-checked TXI3's real configured trigger mode (`GICD_ICFGR14` bits 8-9 = `0` = level;
+confirmed enabled via `ISENABLER7` bit 12 set) before assuming pulse was safe — per this
+project's own established discipline (`riic.c`'s comment: "always check a real interrupt's
+actual configured trigger mode ... don't just copy the pattern from a working device"). Fixed
+first pass: raise on SCR's TIE bit going 0→1 (since this model's FSR always reports
+TDFE/TEND=1, enabling TIE alone makes the real hardware condition true immediately), lower when
+TIE clears. This did NOT fully fix it — single-stepping through one ISR call showed real
+progress (the frame's own send-index advanced, a byte reached FTDR) but free-running for 20+
+more seconds showed zero further advancement. Root cause: `qemu_set_irq` treats calling
+`raise()` while the line is *already* high as a no-op (no edge, no event forwarded to
+`arm_gic`) — fine for a one-shot handshake bit, but the real multi-byte-frame ISR
+(`FUN_20036e34`) re-arms the *same* already-high TIE-gated condition on every subsequent byte
+without ever clearing TIE in between, so only the very first byte of any frame ever actually
+got delivered as a real interrupt. Fixed by switching to explicit `qemu_irq_lower()`+
+`qemu_irq_raise()` pairs on every TIE-enabling write (SCR and FTDR both), forcing a genuine
+transition every time — the exact fix shape `riic.c`'s own DRT-write cases already established
+for the same class of bug.
+
+**Bug 3 — an emulator-only artifact, found by live register-write tracing, not more
+single-stepping.** Still stuck after bug 2's fix. GDB single-stepping kept giving a misleading
+picture (a lone successful invocation, no clear evidence of anything after) — the tool that
+actually resolved this was booting with `-d unimp -D <logfile>` and adding one temporary
+`qemu_log_mask` line logging every SCIF3 SCR write, then just reading the resulting real
+register-write trace in order:
+```
+SCR 0->0x20->0x30->0x70->0x78   (RE/TE/RIE/REIE bring-up)
+TX fe                            (preamble, direct write in scif3_send_frame)
+SCR 0x78->0xf8                   (TIE on)
+TX f0                            (type byte, sent via the ISR's first real invocation)
+TX fd                            (terminator, sent via the ISR's second real invocation)
+SCR 0xf8->0x78                   (TIE off -- the ISR's own terminal cleanup)
+```
+This trace alone proved the whole 3-byte frame really did go out over a genuinely
+interrupt-driven path, both ISR re-entries fired, and the terminal cleanup ran — directly
+contradicting what looked like a still-stuck live GDB read moments later (`DAT_20037588 & 2`
+still appeared set). That contradiction was the second instance of **the same pointer-
+indirection mistake as the counter earlier**: `DAT_20037588` is *also* a pointer variable (its
+stored value, e.g. `0x203902d3` that boot, is the real status byte's address), not the byte
+itself. Dereferencing it properly showed `0xa0` — busy bit genuinely clear, only the
+"waiting for a reply" bit still set, exactly as expected after a real, complete send. The
+actual bug behind the earlier appearance of a stall (before this correction) was real too,
+just different: the ISR's own FSR-clearing write (`*(ushort*)(FTDR_ptr+4) &= 0xff9f`, real
+per-byte bookkeeping, not a deliberate interrupt acknowledgement) was routed through an FSR
+write-handler that unconditionally called `qemu_irq_lower()` — undoing the FTDR-write case's
+own just-issued raise before the CPU running the same synchronous host call ever had a chance
+to sample it. Real hardware would never lose an edge this way (register writes take real time
+there); fixed by making the FSR write handler a true no-op again, as it originally was before
+this pass introduced the interference.
+
+**End state, this thread**: TXI3 is real, verified end-to-end via the register trace above.
+`scif3_driver_pump_tick`'s busy flag correctly clears after a real send. But the *outer* wait
+loop (the 75-count retry bound, a *different* counter from the busy flag) still never advances
+— confirmed again via 40+ continuous real seconds post-fix. That counter (the same
+`DAT_200375c0`-pointed-to address from this section's opening) has zero writers anywhere in the
+whole SCIF3 driver per `references_to` — it isn't SCIF-specific at all. Best lead: OSTM0's own
+confirmed real per-tick handler, `irq_context_switch_id86` (`0x200059b4`, a genuine FreeRTOS
+context-switch sequence, not a minor peripheral ISR), calls three still-undecoded helpers on
+every tick — `FUN_200b93f8` (currently just `bx lr`, an empty stub — worth understanding *why*
+before dismissing it), `FUN_200b9400`, `FUN_2018849c` — one of which plausibly increments a
+real `xTickCount`-equivalent this address reads. Not chased further this session — this is
+real FreeRTOS-internals tracing, the exact kind of work this whole thread's payoff question
+(SD-card update flow reaching MMCIF against a properly-created task) explicitly hoped to avoid
+needing. See README.md's Status section for the concrete resume point.
+
+**Methodology lessons worth keeping, both already-partially-known patterns that bit twice as
+hard as expected this session**:
+- The pointer-indirection mistake (reading a `DAT_*` global's own address instead of
+  dereferencing it first) produced a *plausible, confident-looking* wrong answer both times
+  ("stuck forever") rather than an obviously-broken one — it only got caught by independently
+  cross-checking against a different signal (a forced-write test moving PC in the first case; a
+  live register-write trace in the second). When a `DAT_*` symbol's decompile usage looks like
+  `pbVar = DAT_X; *pbVar = ...` rather than `*DAT_X = ...` directly, it's a pointer variable —
+  check this before trusting a raw memory read against its literal address.
+- Live single-instruction-level GDB stepping and a coarser real-time register-write trace
+  (`-d unimp`) each answered a question the other one couldn't: stepping proved the ISR's
+  *logic* was correct in isolation (state genuinely advances byte-to-byte), while the trace
+  proved what actually happened *in real free-running time order* across multiple separate
+  interrupt entries — the trace was what actually resolved bug 3, after stepping alone gave a
+  falsely reassuring picture of a single successful call with no visibility into what came next.

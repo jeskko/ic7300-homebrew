@@ -30,8 +30,10 @@
  * real interrupt ID this machine wires up. Was 192 (enough for OSTM0's 134)
  * until riic.c wired RIIC2's real interrupts, the highest of which
  * (INTIICNAKI2, ID 210, see riic.c) needs at least 211 -- rounded up to
- * the next multiple of 32. */
-#define RZA1H_GIC_NUM_IRQ  224
+ * the next multiple of 32; raised again to 256 (2026-09-08 third pass)
+ * once scif.c wired real TXI interrupts, the highest of which (TXI7, ID
+ * 252, see below) needs at least 253. */
+#define RZA1H_GIC_NUM_IRQ  256
 
 /* Number of GIC-internal interrupt IDs (SGIs 0-15 + PPIs 16-31) that
  * precede the first SPI -- arm_gic's own gic_set_irq() offsets every
@@ -115,6 +117,24 @@
 #define RZA1H_SCIF_STRIDE 0x800
 #define RZA1H_SCIF_COUNT 8
 #define TYPE_RZA1H_SCIF "rza1h-scif"
+
+/* scif.c's real TXI (transmit-complete) interrupt IDs -- found needing this
+ * 2026-09-08 (third pass) once live testing showed scif3_driver_pump_tick
+ * (body.bin) becomes a permanent no-op after its very first send: it sets a
+ * software "TX in flight" flag and the only code that ever clears it is
+ * whatever ISR services the interrupt scif3_send_frame explicitly arms
+ * before returning (calls a confirmed generic `gic_enable_irq(id)` helper,
+ * FUN_200b8308, with id=0xec=236) -- with scif.c's TX side having "no IRQ
+ * line wired to the GIC yet" (this file's own prior comment), that ISR can
+ * never run, and *nothing* past the first frame ever proceeds again. IDs
+ * derived from ~/Downloads/rza1.svd's ICDISR6/ICDISR7 fields (register
+ * index * 32 + bit, the same formula ostm.c's ID 134 already established)
+ * -- SCIF-n's group is BRIn=221+4n, ERIn=222+4n, RXIn=223+4n, TXIn=224+4n;
+ * TXI3 lands on 236, exactly matching the firmware's own 0xec literal
+ * above -- a genuine independent cross-check, not just SVD-derived. Only
+ * TXI is wired for now (nothing traced needs BRI/ERI/RXI yet). */
+#define RZA1H_SCIF_TXI_BASE0 224
+#define RZA1H_SCIF_TXI_STRIDE 4
 
 /* mmc.c -- matches the real reference struct layout (mmc_iodefine.h, see
  * mmc.c's own comment) -- 0x80 bytes covers offset 0x00 (CE_CMD_SETH)

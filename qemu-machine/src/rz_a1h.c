@@ -260,6 +260,10 @@ static void rza1h_init(MachineState *machine)
         sysbus_realize_and_unref(SYS_BUS_DEVICE(scif), &error_fatal);
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(scif), 0,
                                 RZA1H_SCIF0_BASE + i * RZA1H_SCIF_STRIDE, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(scif), 0,
+                           qdev_get_gpio_in(gic,
+                               RZA1H_SCIF_TXI_BASE0 + i * RZA1H_SCIF_TXI_STRIDE
+                                   - RZA1H_GIC_NUM_INTERNAL));
     }
 
     /* Extension-roadmap item 5: real MMCIF command/response/data protocol,
