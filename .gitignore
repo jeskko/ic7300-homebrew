@@ -13,3 +13,9 @@ __pycache__/
 *.pyc
 .venv/
 .claude/settings.local.json
+
+# Vendored QEMU checkout + build output + generated flash images
+# (qemu-machine/setup.sh recreates the checkout; qemu-machine/tools/build_flash.py
+# recreates the flash image from a real container -- see qemu-machine/README.md)
+qemu-machine/qemu-src/
+qemu-machine/flash.bin
