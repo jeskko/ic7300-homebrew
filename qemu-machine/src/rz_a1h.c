@@ -109,6 +109,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *l2c;
     DeviceState *mmc;
     size_t i;
+    int ch;
 
     cpu = ARM_CPU(cpu_create(machine->cpu_type));
 
@@ -222,9 +223,29 @@ static void rza1h_init(MachineState *machine)
     add_plain_ram_region(sysmem, "rza1h.cpg-deep-standby",
                          RZA1H_CPG_DEEP_STANDBY_BASE, RZA1H_CPG_DEEP_STANDBY_SIZE);
     add_plain_ram_region(sysmem, "rza1h.mtu2", RZA1H_MTU2_BASE, RZA1H_MTU2_SIZE);
-    add_plain_ram_region(sysmem, "rza1h.riic0", RZA1H_RIIC0_BASE, RZA1H_RIIC_SIZE);
-    add_plain_ram_region(sysmem, "rza1h.riic1", RZA1H_RIIC1_BASE, RZA1H_RIIC_SIZE);
-    add_plain_ram_region(sysmem, "rza1h.riic2", RZA1H_RIIC2_BASE, RZA1H_RIIC_SIZE);
+
+    /* riic.c -- upgraded from a bare RAM region to a real device,
+     * 2026-09-08 second pass, once body.bin's own cold-boot RIIC2 read
+     * was found busy-waiting forever on this channel's completion
+     * interrupt with no way for it to ever fire (see riic.c's own
+     * comment and README.md). All 3 channels wired identically (only
+     * RIIC2's read is confirmed exercised by any currently-traced boot
+     * path, but the other two cost nothing extra to wire correctly too). */
+    for (ch = 0; ch < 3; ch++) {
+        DeviceState *riic = qdev_new(TYPE_RZA1H_RIIC);
+        hwaddr base = RZA1H_RIIC0_BASE + ch * RZA1H_RIIC_STRIDE;
+        int irq_base = RZA1H_RIIC_IRQ_BASE0 + ch * RZA1H_RIIC_IRQ_STRIDE;
+        int j;
+
+        qdev_prop_set_uint32(riic, "channel", ch);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(riic), &error_fatal);
+        sysbus_mmio_map(SYS_BUS_DEVICE(riic), 0, base);
+        for (j = 0; j < 6; j++) {
+            sysbus_connect_irq(SYS_BUS_DEVICE(riic), j,
+                               qdev_get_gpio_in(gic,
+                                   irq_base + j - RZA1H_GIC_NUM_INTERNAL));
+        }
+    }
 
     /* Extension-roadmap item 4: eight real SCIF UARTs, matching real
      * hardware addresses/count (see rz_a1h.h). serial_hd(i) hands channel

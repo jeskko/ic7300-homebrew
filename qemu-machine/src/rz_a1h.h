@@ -27,8 +27,11 @@
 #define RZA1H_GIC_CPU_BASE  0xE8202000
 
 /* GIC interrupt ID count -- must be a multiple of 32 and cover the highest
- * real interrupt ID this machine wires up (134 for OSTM0, see ostm.c). */
-#define RZA1H_GIC_NUM_IRQ  192
+ * real interrupt ID this machine wires up. Was 192 (enough for OSTM0's 134)
+ * until riic.c wired RIIC2's real interrupts, the highest of which
+ * (INTIICNAKI2, ID 210, see riic.c) needs at least 211 -- rounded up to
+ * the next multiple of 32. */
+#define RZA1H_GIC_NUM_IRQ  224
 
 /* Number of GIC-internal interrupt IDs (SGIs 0-15 + PPIs 16-31) that
  * precede the first SPI -- arm_gic's own gic_set_irq() offsets every
@@ -85,13 +88,23 @@
 #define RZA1H_MTU2_BASE 0xFCFF0000
 #define RZA1H_MTU2_SIZE 0x00000400
 
-/* Matches emu/peripherals/riic.py's per-instance base addresses (one
- * RIIC0-2 instance each, all bare RAM regions -- see rz_a1h.c). RIIC2 is
- * the diode-matrix EEPROM's controller, per notes/ic7300-hardware.md. */
+/* riic.c -- matches emu/peripherals/riic.py's per-instance base addresses
+ * (RIIC0-2, stride 0x400). RIIC2 is the diode-matrix EEPROM's controller,
+ * per notes/ic7300-hardware.md. Upgraded from a bare RAM region (2026-09-08
+ * second pass) to a real device once body.bin's own cold-boot I2C2 read was
+ * found busy-waiting forever on this channel's completion interrupt -- see
+ * riic.c's own comment and qemu-machine/README.md. INTIICTEI<n> (the first
+ * of each channel's 6 wired real interrupt IDs -- TEI/RI/TI/SPI/STI/NAKI,
+ * consecutive, per scratch/r01an5093ej0170-rza1-swpkg's r_intc.h) is
+ * 189 + 8*channel. */
 #define RZA1H_RIIC0_BASE 0xFCFEE000
 #define RZA1H_RIIC1_BASE 0xFCFEE400
 #define RZA1H_RIIC2_BASE 0xFCFEE800
+#define RZA1H_RIIC_STRIDE 0x00000400
 #define RZA1H_RIIC_SIZE  0x00000044
+#define RZA1H_RIIC_IRQ_BASE0 189 /* INTIICTEI0 */
+#define RZA1H_RIIC_IRQ_STRIDE 8  /* per channel, to INTIICTEI(n+1) */
+#define TYPE_RZA1H_RIIC "rza1h-riic"
 
 /* scif.c -- matches ~/Downloads/rza1.svd's SCIF0-7 base addresses, +0x800
  * apart each. Real confirmed roles (notes/ic7300-signal-chain.md): SCIF0
