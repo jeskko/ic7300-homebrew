@@ -475,16 +475,40 @@ yet, so nothing ever wakes the `wfi`), not a bug in this session's own work. A s
 first read's `0x3e00`) — presumably deeper cold-boot-specific EEPROM content this same
 emulated read path also serves, not yet identified.
 
-**Left genuinely open, well-scoped**: which exact bit(s) of the `0x3e00` byte (and/or the
-`0x3e80`-based block) `FUN_2002b29c`'s own branch computation (`FUN_20029224`/`FUN_20029270`/
-`FUN_200291d8`, none of these three examined yet) actually needs to select
-`cold_boot_mode_dispatch` — a quick empirical test with `0xff` at `0x3e00` (via `riic.c`'s
-`"image"` property) did *not* change the outcome on its own, so it's not simply "any nonzero
-top bit", and needs either tracing those three functions or a small systematic sweep of
-candidate byte patterns, not another guess. Once that's resolved (or a watchdog-timer stub is
-added so the *other* branch's `wfi` also completes, whichever turns out to be the real
-intended path for this test scenario), the original SD-card/MMCIF question — the actual
-payoff this whole thread has been chasing — becomes directly retestable.
+**Follow-up, same day, `FUN_20029224`/`FUN_20029270`/`FUN_200291d8` now traced**: all 3 turn
+out to read EEPROM signature/version strings via the same `FUN_2001e510` getter and `memcmp`
+them against real reference strings sitting in ROM (`FUN_2017c81e`) — genuinely ROM-embedded
+ground truth, no physical EEPROM dump needed for these specific values:
+- `FUN_20029224`: the 16-byte `0x3e80` signature vs. `"SX3765 V4.81-000"` (`DAT_2002a08c` →
+  `0x2018d796`) — the *current native* format version, distinct from the 4 legacy-compat
+  signatures `FUN_20024738`'s own table already documented (`notes/eeprom-catalogue.md`'s
+  entry for `0x3e80`): `"SX3765 V3.41-000"`/`"V4.41-000"`/`"V4.61-000"`/`"V4.71-000"`
+  (`DAT_20024a28`'s table, confirmed by reading it directly).
+- `FUN_20029270`: the same signature's first 7 bytes vs. `"Partial"` (`DAT_2002a098` →
+  `0x2018d77f`).
+- `FUN_200291d8`: a *third*, previously-unseen 16-byte EEPROM parameter, ID `0x3fc0` (not yet
+  in `notes/eeprom-catalogue.md` — added there), vs. `"SX3765 V0.30-000"` (`DAT_2002a088` →
+  `0x2018d786`).
+
+Built a test image supplying all of `0xff`@`0x3e00`, the real `"SX3765 V4.81-000"`@`0x3e80`,
+and the real `"SX3765 V0.30-000"`@`0x3fc0` (confirmed via direct `pread()` tracing that `riic.c`
+genuinely delivers all three correctly, byte for byte) — **still no change**: boot reaches the
+exact same `FUN_20029ca4`/`wfi` stopping point. A follow-up breakpoint at the branch-decision
+instruction (`0x2002b540`, the same address identified in the first pass) **never fires at
+all** with this image, unlike before — meaning `FUN_2002b29c` itself now takes a different
+internal path before even reaching that decision point, not simply computing a different
+`bVar8`/`bVar2` value at the same point. Genuinely deeper than the 3-function model above
+captures; left open rather than guessed further. **Practical implication for anyone
+considering sourcing real chip data to help with this specific thread**: the `0x3e80`/`0x3fc0`
+comparisons resolve from firmware ROM alone, no physical EEPROM (`IC351`, `GT24C128B`) access
+needed — and this thread's actual remaining blocker isn't EEPROM *content* at all now (real,
+correct content was tried and didn't help), it's an uncharacterized *code path*, so an EEPROM
+datasheet wouldn't move this specific thread forward either. `notes/ic7300-hardware.md`
+already establishes the RTC (`IC381`, `RX-8803LC UB`) sits on a *different* channel (`RIIC1`,
+not `RIIC2`) — not yet confirmed to be touched by any traced boot path at all, so a real RTC
+datasheet isn't yet a confirmed need either, just a reasonable thing to have on hand if/when
+`riic.c`'s current uniform "flat EEPROM-shaped" model of every channel turns out wrong for
+whichever channel the RTC is actually probed on.
 
 ## Extension roadmap
 
