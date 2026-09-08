@@ -13,14 +13,27 @@ all) — this is the escalation path for the one thing it can't do.
 ## Status, 2026-09-08 — real GIC IRQ delivery confirmed working, and body.bin's real tick
 ## source identified (OSTM0, ID 134, CMP=32000) as a side effect of fixing it
 
-**Latest (third session, same calendar day)**: `riic.c` is now built and the RIIC2 boot-time
-stall diagnosed in the previous session's pass is genuinely fixed (a real level- vs. edge-
-triggered GIC bug found and fixed along the way, the same class of gotcha OSTM0 already taught
-this project once — see "`riic.c` built..." section below). Boot now progresses past that point
-into new, previously-unreached territory (`FUN_2002b29c`'s watchdog-arm-then-`wfi` branch) — but
-task creation still doesn't happen, because the branch *decision* itself depends on real EEPROM
-content this session's placeholder virtual EEPROM can't supply. Genuinely closer, not yet all
-the way there — see that section for the precise, narrowed-down next step.
+**Latest (third session, same calendar day, continued)**: the full `FUN_2002b29c` cold-boot
+branch gate is now genuinely cleared — two more real bugs found and fixed getting there (a
+second `riic.c` bug, a "dummy first byte" read-shift affecting every multi-byte RIIC2 transfer;
+and a `gpio.c` default, `P1_6`/`PDV`'s real power-fail/brownout-detector pin needing to default
+*high*, independently cross-confirmed against an already-existing, unrelated finding in
+`notes/firmware-update.md`). Boot now runs real, previously-unreached `cold_boot_hw_init`-era
+code for the first time and reaches a *new*, already-identified stopping point
+(`scif3_frontpanel_identify_handshake`, a real one-shot front-panel handshake with no virtual
+front panel to answer it) — genuinely stuck there after 60+ real seconds, not a graceful
+timeout. Task creation still hasn't happened, but every single thing blocking it up to this
+point has now been found, understood, and fixed. See "The `0x2002b540` mystery resolved..."
+section below for the full trace and the concrete next step (a minimal virtual front-panel
+SCIF3 responder).
+
+**Immediately prior finding in this same session, superseded in its specifics but right in its
+overall shape**: `riic.c` was first built to fix the RIIC2 completion-interrupt stall diagnosed
+in the previous session's pass (a real level- vs. edge-triggered GIC bug found and fixed along
+the way, the same class of gotcha OSTM0 already taught this project once — see "`riic.c`
+built..." section below). That got boot past the RIIC2 stall into `FUN_2002b29c`'s
+watchdog-arm-then-`wfi` branch — but task creation still didn't happen at that point, because
+the branch *decision* itself depended on more than just the read completing (see above).
 
 **Previous session's finding, now superseded in its specifics but right in its overall shape**:
 the `firmware_update_main` forced-call thread below was first resolved by finding that
@@ -510,6 +523,78 @@ datasheet isn't yet a confirmed need either, just a reasonable thing to have on 
 `riic.c`'s current uniform "flat EEPROM-shaped" model of every channel turns out wrong for
 whichever channel the RTC is actually probed on.
 
+## The 0x2002b540 mystery resolved, a real second riic.c bug found, and boot reaches real
+## cold-boot code for the first time — GPIO's power-good pin turns out to be the actual gate
+## (2026-09-08, same day, continued)
+
+Traced why `0x2002b540` stopped firing even with the "correct" `0x3e80`/`0x3fc0` signatures in
+place: `FUN_2002b29c` has an **earlier, unconditional short-circuit** at `0x2002b450`
+(`cmp r4,#1; beq 0x2002b540; b 0x2002b54c`) — if `bVar8` (`r4`) isn't exactly `1`, execution
+jumps *straight* to `FUN_20029ca4`, skipping the `0x2002b540` check (and the `0x2002b524` flag
+it reads) entirely. `bVar8` reads `2` with plain zeroed EEPROM content, confirming `bVar2`
+(from the 3-function signature chain) was still forcing it — traced further and found why:
+`FUN_20029224` returned `-1` (mismatch) even against a byte-for-byte-correct `"SX3765
+V4.81-000"` test image.
+
+**Found a second real `riic.c` bug causing that mismatch.** `FUN_2001dbcc` (the real `RI`
+handler) reads `DRR` even on its very first "arm" firing (state != 5) — `ldrb r0,[r1,#0]` at
+`0x2001dbc4`-ish, immediately followed by `mov r0,#5` — a **dead store the decompiler dropped
+from the visible C entirely**, hiding a genuine register access. This is a real, documented
+"dummy read after switching to receive mode" pattern common to many I2C-master IP blocks, not
+an Icom firmware bug — but it means the byte the driver actually *keeps* for destination
+position 0 comes from `mem_addr + 1`, not `mem_addr`. Confirmed directly: breakpointed the
+exact `FUN_2017c81e` (`memcmp`) call site inside `FUN_20029224` and read both compared buffers
+live — the delivered bytes came back as `"X3765 V4.81-000\0"` (shifted left one, trailing
+garbage) against a byte-perfect `"SX3765 V4.81-000"` written at the nominal offset. Rebuilt the
+test image with every signature shifted by one byte (`0x3e01`/`0x3e81`/`0x3fc1` instead of
+`0x3e00`/`0x3e80`/`0x3fc0`) — the same live buffer dump now matches byte-for-byte, and
+`FUN_20029224` returns `0` (match). Documented in `riic.c`'s own comment as a real, permanent
+finding, not fixed away — this device already serves the dummy read correctly (any real DRR
+access gets a real byte); the earlier test images were simply built on a wrong assumption
+about which offset holds "byte 0" from the driver's perspective.
+
+**With the corrected signatures, `bVar2` genuinely goes false and `bVar8` becomes `1`** — the
+first real success on this decision chain. But `0x2002b540`'s own check (`*DAT_2002b524 ==
+'\0'`) *still* failed: traced its own gate, `(*(ushort *)(DAT_2002b528 + 4) & 0x40) == 0`,
+where `DAT_2002b528` resolves to `0xFCFE3200` — the real GPIO port-pin-read (`PPR`) register
+base — and `+4` is `PPR1`, bit `0x40` (bit 6) is **`P1_6`, real signal name `PDV`: the output of
+`IC361` (`NJU7704F3`), the board's own power-fail/brownout detector, wired directly into the
+CPU** (`notes/ic7300-hardware.md`/`notes/ic7300-signal-chain.md`). **Independently
+cross-confirmed against a completely separate, already-existing finding**: `notes/firmware-
+update.md`'s own trace of `main_idle_loop`'s watchdog-reset mechanism already established this
+exact same bit's polarity from a totally different angle — low means brownout/fault, high
+means supply healthy — and both mechanisms need it high for normal operation. `gpio.c`'s
+`pin_level[]` defaulted every pin to `0` (a reasonable general default for genuinely unmodeled
+inputs), which reads as a *permanent brownout condition* no real boot ever observes. Fixed with
+a narrow, well-justified exception: `rza1h_gpio_reset()` now sets `P1_6` high by construction
+(a real board's supply is healthy by the time firmware runs at all — this isn't board-specific
+data like the EEPROM's content, it's a hardware-guaranteed truth in the absence of an actual
+fault this emulator has no way to simulate anyway).
+
+**Net effect: boot progresses dramatically further, past every previously-seen stopping point.**
+Confirmed via extended polling (60+ real seconds): the CPU now cycles through real,
+previously-unreached `cold_boot_hw_init`-era code (`0x20037xxx` region) instead of parking
+forever in the watchdog/`wfi` sequence. The new stopping point is itself a real, clean,
+**already-identified** mechanism, not a mystery: `scif3_frontpanel_identify_handshake`
+(`0x20037424`-`0x200374e3`, a name from earlier front-panel-thread work, not newly guessed) — a
+genuine one-shot SCIF3 handshake with the physical front-panel MCU at cold boot, bounded by a
+75-count retry loop. Since `scif.c` (this project's own real SCIF UART model) has "no IRQ line
+wired to the GIC yet" and nothing plays the front panel's own role on the RX side, this
+handshake can only ever time out. **Unlike the watchdog/`wfi` stop, this one did *not* resolve
+on its own after 60 real seconds** — genuinely stuck here, not a graceful one-shot timeout that
+was simply slow. `sdcard_file_rpc_dispatch_task`'s own struct fields are still zero at this
+point — the actual payoff is closer than it's ever been (past the entire cold-boot branch
+gate) but not yet reached.
+
+**Left open, well-scoped, for whoever picks this up next**: does boot actually need this
+handshake to succeed (or at least to be seen to try and give up) before proceeding to task
+creation, or is task creation gated on something else entirely reachable only after this? A
+minimal virtual front-panel SCIF3 responder (even just "ACK whatever comes in with a plausible
+canned reply", matching this project's own permissive-peripheral philosophy elsewhere) is the
+natural next concrete step if this handshake really is on the critical path — the front-panel
+thread's own prior work (`notes/front-panel-firmware.md`/`notes/front-panel-protocol-
+handout.md`) already documents the real SCIF3 protocol shape needed to build one.
+
 ## Extension roadmap
 
 Items 1 and 2 from the original plan are both **done** (2026-09-08, second pass) — see the
@@ -564,10 +649,19 @@ untouched boot) and statically (direct disassembly of the arming code at `0x200b
    machine has no watchdog device to ever wake) rather than the one that creates the whole
    feature-task set. Next step, well-scoped: trace `FUN_20029224`/`FUN_20029270`/
    `FUN_200291d8` (the 3 functions `FUN_2002b29c` combines with the RIIC2 byte to compute
-   this branch, none examined yet) to find the exact byte pattern needed at `0x3e00` (and/or
-   the second, larger 17-byte read starting at `0x3e80`, also unidentified) — a quick
-   `0xff`-at-`0x3e00` empirical test did not flip the outcome on its own, so this needs real
-   tracing, not another guess. Once resolved, this whole roadmap item's original question —
-   does the SD-card update flow actually reach MMCIF against a *properly* kernel-created
-   task — becomes directly retestable with the existing `force_call_fup.py`/
-   `test_fup_scheduling.py` tooling, no further RTOS-internals work needed.
+   this branch, none examined yet) to find the exact byte pattern needed.
+
+   **Follow-up, same session, continued**: all 3 traced (real ROM-embedded EEPROM signature
+   comparisons, see "The `0x2002b540` mystery resolved..." section above) -- plus a second
+   real `riic.c` bug (a dummy-first-byte read shift affecting every multi-byte transfer) and
+   a `gpio.c` fix (`P1_6`/`PDV`, the real power-fail/brownout-detector pin, needed a high
+   default). With all three fixed, the entire cold-boot-vs-power-state branch gate is cleared
+   for the first time -- boot now runs real, previously-unreached `cold_boot_hw_init`-era
+   code. Still not at the payoff: a new, already-identified stopping point
+   (`scif3_frontpanel_identify_handshake`, no virtual front panel to answer it) is now the
+   blocker, genuinely stuck after 60+ real seconds. Concrete next step: a minimal virtual
+   front-panel SCIF3 responder -- once past that (or once it's confirmed not actually gating
+   task creation), this whole roadmap item's original question -- does the SD-card update
+   flow actually reach MMCIF against a *properly* kernel-created task -- becomes directly
+   retestable with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling, no
+   further RTOS-internals work needed.

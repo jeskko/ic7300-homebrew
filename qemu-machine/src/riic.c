@@ -28,14 +28,25 @@
  *   TEI (transmit-end, last shifted byte fully out): once the address
  *     phase is done, writes CR2 = RS (issue repeated start) to switch to
  *     read direction. (FUN_2001db50)
- *   RI  (receive-data-full): reads DRR into the destination buffer.
- *     Fires once as a pure "arm" step (no register access at all) before
- *     the first real byte, then again for each real byte -- this device
- *     doesn't need to chain that itself (see the level-vs-edge note
- *     below): the line simply stays asserted across the arm step (which
- *     touches no register this device would otherwise lower it on) and
- *     re-triggers on its own the instant the guest re-enables IRQs,
- *     genuine level-sensitive behavior, not a bug. On the last expected
+ *   RI  (receive-data-full): reads DRR into the destination buffer. Its
+ *     very first firing (state != 5) reads DRR too, per the real
+ *     disassembly (`ldrb r0,[r1,#0]` at `0x2001dbf4`) -- but *discards*
+ *     the byte (immediately overwritten by `mov r0,#5`), a dead store
+ *     Ghidra's decompiler dropped entirely, hiding this from the
+ *     decompiled C. This is a real, deliberate "dummy read after
+ *     switching to receive mode" pattern (a documented quirk of many
+ *     I2C-master IP blocks, RIIC included) -- **not a bug in Icom's
+ *     firmware, and not modeled specially here**: this device already
+ *     serves it like any other DRR read (delivers whatever's at
+ *     `mem_addr`, increments, re-arms). The real, practical consequence
+ *     for anyone building a backing image: the byte actually *kept* by
+ *     the driver for its destination buffer's position 0 is at
+ *     `mem_addr + 1`, not `mem_addr` -- confirmed the hard way (built a
+ *     test image with a real ROM-sourced 16-byte reference string at
+ *     the nominal offset, watched it arrive shifted left by one with a
+ *     trailing garbage byte, found this exact dummy read explains it
+ *     exactly, shifted the image by one byte, got a byte-for-byte match
+ *     against the same live comparison). On the last expected *real*
  *     byte the driver writes CR2 = SP (issue stop) *before* reading DRR
  *     -- this device raises SPI only after that DRR read completes,
  *     matching real hardware (the stop condition physically follows the

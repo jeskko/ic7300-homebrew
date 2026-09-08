@@ -221,6 +221,20 @@ static void rza1h_gpio_reset(DeviceState *dev)
     memset(s->pmc, 0, sizeof(s->pmc));
     memset(s->pin_level, 0, sizeof(s->pin_level));
     memset(s->storage, 0, sizeof(s->storage));
+
+    /* P1_6 ("PDV") is IC361's (NJU7704F3) real power-fail/brownout
+     * detector output wired directly into the CPU -- confirmed low ==
+     * brownout, high == supply healthy (notes/firmware-update.md's
+     * main_idle_loop watchdog-reset trace, and independently
+     * cross-confirmed 2026-09-08 tracing FUN_2002b29c's own cold-boot
+     * branch decision -- both read this exact bit and both need it high
+     * for the normal/no-fault path). A real board's supply is healthy by
+     * the time firmware runs at all; defaulting every unmodeled GPIO
+     * input to 0 (this device's general, otherwise-correct convention)
+     * would read as a permanent brownout condition here, which no real
+     * boot ever observes -- so this one pin gets a real, justified
+     * exception rather than staying at the generic default. */
+    s->pin_level[1] |= 0x40;
 }
 
 static void rza1h_gpio_init(Object *obj)
