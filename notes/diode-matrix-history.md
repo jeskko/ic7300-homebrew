@@ -1556,3 +1556,220 @@ arm`), `notes/diode-matrix.md` (new "Emergency Mode / Tuner (all-regions)" secti
 updates), `notes/diode-matrix-history.md` (this entry). Ghidra database: 3 renames + 3 plate comments (listed
 above), no destructive changes. No git commit made — left for the user's own review, per this project's
 standing instruction.
+
+## 14th session — the "restart" traced end to end and confirmed as a genuine software-only soft restart; a deeper structural search for the 4630kHz visibility gate finds the real per-item records but still no gate
+
+Two sharp, concrete corrections/refinements from the user, both aimed at the 13th session's two biggest
+remaining gaps. No re-derivation needed — picked up exactly where that session left off.
+
+### Direction 1: "restart" is very likely soft/warm, not a power-cycle — traced and confirmed
+
+The user, who has actually used this feature on real hardware, said the radio does not really power-cycle
+when entering Emergency Mode — it only appears to restart. Traced the already-found call chain
+(`emergency_mode_restart_commit` → `FUN_2002b818(4)` → `system_mode_request_dispatch`'s mode-4 branch) all
+the way down through the ~80 unconditional function calls in that function's own tail (already described,
+30th kernel-rtos session, as "a full subsystem restart"). Read every one of those callees' names/addresses
+against two already-fully-documented hardware-reset primitives this project separately mapped in
+`notes/firmware-update.md`'s "system restart mechanism" section: `FUN_20052bd0` (the `P1_6`-gated brownout
+watchdog-reset in `main_idle_loop`) and `FUN_20029ca4` (the second, independent watchdog-reset path found
+via the `Fup_AutoEnd_3765` marker thread). **Neither appears anywhere in `system_mode_request_dispatch`'s
+call tree**, and neither does `cold_boot_hw_init` (`0x2002afc0`) itself.
+
+Confirmed this structurally, not just by absence, by walking the caller graph directly:
+- `cold_boot_hw_init` has **exactly one caller** in the whole image: `0x2002b1d8`, inside
+  `cold_boot_mode_dispatch` (`0x2002b1c8`, previously unnamed `FUN_2002b1c8` — renamed this session).
+  `cold_boot_mode_dispatch`'s body: `*DAT_2002b500=1; cold_boot_hw_init(); ... while (system_mode_request_
+  dispatch(), *pcVar3=='\0') { pick an idle loop from DAT_2002a4a4; main_operating_loop(0,1); }` —
+  i.e. `cold_boot_hw_init` runs exactly once, then the function loops forever calling
+  `system_mode_request_dispatch` on every iteration.
+- `cold_boot_mode_dispatch` itself has **exactly one caller**: `0x2002b554`, inside `FUN_2002b29c` — the
+  real top-level cold-boot/power-state entry dispatcher (already has its own detailed plate comment from an
+  earlier session: "references_to finds ZERO direct callers of this function anywhere in body.bin... most
+  likely reached via first_task_entry's message-dispatch loop" — i.e. genuinely runs once per real hardware
+  boot/reset). Decompiled `FUN_2002b29c` fully: it picks between `cold_boot_mode_dispatch()` and
+  `FUN_20029ca4()` as two **mutually exclusive, sibling** branches based on a wake/mode-source byte chain
+  — `FUN_20029ca4` (the watchdog-reset path) is a completely separate top-level choice, never reachable
+  from inside `cold_boot_mode_dispatch`'s own loop.
+
+**Conclusion: this is a real, well-evidenced, positive closure, not an open gap.** Emergency Mode's
+"restart" (and every other `system_mode_request_dispatch` request value, by the same evidence) is pure
+software task-teardown-and-reinit within the *same continuously-running process* — no CPU reset, no
+watchdog trigger, no re-entry to `cold_boot_hw_init` at all. This directly confirms the user's own hardware
+observation. It also means the 13th session's "no EEPROM write found, no boot-time EEPROM-populate found"
+finding doesn't describe an open dead end after all: there's no EEPROM round-trip to look for, because
+`0x203de174`'s persistent status bits are never at risk of being cleared or reloaded in the first place —
+RAM simply isn't touched by this kind of "restart." Added a substantial addendum to
+`system_mode_request_dispatch`'s existing plate comment documenting this (original text preserved intact,
+not overwritten, per this project's correction-handling convention).
+
+### Direction 2: hunting the 4630kHz visibility gate, specifically testing D420 — deeper search, still not found
+
+The user's own hypothesis: the 4630kHz checkbox (JP-only per the earlier-documented D420/D423 population
+data) must be hidden from the menu in non-JP builds by *something* — possibly region_code, possibly D420
+directly, since D420 has never had a confirmed consumer across 13 prior sessions. Confirmed the basic
+premise first: `scratch/unpacked/*/body.bin` is organized per firmware *version* (`111`-`142`), not per
+region — this project's whole diode-matrix premise is one image, region selected by physical diodes at
+runtime — so a real gate, if it exists, must be runtime code somewhere in this same image.
+
+**New structural find**: traced past the 13th session's dead-end ("`FUN_20041f20` — wrong struct, unrelated
+item codes, and type-1 items never call it anyway") to the *actual* list-item records for "4630kHz" and
+"Tuner." These live in a previously undocumented **20-byte-stride list-widget table** — a different, larger
+mechanism from the "up to 4 sub-items" generic renderer (`FUN_20042f3c`/`DAT_200426b0`) the 12th/13th
+sessions had been exploring; that 4-byte-per-entry mechanism appears to serve the top-level SET-menu
+*category* grid (RX/TX/Display/Emergency/etc., shown 4 tiles at a time), while this new 20-byte-record table
+is the "Others" screen's *own* scrollable item list (Firmware Update, Load Setting, Touch Screen
+Calibration, an unrelated "Tuner" calibration item, Play Files, CI-V Address, Format, Partial Reset, All
+Reset, Unmount, REF Adjust, ..., and — found this session — "4630kHz" and a second "Tuner" row, distinct
+from the earlier unrelated one). Confirmed the record shape empirically against known-good anchors
+(`all_reset_button_handler` lands exactly at offset+8 of its 20-byte-aligned record, and the two new
+handlers below land at the identical offset in theirs): `{name_EN, name_JP, tap_handler, secondary(always 0
+in every record sampled), flags}`.
+
+- **"4630kHz"** record (`0x2018edb8`): `name_EN`/`name_JP` both `0x20359ae0` ("4630kHz" itself — a
+  language-neutral string reused for both fields), `tap_handler` = `0x20041cfc` (renamed
+  `emergency_4630khz_item_tap_handler`), `secondary` = 0, `flags` = `0x1071e`.
+- **"Tuner"** record (`0x2018edcc`): `name_EN` = `0x20359a3c` ("Tuner"), `name_JP` = `0x2035997c`
+  (Shift-JIS), `tap_handler` = `0x20041d54` (renamed `emergency_tuner_item_tap_handler`), `secondary` = 0,
+  `flags` = `0x10709`.
+- Confirmed `emergency_4630khz_item_tap_handler` is the same function already partly reverse-engineered
+  last session (still inside the queued ARM/Thumb gap at `0x20041cfc`, ground truth via `objdump`): checks
+  Tuner's own checked-state (`*0x2039021e`) first (an early uncheck-and-refresh path), then a selector byte
+  at `*0x20390211` to pick warning dialog `0x5b` or fall through to `0x5a`.
+  `emergency_tuner_item_tap_handler` is a trivial 2-instruction stub, `mov r0,#4; b FUN_2002b818` —
+  unconditionally requesting system-mode-4, no dialog call visible from this address directly (an honest
+  loose end — its own warning-dialog trigger, if separate, wasn't traced this session).
+
+**Checked directly for a diode/region-code test, real thorough negative**:
+- Both tap-handlers' bodies (`objdump`-verified) — zero diode/region references in either.
+- The record's `secondary` field — structurally the position analogous to `notes/ui-menu.md`'s QUICK MENU
+  `+0x14` "am I available" callback — is null (`0`) in every one of the ~8 records sampled, including both
+  checkbox rows. No per-item availability callback is populated here at all.
+- `references_to` on the `flags` field address and the 4630kHz name field address, individually
+  (`0x2018edb8`/`0x2018edc8`/`0x2018eddc`) — zero hits on all three. No code anywhere reads these fields via
+  a resolvable literal address — the same "computed-table-access wall" this project has hit for the
+  216-item table, the 326-item defaults table, and others: the real per-row walker almost certainly computes
+  `base + index*20 + field_offset` at runtime, invisible to static xref analysis.
+- Ruled out the `flags` field's low byte (`0x00`/`0x1e`/`0x09`/`0x16` across the rows sampled) as a
+  disguised item code for the already-known `is_feature_enabled_for_region` gatekeeper — that function's
+  item-code range starts at `0x24`; feeding it any of these smaller values would hit its unconditional
+  `return 0` path, which can't be right for items that render at all.
+- **Could not locate the table's own base pointer / driving walker function** (the equivalent of
+  `notes/ui-menu.md`'s `DAT_2004f728` for QUICK MENU) within the session's budget — sampled roughly 20
+  records in both directions from the two known handlers with no header/sentinel record found. Without the
+  walker, a region/diode-conditional item count or skip-list applied *before* the generic renderer reaches
+  these records can't be ruled out — only everything currently reachable from the records/handlers
+  themselves.
+
+**Net**: real, meaningfully deeper progress (concrete records + real tap-handlers, a materially better
+target than the 13th session's wrong-struct dead end), but the visibility gate itself — and D420
+specifically — remains genuinely not found, not disconfirmed. Flagged as a concrete next step (find the
+table's base/walker) rather than left as a vague "still open."
+
+### Renames and comments (Ghidra database)
+
+- `FUN_20041cfc` → `emergency_4630khz_item_tap_handler` (+ PRE comment with the record/field addresses).
+- `FUN_20041d54` → `emergency_tuner_item_tap_handler` (+ PRE comment).
+- `system_mode_request_dispatch`'s existing plate comment: appended a new paragraph (original text kept
+  intact) documenting the soft-restart closure with full addresses/evidence.
+- No new symbols created as `FUN_2002b1c8`/`cold_boot_mode_dispatch`/`FUN_2002b29c` were already named or
+  already carried a sufficient plate comment from earlier sessions — read, not re-annotated.
+
+**Files touched this session**: `notes/diode-matrix.md` (new 14th-session section, EEPROM-gap correction,
+Open Question 11), `notes/diode-matrix-history.md` (this entry). Ghidra database: 2 renames + 2 PRE
+comments + 1 plate-comment addendum, listed above. No destructive changes. No ARM/Thumb fix newly queued —
+the one gap touched this session (`0x20041cfc`) was already queued last session and covers it. No git
+commit made, per the user's standing instruction (they handle commits themselves).
+
+## 15th session — found the real per-item render dispatch (`settings_list_item_kind_renderer`) for "4630kHz"/"Tuner"; strongest negative yet on the visibility-gate question, one concrete "false lead" ruled out
+
+The user pointed at a specific address, `DAT_2018ed50` — 4 bytes before the 14th session's mapped
+table-record area, i.e. that record's own field the 14th session had (mis-)labeled "flags" — and ran
+`references_to` on it directly, finding exactly 2 hits. Asked for both to be traced fully.
+
+### Hit 1 (`0x20042498`, inside `FUN_20042458`) — real, and the missing piece of the render chain
+
+Decompiled `FUN_20042458` fully and renamed it `settings_list_item_kind_renderer`. Confirmed it's called
+from `FUN_20042f3c` (the already-known "up to 4 items" page renderer) for type-3 items specifically —
+`settings_list_item_kind_renderer(uVar5, uVar8)`, `uVar5` = page start index, `uVar8` = slot 0-3. It
+resolves an absolute item index via `uVar11 = *(ushort*)(DAT_200426b0 + (uVar5+uVar8)*4 + 2)` (the same
+`DAT_200426b0` index-resolution array already known from the 13th session), then reads a "kind" byte via
+`*(byte*)(DAT_2004196c + uVar11*0x14 + 8)`.
+
+`DAT_2004196c` resolves to `0x2018ed48` this build — confirmed via direct memory read. This is **the exact
+same physical ROM table** the 13th/14th sessions already explored for the "Others" screen's per-item
+name/tap-handler records — a genuine, useful reconciliation, not two separate tables. The 14th session's
+"record" model (name_EN/name_JP/tap_handler/secondary/flags at offsets 0/4/8/12/16, base found by aligning
+`all_reset_button_handler` etc. to offset+8) and this function's own "kind byte at base+8" read are simply
+**two different consumers reading two different fields of the same 20-byte-stride records**, with base
+pointers 8 bytes apart (`DAT_2004196c` = `0x2018ed48`; the 14th session's inferred name/handler record base
+for the same logical row = `0x2018ed48 + 8` further in). Not a contradiction — the 14th session's
+handler/name field identifications (independently confirmed via real `DATA` xrefs, e.g.
+`all_reset_button_handler` at `0x2018edac`) remain solid; this session just adds the "kind" field on top,
+read via its own, separately-confirmed base.
+
+**Read the actual kind bytes directly from ROM** at the computed addresses: `uVar11==5` → kind byte at
+`0x2018edb4` = `0x1e`; `uVar11==6` → kind byte at `0x2018edc8` = `0x1e`. Both hit the function's
+`case 0x1e: goto LAB_200429fc;` block, which switches again on `uVar11` itself:
+```c
+if (uVar11 == 5) { *pbVar13 = 1; *(byte*)(iVar7+0xad) = *(byte*)(DAT_20042664 + 5); return; }
+if (uVar11 == 6) { *pbVar13 = 1; *(byte*)(iVar7+0xad) = *(byte*)(DAT_20042664 + 6); return; }
+```
+`DAT_20042664+5`/`+6` are `0x2039021d`/`0x2039021e` — the already-known 4630kHz/Tuner checked-state target
+bytes. **This is the first fully confident confirmation that item index 5 = "4630kHz" and index 6 =
+"Tuner"** (previously inferred only from name-string proximity to tap-handlers), and it directly shows —
+by reading the actual code, not by absence — that `*pbVar13` (the "is this item available/shown" output)
+is set to `1` **unconditionally** for both. No diode, region_code, or any other test appears anywhere in
+this dispatch path.
+
+### `DAT_200426b8` — traced per the user's specific request, real negative, and moot for these two items anyway
+
+The user flagged `case 0x16`/`0x18`/`0x20`'s shared pattern (`*(char*)(iVar10 + param_2*0x1c) != '\0'`,
+`iVar10 = DAT_200426b8`) as a strong candidate visibility-gate array. Read `DAT_200426b8`'s resolved value
+(`0x203a2f88`) and found its 8 real writers via `references_to` filtered to `WRITE`: `FUN_20023d74` (a
+simple 4-slot zero-initializer) and `FUN_20059754` plus 5 siblings in the `0x20059xxx`-`0x2005axxx`
+cluster. Decompiled both representative ones fully: they copy fields from a **different**, unrelated
+0x34-byte source struct (`DAT_20058fb8`) into this 0x1c-stride cache, 4 slots at a time, gated on a
+condition (`*(DAT_20058fac+0xb)=='0'` and `*(DAT_20058f9c+6)==0`) that shifts/rotates the 4 cached slots —
+the shape of a generic "recent items" or similar rolling list cache for some other feature entirely. No
+diode or `region_code` reference in any writer checked. **Also structurally moot regardless**: cases
+`0x16`/`0x18`/`0x20` are different kind values from the `0x1e` our two checkbox items actually use — this
+array is never even consulted for "4630kHz"/"Tuner" specifically.
+
+Checked the three sibling gate calls in those same cases too (`FUN_2005ea60`/`FUN_2005eab0`/`FUN_2005e8ac`,
+per the user's request to understand what they test): all three read a single-char mode/status byte at
+`*DAT_2005dfb0` against values `'\0'`/`'\b'`(0x08)/`'K'`/`'R'`/`'S'` — plausibly a CI-V/operating-mode
+compatibility check, confirmed to have nothing to do with diodes or `region_code`. Orthogonal, as the user
+suspected might be the case.
+
+### Hit 2 (`0x2008a4d4`, inside `FUN_2008cff8`) — checked and ruled out as a coincidental false lead
+
+Per the user's explicit warning not to assume this one's real just because `references_to` flagged it,
+decompiled the full ~10,000-byte function. It's a completely unrelated CI-V/service-mode
+display-synchronization dispatcher (switches on an entirely different selector byte space — `9`-`0xf` and
+`'\t'`/`'\n'` — full of `FUN_2008xxxx`/`FUN_200acxxx`/`FUN_200adxxx` calls that read like a front-panel or
+sub-display diff/sync protocol) with no visible relationship whatsoever to the settings-list table, its
+kind bytes, or the two Emergency-mode items. Confirmed as a coincidental address match, the same "false
+lead" failure mode the 13th session flagged for a different address.
+
+### Net assessment
+
+This session reaches the strongest negative yet on the "who hides 4630kHz for non-JP regions" question:
+every reachable function that touches these two specific items by name, index, or state — the kind-based
+render dispatch (this session), the tap-handlers (14th session), and the checkbox-state bytes themselves
+(13th/14th sessions) — has now been read in full and is clean of any diode or `region_code` reference. If a
+real gate exists, it has to live in whatever populates `DAT_200426b0` (the index-resolution array) for the
+relevant page, or in the page's own item count/bounds — the same "table's own base/walker function is not
+yet found" gap the 14th session already flagged, now narrowed considerably (a hide-by-omission from the
+resolved index list, not a per-item disable, since disabling isn't wired up for kind `0x1e` at all).
+
+### Renames and comments (Ghidra database)
+
+- `FUN_20042458` → `settings_list_item_kind_renderer` (+ a substantial plate comment covering the whole
+  trace: the kind-table reconciliation, the `uVar11==5/6` confirmation, `DAT_200426b8`'s real writers and
+  why it's moot here, the three mode-byte gate functions, and the ruled-out false lead).
+
+**Files touched this session**: `notes/diode-matrix.md` (new 15th-session section, Open Question 11
+addendum), `notes/diode-matrix-history.md` (this entry). Ghidra database: 1 rename + 1 plate comment, listed
+above. No destructive changes. No new ARM/Thumb disassembly gaps were hit this session (both functions
+inspected were already fully disassembled/decompiled by Ghidra), so nothing new was queued in
+`scratch/armthumb_fix_requests.txt`. No git commit made, per the user's standing instruction.
