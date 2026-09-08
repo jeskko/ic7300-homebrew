@@ -97,15 +97,39 @@ class ExceptionEntry:
         return self.uc.cpr_read(15, 0, 12, 0, 0, 0, False)
 
     def _on_interrupt(self, uc: Uc, intno: int, _user_data) -> None:
-        entry = _TABLE.get(intno)
-        if entry is None:
+        # Synchronous traps (SWI/UDEF/aborts) always take effect -- they arise from the
+        # instruction the CPU just tried to execute, there's no "masked" state for them.
+        if not self.enter(intno):
             self._on_unhandled(
                 f"[exceptions] unhandled interrupt number {intno} at "
                 f"pc={uc.reg_read(UC_ARM_REG_PC):#010x} -- leaving CPU state untouched, "
                 "next emu_start call will likely raise UC_ERR_EXCEPTION again"
             )
-            return
 
+    def trigger_irq(self) -> bool:
+        """Asynchronously assert an IRQ, entering the guest's IRQ vector immediately --
+        for injecting a periodic timer tick or similar, from *outside* guest execution
+        (there is no `UC_HOOK_INTR` event for this; nothing in the guest trapped).
+
+        Real hardware would leave an IRQ pending until the CPU unmasks it; this emulator
+        doesn't track pending state, so an injection attempt while `CPSR.I` is set is
+        simply dropped (returns `False`) rather than queued -- callers doing periodic
+        injection (see `board.py`) will get it on a later attempt once unmasked again.
+        """
+        if self.uc.reg_read(UC_ARM_REG_CPSR) & I_BIT:
+            return False
+        return self.enter(EXCP_IRQ)
+
+    def enter(self, intno: int) -> bool:
+        """Perform real ARM exception entry for `intno` right now. Returns whether it
+        actually happened -- `False` for an unknown `intno`, or (see `trigger_irq`) a
+        masked asynchronous one caught by a caller that skips this method's own check.
+        """
+        entry = _TABLE.get(intno)
+        if entry is None:
+            return False
+
+        uc = self.uc
         target_mode, vector_offset, lr_adjust, sets_f = entry
 
         old_cpsr = uc.reg_read(UC_ARM_REG_CPSR)
@@ -126,3 +150,4 @@ class ExceptionEntry:
 
         vbar = self._read_vbar()
         uc.reg_write(UC_ARM_REG_PC, vbar + vector_offset)
+        return True

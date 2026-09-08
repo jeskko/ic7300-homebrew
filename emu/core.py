@@ -12,6 +12,7 @@ from typing import Callable
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_PC, UC_CPU_ARM_CORTEX_A9
 
+from . import hint_instructions
 from .exceptions import ExceptionEntry
 
 # ARM state, SVC mode, IRQ+FIQ masked -- the documented Cortex-A reset convention.
@@ -36,6 +37,10 @@ class Cpu:
         # guest's own vector table) -- see exceptions.py. Without this, Unicorn raises a
         # bare UC_ERR_EXCEPTION and stops on the guest's first SWI/trap.
         self.exceptions = ExceptionEntry(self.uc)
+
+        # Works around a real Unicorn/QEMU Cortex-A9 gap: WFE/WFI/YIELD/SEV aren't
+        # implemented and raise UC_ERR_INSN_INVALID -- see hint_instructions.py.
+        hint_instructions.install(self.uc)
 
         if trace is not None:
             self.uc.hook_add(UC_HOOK_CODE, lambda uc, addr, size, _ud: trace(addr, size))

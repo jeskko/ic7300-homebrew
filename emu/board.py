@@ -17,7 +17,10 @@ from .peripherals.cpg import DEEP_STANDBY_CLUSTER_BASE, DEEP_STANDBY_CLUSTER_SIZ
 from .peripherals.cpg import MAIN_CLUSTER_BASE, MAIN_CLUSTER_SIZE
 from .peripherals.gic import GicCpuInterface, GicDistributor
 from .peripherals.gpio import GpioBlock
+from .peripherals.l2c import L2CacheController
+from .peripherals.mtu2 import Mtu2
 from .peripherals.ostm import Ostm
+from .peripherals.riic import Riic
 from .peripherals.registry import PeripheralRegistry
 from .peripherals.spi_boot import SpiBootStatus
 from .peripherals.stub import StubPeripheral
@@ -97,8 +100,18 @@ class Board:
             self.gic_cpu_interface.size,
             self.gic_cpu_interface,
         )
+        self.l2c = L2CacheController()
+        self.registry.register("l2c", self.l2c.base, self.l2c.size, self.l2c)
+        self.mtu2 = Mtu2()
+        self.registry.register("mtu2", self.mtu2.base, self.mtu2.size, self.mtu2)
+        self.riic0 = Riic(base=0xFCFEE000)
+        self.riic1 = Riic(base=0xFCFEE400)
+        self.riic2 = Riic(base=0xFCFEE800)
+        for name, riic in (("riic0", self.riic0), ("riic1", self.riic1), ("riic2", self.riic2)):
+            self.registry.register(name, riic.base, riic.size, riic)
 
         self._trace_log: list[int] = [] if trace else None  # type: ignore[assignment]
+        self._halted = False
         self.cpu = Cpu(trace=self._on_trace if trace else None)
 
         self.cpu.map_rom(flash_image_mod.FLASH_BASE, bytes(self.image.data))
@@ -123,6 +136,7 @@ class Board:
         self._trace_log.append(address)
 
     def _on_stub_access(self) -> None:
+        self._halted = True
         self.cpu.uc.emu_stop()
 
     def enable_stub_stop(self) -> None:
@@ -140,3 +154,12 @@ class Board:
 
     def run(self, until: int = 0, count: int = 0, timeout: int = 0) -> None:
         self.cpu.run(until=until, count=count, timeout=timeout)
+
+    # A `run_ticked()` method -- chunking execution into repeated bounded `emu_start`
+    # calls and injecting a periodic `exceptions.trigger_irq()` between them, to stand in
+    # for a real hardware timer IRQ -- was prototyped here 2026-09-08 and deliberately
+    # removed rather than shipped: it triggers a real, reproducible Unicorn correctness bug
+    # (confirmed independent of IRQ injection -- see emu/README.md's Status section) where
+    # splitting execution across multiple `count`-limited `emu_start` calls corrupts the
+    # guest's ARM/Thumb state, crashing code that runs cleanly under one unbroken call. Not
+    # safe to build on until that's understood; see the roadmap for next steps.

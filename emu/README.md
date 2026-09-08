@@ -8,6 +8,63 @@ project overall, and the planning session (2026-09-08) this implements.
 
 ## Status
 
+### L2C, MTU2, RIIC0-2 added; real timer-IRQ delivery attempted and shelved, 2026-09-08 (fourth pass)
+
+Continuing straight past the L2 cache controller stop from the previous pass:
+**`peripherals/l2c.py`** (ARM PL310-style L2 cache controller, `0x3ffff000`) hit a real bug
+almost immediately -- `body.bin`'s cache-invalidate-by-way bring-up (`REG7_INV_WAY`,
+`0x3ffff77c`, confirmed via the two literal-pool pointers the code itself uses) polls that
+register until it reads back `0` the way real PL310 hardware self-clears each way's bit as
+invalidation completes; modeling it as plain storage (this module's first version) made
+that poll genuinely infinite. Fixed by treating the whole `REG7_*` cache-maintenance block
+as "any write completes instantly and always reads `0`" -- correct completion semantics,
+not a target-specific hack. With that fixed, **`peripherals/mtu2.py`** (a 79-register,
+5-channel general-purpose timer, plain storage only -- nothing autonomously sets a status
+flag, so no `l2c`-style self-inflicted hang risk) and three **`peripherals/riic.py`**
+instances (I2C bus controllers `RIIC0`/`RIIC1`/`RIIC2` -- `RIIC2` is the one wired to the
+diode-matrix EEPROM per [[diode-matrix]], though no I2C protocol or EEPROM backing store is
+modeled yet, just the register file) cleared quickly too.
+
+Then boot hit a real Unicorn/QEMU Cortex-A9 model gap: `body.bin` executes a bare `WFE`
+(`0xe320f002`), which this CPU model doesn't implement (`UC_ERR_INSN_INVALID`) -- confirmed
+with an isolated test independent of this project's firmware (`NOP` on the same setup
+executes fine, `WFE` doesn't). Fixed generically in **`hint_instructions.py`**: a
+`UC_HOOK_INSN_INVALID` handler that recognizes the ARM/Thumb hint-instruction encodings
+(`NOP`/`YIELD`/`WFE`/`WFI`/`SEV`) and skips them as a no-op -- architecturally valid on any
+conforming implementation, not a target-specific hack either.
+
+That unblocked execution into a **real WFE-based wait loop** that only a genuine periodic
+timer interrupt can end -- exactly [[icom-custom-code-goal]]-adjacent territory the roadmap
+already flagged as the next real threshold. Attempted it, and hit a genuine, reproducible
+**Unicorn correctness bug**, confirmed independent of anything IRQ-specific: splitting
+execution across multiple `count`-limited `emu_start` calls (needed to inject something
+*between* chunks of guest execution, since a global per-instruction hook is prohibitively
+slow -- confirmed separately, see below) corrupts the guest's ARM/Thumb state, crashing
+code shortly afterward that runs cleanly under one unbroken `emu_start` call covering the
+same instructions. Isolated with a minimal test that never calls `exceptions.trigger_irq`
+at all -- pure chunking alone reproduces it. A per-instruction `UC_HOOK_CODE`-based
+injection (no chunking, but incurring the same catastrophic slowdown `trace=True` already
+showed) avoided the crash but landed somewhere not obviously correct either (re-entering
+the IRQ vector), so that path isn't validated as actually working yet either.
+
+**Net result this pass**: `exceptions.py` gained real, reusable IRQ-entry machinery
+(`trigger_irq()`/`enter()`, refactored out of the existing SWI-entry code, independently
+verified correct via an isolated `RFEIA` round-trip test) -- the underlying mechanism
+works. But a practical way to *drive* it periodically without corrupting CPU state does
+not exist yet in this codebase; a prototype `Board.run_ticked()` built on the
+now-known-broken chunking pattern was deliberately **not** kept (see `board.py`'s comment
+in its place). This is exactly the kind of finding the original plan flagged as the trigger
+to reconsider Unicorn vs. a real QEMU machine for this specific need -- not resolved this
+pass, see the roadmap.
+
+`emu/mvp.py`'s stage 2 budget was shortened accordingly (past this point it only ever
+times out uselessly in the WFE loop, so a short budget plus an honest "known WFE wait, not
+a failure" message is more useful than a long one) -- and fixing that surfaced a real
+reporting bug in the script itself: checking whether `board._stub.accesses` was non-empty
+to decide "did stage 2 hit something new" was wrong, since stage 1's own already-absorbed
+pokes leave stale entries there regardless of what stage 2 does. Fixed to check
+`board._halted` (set only by the stub-stop callback) instead.
+
 ### Real ARM exception entry, CPG, GIC, and OSTM0 added, 2026-09-08 (same day, third pass)
 
 Chasing the CPG stub hit below led somewhere much bigger: `body.bin` executes a genuine `SWI`
@@ -167,38 +224,43 @@ fine for this project's own non-distributed research use.
   miss real pre-MMU hardware pokes entirely).
 - **`exceptions.py`** — real ARMv7-A exception entry (`SWI`/`UDEF`/aborts/`IRQ`/`FIQ`), living
   next to `core.py` rather than `board.py` since it's generic CPU architecture, not
-  IC-7300-specific. See the Status section above for what this unlocked and the real Unicorn
-  API trap it took to get `VBAR` reading correctly.
+  IC-7300-specific. See the Status section above for what this unlocked, the real Unicorn API
+  trap it took to get `VBAR` reading correctly, and the chunked-execution correctness bug found
+  while trying to drive `trigger_irq()` periodically.
+- **`hint_instructions.py`** — works around a real Unicorn/QEMU Cortex-A9 gap (`WFE`/`WFI`/
+  `YIELD`/`SEV` aren't implemented) by skipping them as the architecturally-always-valid `NOP`
+  interpretation. Lives next to `core.py`/`exceptions.py` for the same "generic CPU behavior,
+  not IC-7300-specific" reason.
 - **`mvp.py`** — the runnable MVP check described above.
 
 ## Extension roadmap
 
-1. ~~**GPIO/port registers**~~, ~~**CPG**~~, ~~**GIC**~~, ~~**real ARM exception entry**~~ —
-   **all done, 2026-09-08**, see the Status section above. Diode-matrix/EEPROM-specific
-   behavior ([[diode-matrix]]) isn't modeled yet -- GPIO so far is the generic port register
-   file only, not any specific pin's real-world meaning (no diode scan simulation, no
-   RIIC2/EEPROM peripheral). The GIC has no real interrupt delivery/pending-state modeled,
-   only distributor/CPU-interface register storage plus an always-spurious `ICCIAR` — enough
-   for `body.bin`'s own init code, not enough for `IRQ`/`FIQ` to ever actually be taken yet.
-2. **Immediate next stub hit**: `L2C.REG0_CACHE_ID` (`0x3ffff000`, ARM PL310-style L2 cache
-   controller ID register) — likely another cheap, mostly-inert register-file addition like
-   `CPG`, unless something branches on the ID value or a real cache-maintenance operation
-   through this controller turns out to matter.
+1. ~~**GPIO/port registers**~~, ~~**CPG**~~, ~~**GIC**~~, ~~**real ARM exception entry**~~,
+   ~~**L2C**~~, ~~**MTU2**~~, ~~**RIIC0-2**~~, ~~**WFE/hint-instruction workaround**~~ — **all
+   done, 2026-09-08**, see the Status sections above. Diode-matrix/EEPROM-specific behavior
+   ([[diode-matrix]]) isn't modeled yet -- GPIO/RIIC2 so far are the generic register files
+   only, not any specific pin's real-world meaning or actual I2C protocol/EEPROM content. The
+   GIC has no real interrupt delivery/pending-state modeled, only distributor/CPU-interface
+   register storage plus an always-spurious `ICCIAR`.
+2. **Real timer interrupt delivery — attempted, shelved, 2026-09-08**: blocked on a genuine
+   Unicorn correctness bug (chunked `emu_start` calls corrupt ARM/Thumb state), not a modeling
+   gap on this project's side -- see the Status section above for the full isolation. Concrete
+   next steps if this gets picked back up, roughly in order of effort: (a) check whether a
+   newer Unicorn release fixes the chunking bug; (b) investigate whether the bug is specific to
+   `count`-limited stops specifically vs. any repeated `emu_start` call (e.g. does alternating
+   `until=`-based stops avoid it?); (c) if neither pans out, this is the trigger the original
+   plan flagged for graduating to a real QEMU machine for just this need. Until resolved,
+   anything past `body.bin`'s first `WFE` wait is unreachable.
 3. **SCIF UART** (one channel) piped to stdout — first real "see something happen" milestone;
-   register layout already documented in [[ic7300-signal-chain]].
-4. **Real timer interrupt delivery** — `peripherals/ostm.py`'s free-running counters exist but
-   raise no `IRQ`; `exceptions.py` can now enter an `IRQ` handler correctly (untested against a
-   real one so far, see its own verification-status note) but nothing yet *asserts* one. This
-   is the concrete next step toward FreeRTOS's own tick handler and first real context switch.
-   Open question to validate: whether Unicorn exposes a way to assert an external interrupt
-   line asynchronously (rather than the synchronous `SWI` trap already working) — a firm "no"
-   is the trigger to graduate to a real QEMU machine instead of fighting Unicorn's model.
-5. **SD-card block device + enough VFS** to run [[firmware-update]]'s own update orchestrator
+   register layout already documented in [[ic7300-signal-chain]]. Doesn't depend on interrupt
+   delivery being solved first, so it's a reasonable place to make progress in the meantime.
+4. **SD-card block device + enough VFS** to run [[firmware-update]]'s own update orchestrator
    inside the emulator — the big payoff: test a `tools/icom_fw`-repacked custom `body.bin` for
    "does it get accepted and boot" fully offline, ahead of (or instead of) the JTAG-gated live
-   test in `sdk/roadmap.md`'s Phase 0.
-6. **RIIC2/EEPROM and diode-matrix-specific pin behavior**, layered on top of the now-existing
+   test in `sdk/roadmap.md`'s Phase 0. Also doesn't strictly need interrupt delivery, though a
+   real driver may end up polling-vs-IRQ-waiting for card-ready in ways that need it eventually.
+5. **RIIC2/EEPROM and diode-matrix-specific pin behavior**, layered on top of the now-existing
    generic GPIO register file, to test region-code-gated behavior ([[diode-matrix]]) without
    hardware.
-7. **Lowest priority, most hardware-specific**: front-panel SCIF3 link, touch controller,
+6. **Lowest priority, most hardware-specific**: front-panel SCIF3 link, touch controller,
    DSP/FPGA co-simulation.
