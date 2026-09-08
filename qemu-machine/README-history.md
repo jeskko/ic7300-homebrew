@@ -606,3 +606,117 @@ hard as expected this session**:
   proved what actually happened *in real free-running time order* across multiple separate
   interrupt entries — the trace was what actually resolved bug 3, after stepping alone gave a
   falsely reassuring picture of a single successful call with no visibility into what came next.
+
+## 2026-09-09, continued: the RTOS-tick-counter lead is a red herring; a real front-panel RX
+## responder is what actually unblocks the handshake, and boot reaches real task activation
+
+Picking up immediately after the previous section's TXI work, with the concrete next step
+being "find what increments the RTOS tick/delay counter the identify handshake's own timeout
+polls". A `gdbrsp.py` hardware watchpoint (`Z2`/`z2`, added this session — QEMU's TCG gdbstub
+implements these generically, not ARM-specific) settled this fast and conclusively: both the
+handshake's outer counter and its own `subcnt` field get **zero writes across 120 continuous
+real seconds**, even with confirmed real OSTM0/scheduler activity happening the whole time.
+Chasing the tick-counter mechanism further (OSTM0's per-tick handler, `irq_context_switch_id86`,
+calls several genuinely empty stub functions — `FUN_200b93f8`, `FUN_200b9400` — that looked like
+plausible leads) would have been wasted effort: the counter isn't broken, nothing upstream of it
+ever needed to run, because the handshake's *primary* exit path (a real reply from the front
+panel, clearing its busy flag directly) was always the real fix needed — the fallback timeout
+was never going to matter once that existed. Pivoted to building the virtual front-panel RX
+responder the original plan (before the tick-counter detour) had already scoped.
+
+**Protocol groundwork, confirmed live before writing any responder code**: `scif3_frame_
+rx_statemachine` (found at `0x20036c68`; the raw disassembly alone left the exact register-
+tracking ambiguous, so a real Ghidra function was created at that address and fully decompiled
+before trusting any of it) polls real FDR/FRDR/FSR/LSR/SCR registers directly, not a software
+ring buffer as an earlier, less careful reading of the raw listing had suggested. `scif3_frame_
+dispatch_by_type` needs only a first-content-byte of 0xF0 (or 0xF1) to clear the handshake's
+busy flag — no real reply payload needed at all for the identify case specifically.
+
+**First responder design, and why it didn't survive contact with real testing**: feed a canned
+3-byte 0xFE/0xF0/0xFD reply through the exact same `frdr`/`rx_pending` path a real chardev byte
+would use, one byte at a time, each driving its own real RXI — mirroring how a real front panel
+would actually behave. This required getting *exactly* one byte visible per real interrupt, and
+every mechanism tried failed the same way, confirmed via live single-step traces each time:
+- Synchronous delivery (make the next byte available immediately, within the same FRDR-read
+  handler that consumed the previous one) let the guest's own drain loop (`while (FDR & 0x1f)
+  { byte = FRDR; }`, keeping only the *last* value read) consume all 3 queued bytes in one pass
+  before the per-byte frame-assembly logic below the loop ever got to look at any of them
+  individually -- only the trailing 0xFD's value was ever examined, with no 0xFE ever seen to
+  mark a frame in progress, so it was silently dropped as an incomplete frame.
+- Switching to a `QEMUBH` (`qemu_bh_schedule`) did not fix this. A live register-write trace
+  (`-d unimp -D <logfile>`, the tool that ended up resolving every stage of this investigation)
+  showed the next byte still becoming visible *before* the guest's own next FDR poll -- a
+  scheduled BH can still run interleaved within the same guest loop that scheduled it, at least
+  in this project's single-threaded TCG configuration.
+- A real `QEMUTimer` (even armed for just 1ns) looked like it had fixed the interleaving, based
+  on the same kind of register-write trace showing clean alternation. But a careful, fully fresh
+  single-step trace of an actual live exchange (breakpoint at the state machine's entry, then
+  single-stepping the *first* real invocation from a clean `-S` halt) showed all 3 bytes already
+  consumed by the time that very first RXI was serviced -- this build's TCG event loop processes
+  pending timers more eagerly than "the guest's own next handful of instructions" reliably
+  survives, and no timer delay short of a real, much-larger-than-instruction-count gap closes
+  that window. Concluded this class of fix isn't reliably achievable in this environment and
+  stopped trying to out-race the drain loop.
+
+**Second, final design — precompute the end state instead of racing to deliver it**: rather
+than feeding bytes through frdr fast enough, directly write the *result* a real byte-at-a-time
+exchange would have produced straight into guest RAM (via `address_space_write()`/`address_
+space_read()`, reading the firmware's own live pointer *values* first, never a hardcoded
+address -- the frame buffer, descriptor, and status fields are all reached through pointer
+*variables* at fixed literal-pool addresses, the exact same shape as the pointer-indirection
+gotcha the previous TXI session hit twice), then deliver *only* the genuinely-necessary
+terminator byte (0xFD) through the completely normal FRDR/RXI path. With the frame buffer's
+type byte, the descriptor's byte count, and the status "frame in progress" bit all already set
+as if 0xFE and 0xF0 had each been processed by a real earlier call, `scif3_frame_rx_
+statemachine`'s own real logic sees byte-count >= 2 and the frame-in-progress bit already
+clear on this one real call, and genuinely calls `scif3_frame_dispatch_by_type` -- no timing
+race of any kind, since there's only ever one byte in flight. Also fixed, same pass: RXI is
+level-triggered exactly like TXI, and nothing was ever lowering it once a byte was consumed
+(the raise-only-to-re-arm pattern elsewhere never needed an explicit lower before) -- caused a
+genuine interrupt storm (this same ISR re-entering continuously with FDR reading 0 and nothing
+to do) until a `qemu_irq_lower()` was added to the FRDR-read handler.
+
+**First real payoff, live-confirmed**: the identify handshake's busy flag (bit 0x80) cleared
+for the first time ever. But immediately surfaced a second bug of the same general shape: the
+real ACK sets status bits 0x60, and bit 0x40 of that same byte is exactly what `scif3_driver_
+pump_tick` reads as "send a 0xF1 keepalive ping" -- with no real serial timing anywhere in this
+model to pace it, ACKing the resulting 0xF1 frame the same way (the first responder version
+ACKed both 0xF0 and 0xF1) re-armed the same bit right back, producing a genuine, unbounded
+fe/f1/fd ping-pong (confirmed: tens of thousands of frames logged in the first dozen real
+seconds). Fixed by simply never ACKing type 0xF1 at all -- real hardware's own ping is
+presumably paced by something this project hasn't needed to find yet (a real timer, or a front
+panel that just doesn't reply instantly); not ACKing it sidesteps modeling that pacing entirely,
+since `pump_tick` clears its own ping-request bit before sending and nothing else ever sets it
+again once the responder stops re-arming it.
+
+**A second, distinct layer surfaced immediately after, confirmed live**: with the identify
+handshake's first wait loop now resolving for real, boot reached the handshake's own *second*
+wait loop for the first time -- a genuinely different blocking condition (status bit 0x04, set
+only by an ordinary type-0x00-0x1F frame's own successful dispatch), read directly off that
+loop's own disassembly rather than assumed. Confirmed via a real, previously-never-transmitted
+33-byte outbound status/data frame (type 0x00) appearing in the trace log for the first time in
+this whole project's history. Extended the responder to ACK any outbound type 0x00-0x1F the
+same general way (a 1-byte dummy-payload echo, matching just enough of `scif3_frame_dispatch_
+by_type`'s own length-validity check to be accepted) -- resolved cleanly, no new loop, and a
+second, different frame type (0x01, also new) went out and got ACKed right after.
+
+**The actual payoff**: boot then reached `cold_boot_hw_init`'s own `itron_act_tsk` call --
+a real ITRON RTOS task activation, confirmed via a full decompile of `cold_boot_hw_init` and a
+direct listing cross-check of the live PC. This is the single biggest milestone this whole
+`qemu-machine/` thread has existed to reach, and it fell out directly from getting the SCIF3
+handshake genuinely right rather than working around it. See README.md's Status section for
+the concrete new blocker found immediately past this point (a task-readiness counter,
+different from and unrelated to the SCIF3 one this section opened with, that doesn't advance
+yet either) and the next resume point.
+
+**Methodology notes worth carrying forward, both earned the hard way this session**:
+- GDB single-stepping an isolated interrupt entry proved a genuinely *misleading* signal more
+  than once here -- it can show one invocation's logic working correctly in complete isolation
+  while hiding a real problem in what happens immediately afterward (an interleaved next
+  delivery, an interrupt storm). A live, full-sequence `-d unimp` register-write trace was what
+  actually resolved every one of this session's real bugs; when the two disagree, trust the
+  full trace, not the isolated step.
+- A live hardware watchpoint (`Z2`/`z2`, generic in QEMU's TCG gdbstub) is a fast, conclusive
+  way to answer "does anything write here at all" for a dynamically-allocated RAM target that
+  static `references_to` analysis can't usefully search (no fixed literal address to look for).
+  Reach for it before spending real effort tracing a counter's *hypothetical* writer.

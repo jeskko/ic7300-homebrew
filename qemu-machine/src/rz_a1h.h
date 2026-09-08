@@ -131,10 +131,17 @@
  * index * 32 + bit, the same formula ostm.c's ID 134 already established)
  * -- SCIF-n's group is BRIn=221+4n, ERIn=222+4n, RXIn=223+4n, TXIn=224+4n;
  * TXI3 lands on 236, exactly matching the firmware's own 0xec literal
- * above -- a genuine independent cross-check, not just SVD-derived. Only
- * TXI is wired for now (nothing traced needs BRI/ERI/RXI yet). */
+ * above -- a genuine independent cross-check, not just SVD-derived.
+ * 2026-09-09: RXI wired too, needed for the virtual front-panel responder
+ * (see scif.c's own comment) -- RXI3 (235) already confirmed enabled in
+ * ISENABLER7 (`0x1e00` = bits 9-12 = BRI3/ERI3/RXI3/TXI3 all four, read
+ * live the same session TXI3 was confirmed) alongside TXI3, so no
+ * additional firmware-side arming was needed to use it. BRI/ERI still not
+ * wired -- nothing traced needs them. */
 #define RZA1H_SCIF_TXI_BASE0 224
 #define RZA1H_SCIF_TXI_STRIDE 4
+#define RZA1H_SCIF_RXI_BASE0 223
+#define RZA1H_SCIF_RXI_STRIDE 4
 
 /* mmc.c -- matches the real reference struct layout (mmc_iodefine.h, see
  * mmc.c's own comment) -- 0x80 bytes covers offset 0x00 (CE_CMD_SETH)

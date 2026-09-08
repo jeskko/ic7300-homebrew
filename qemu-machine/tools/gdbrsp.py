@@ -188,3 +188,20 @@ class GdbRsp:
         reply = self.read_packet()
         if reply != "OK":
             raise GdbRspError(f"remove_breakpoint({addr:#x}) error: {reply!r}")
+
+    # Watchpoints (`Z2`=write, `Z3`=read, `Z4`=access) -- QEMU's TCG-based
+    # gdbstub implements these generically (cpu_watchpoint_insert), not
+    # ARM-specific, added 2026-09-09 to find a write to a RAM address with
+    # no known static writer instead of guessing which function to trace.
+
+    def set_watchpoint(self, addr: int, length: int = 1, kind: int = 2):
+        self.send_packet(f"Z{kind},{addr:x},{length:x}")
+        reply = self.read_packet()
+        if reply != "OK":
+            raise GdbRspError(f"set_watchpoint({addr:#x}) error: {reply!r}")
+
+    def remove_watchpoint(self, addr: int, length: int = 1, kind: int = 2):
+        self.send_packet(f"z{kind},{addr:x},{length:x}")
+        reply = self.read_packet()
+        if reply != "OK":
+            raise GdbRspError(f"remove_watchpoint({addr:#x}) error: {reply!r}")

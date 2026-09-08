@@ -39,8 +39,100 @@
  * it (level- vs. edge-triggered, a redundant-raise-is-a-no-op gotcha, and
  * an emulator-only lost-edge artifact) -- verified end-to-end via a real
  * register-write trace, see qemu-machine/README-history.md's 2026-09-09
- * section. One IRQ line per instance; RXI is not wired -- no traced boot
- * path needs it yet.
+ * section.
+ *
+ * 2026-09-09 (fourth pass, same day): a minimal virtual front-panel
+ * responder, gated to channel 3 only (the confirmed real front-panel
+ * link, see the roles list above). With TXI now real,
+ * scif3_frontpanel_identify_handshake's outbound 0xF0 "identify" frame
+ * (0xFE, 0xF0, 0xFD) genuinely transmits, but the handshake's own
+ * *reply-wait* still blocks forever -- confirmed via a live hardware
+ * watchpoint that its own 75-count timeout fallback counter never gets a
+ * single write in 120 real seconds either, so waiting it out isn't a real
+ * option; only a genuine reply unblocks it. `scif3_frame_dispatch_by_type`
+ * (0x20036bb8, body.bin) needs nothing more than a first-content-byte of
+ * 0xF0 or 0xF1 to clear the handshake's own busy flag.
+ *
+ * Getting a reply recognized took two real designs. The first tried to
+ * model the exchange faithfully: recognize the complete outbound frame on
+ * TX, then feed a canned 3-byte 0xFE/0xF0/0xFD reply back byte-by-byte
+ * through the normal frdr/rx_pending/RXI path, exactly like a real
+ * chardev byte would arrive. `scif3_frame_rx_statemachine` (0x20036c68,
+ * confirmed via a created Ghidra function + full decompile, not just raw
+ * disassembly) polls real FDR/FRDR/FSR/LSR/SCR registers directly (not a
+ * software ring buffer as the raw listing alone first suggested) and
+ * keeps only the *last* byte read across its own internal drain loop
+ * (`while (FDR & 0x1f) { byte = FRDR; }`) -- real hardware never has more
+ * than one byte in that FIFO at a time (serial bytes arrive with real,
+ * far-longer-than-one-loop-iteration timing gaps), so this is harmless
+ * there, but it makes correctly modeling "exactly one byte visible per
+ * real RXI" essential here, and repeatedly not reliable: a synchronous
+ * next-byte delivery let the drain loop consume all 3 in one pass (only
+ * the trailing 0xFD's value was ever examined, with no 0xFE ever seen to
+ * mark a frame in progress); switching to a QEMUBH did not fix it either
+ * (confirmed via a live register-write trace: the next byte still became
+ * visible before the guest's own next FDR poll -- a scheduled BH can
+ * still run interleaved within the same guest loop that scheduled it, at
+ * least in this single-threaded TCG configuration); a real QEMUTimer
+ * (even a 1ns one) *looked* like it fixed the interleaving in the trace,
+ * but the very first live single-step trace of an actual exchange still
+ * showed all 3 bytes already consumed by the time the first RXI was even
+ * serviced -- this project's own TCG build processes pending timers far
+ * more eagerly than "the guest's own next few instructions" guarantees,
+ * and no delay short of a real, much-larger-than-instruction-count gap
+ * reliably avoids it. Not worth chasing further: modeling a UART's real
+ * byte-at-a-time timing has never been this project's goal.
+ *
+ * Second, and final, design: don't try to out-race the drain loop at
+ * all. Precompute the *end state* scif3_frame_rx_statemachine would have
+ * reached after genuinely processing 0xFE then 0xF0 one at a time --
+ * frame buffer byte 0 = 0xF0 (the type byte, confirmed from the decompile
+ * to land at `*DAT_20037584`), byte-count field = 2, and the driver's own
+ * status "frame in progress" bit cleared -- and write that directly into
+ * guest RAM via address_space_write() (using the real firmware pointer
+ * *values*, read live via address_space_read(), never hardcoded -- these
+ * live in a per-boot dynamically-placed struct at a fixed literal-pool
+ * *address*, not a fixed *value*, the same pointer-indirection shape this
+ * whole investigation kept tripping over). With that state already in
+ * place, delivering *only* the single terminator byte (0xFD) through the
+ * completely normal FRDR/RXI path is enough: scif3_frame_rx_statemachine
+ * sees byte-count >= 2 and the frame-in-progress bit already clear,
+ * exactly as if 0xFE and 0xF0 had each been its own real interrupt, and
+ * calls scif3_frame_dispatch_by_type for real. One byte, one RXI, no
+ * timing race of any kind -- and the real firmware code still parses its
+ * own reply through its own real state machine, just with two of its
+ * three inputs delivered by direct memory write instead of by (thoroughly
+ * unreliable, in this environment) emulated serial timing. Matches this
+ * project's established permissive-peripheral philosophy (mmc.c's virtual
+ * SD card, riic.c's virtual EEPROM) -- a plausible canned ACK is enough,
+ * no real front-panel-MCU protocol fidelity (an actual version string,
+ * real key states, real per-byte timing) is needed just to unblock boot.
+ * RXI's GIC ID (235, see RZA1H_SCIF_RXI_BASE0) was already enabled by
+ * firmware alongside TXI3, confirmed live -- no extra firmware-side
+ * arming needed.
+ *
+ * 2026-09-09 (fifth pass, same day): with the identify handshake's ACK
+ * working, live testing found a real *second* layer needing the same
+ * treatment -- the handshake's own second wait loop (right after the
+ * first, in scif3_frontpanel_identify_handshake) blocks on a genuinely
+ * different signal (status bit 0x04, set only by an *ordinary*
+ * type-0x00-0x1F frame's own successful dispatch, confirmed by reading
+ * that loop's real disassembly directly), and boot reaches it as soon as
+ * the identify ACK lets the first loop through -- confirmed live via a
+ * real outbound 33-byte status/data frame (type 0x00) that had never
+ * been seen transmitted before this session. `rza1h_scif3_frontpanel_ack`
+ * below handles both shapes now. One real bug found extending it, same
+ * family as the ping-pong loop above: the identify ACK's own status bits
+ * (0x60) include bit 0x40, which `scif3_driver_pump_tick` reads as "send
+ * a keepalive ping" -- ACKing *that* resulting 0xF1 frame the same way
+ * re-armed the same bit right back, producing a genuine, unbounded
+ * fe/f1/fd loop (confirmed: tens of thousands of frames in the first
+ * dozen real seconds). Fixed by simply never ACKing type 0xF1 -- real
+ * hardware's own ping is presumably paced by something (a real timer, or
+ * a front panel that doesn't reply instantly) this project hasn't needed
+ * to find yet; not ACKing it sidesteps needing to model that pacing at
+ * all, since pump_tick clears the ping-request bit itself before sending
+ * and nothing else sets it again.
  */
 
 #include "qemu/osdep.h"
@@ -52,6 +144,7 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "system/address-spaces.h"
 
 #include "rz_a1h.h"
 
@@ -61,7 +154,9 @@ struct RZA1HScifState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     CharFrontend chr;
-    qemu_irq irq; /* TXI (transmit-complete) only -- see this file's comment */
+    qemu_irq irq_tx; /* TXI (transmit-complete) */
+    qemu_irq irq_rx; /* RXI (receive-data-full) -- channel 3 (front-panel
+                       * responder) only, see this file's own comment */
     uint32_t channel; /* 0-7, log-label only -- see this file's own comment */
 
     uint16_t smr;
@@ -74,6 +169,16 @@ struct RZA1HScifState {
 
     uint8_t  frdr;
     bool     rx_pending;
+
+    /* Virtual front-panel responder state (channel 3 only) -- see this
+     * file's own comment for the full derivation. Tracks the outbound
+     * frame currently being assembled on the TX side just enough to
+     * recognize a complete 0xFE/<type>/.../0xFD frame and capture its
+     * type byte; frame *contents* beyond the type byte are not parsed
+     * (not needed for the one canned reply this model sends). */
+    int      tx_frame_pos;   /* -1 = idle (waiting for 0xFE); 0 = next byte
+                               * is the type byte; >0 = mid-frame */
+    uint8_t  tx_frame_type;
 };
 
 #define REG_SMR  0x00
@@ -98,6 +203,23 @@ struct RZA1HScifState {
 #define SCR_RE  (1 << 4)
 #define SCR_TIE (1 << 7)
 
+/* Fixed literal-pool addresses (not the buffers themselves -- each holds
+ * a per-boot dynamically-placed *pointer value*, read live) that
+ * body.bin's own SCIF3 driver uses. Confirmed live via GDB against a
+ * v1.42 boot; see this file's own comment and README-history.md's
+ * 2026-09-09 section for the full derivation. Only used by the virtual
+ * front-panel responder below (channel 3). */
+#define SCIF3_FRAME_BUF_PTR_ADDR 0x20037584 /* -> RX frame assembly buffer;
+                                              * byte 0 is the dispatched
+                                              * frame's "type" */
+#define SCIF3_DESC_PTR_ADDR      0x2003758c /* -> shared TX/RX descriptor;
+                                              * byte 0 is the RX byte count
+                                              * scif3_frame_rx_statemachine
+                                              * itself maintains */
+#define SCIF3_STATUS_PTR_ADDR    0x20037588 /* -> shared driver status
+                                              * flags; bit 0 is the RX
+                                              * "frame in progress" flag */
+
 static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HScifState *s = RZA1H_SCIF(opaque);
@@ -113,16 +235,34 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
         return 0; /* write-only on real hardware */
     case REG_FSR:
         /* TDFE/TEND always set -- see module comment; DR/RDF reflect
-         * whether a real received byte (from the chardev backend) is
-         * waiting in frdr. */
+         * whether a real received byte (from the chardev backend, or the
+         * front-panel responder below) is waiting in frdr. */
         return FSR_TDFE | FSR_TEND | (s->rx_pending ? (FSR_DR | FSR_RDF) : 0);
-    case REG_FRDR:
+    case REG_FRDR: {
+        uint8_t val = s->frdr;
         s->rx_pending = false; /* reading consumes the byte, real hardware too */
-        return s->frdr;
+        /* RXI is level-triggered exactly like TXI (real hardware: RIE &
+         * RDF) -- lower it now that there's genuinely nothing left
+         * pending. Found needing this the hard way while building the
+         * front-panel responder below: without an explicit lower here,
+         * the line stayed permanently high after its one real byte was
+         * consumed (the lower+raise pair elsewhere only ever *re-asserts*
+         * it), causing a real interrupt storm -- this same ISR
+         * re-entering continuously with nothing left to deliver. REG_FSR
+         * writes are still deliberately a no-op (see that case's own
+         * comment) -- lowering here, tied to the real "no more data"
+         * condition, is the correct place, not there. */
+        qemu_irq_lower(s->irq_rx);
+        return val;
+    }
     case REG_FCR:
         return s->fcr;
     case REG_FDR:
-        return 0; /* both FIFOs always empty -- see module comment */
+        /* Both FIFOs always empty except the RX count this model tracks
+         * for the front-panel responder (see REG_FRDR) -- real hardware's
+         * low 5 bits are the RX count, matching FUN_20360b34's `& 0x1f`
+         * mask on this exact register in scif3_frame_rx_statemachine. */
+        return s->rx_pending ? 1 : 0;
     case REG_SPTR:
         return s->sptr;
     case REG_LSR:
@@ -132,6 +272,59 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
     default:
         return 0;
     }
+}
+
+/* Virtual front-panel responder (channel 3 only) -- see this file's own
+ * comment for the full derivation of why this precomputes state directly
+ * in guest RAM instead of feeding a reply through frdr one byte at a
+ * time. Called once a complete outbound frame is seen on the TX side.
+ *
+ * Two shapes, both ending with the caller delivering one real terminator
+ * byte (0xFD) through the normal FRDR/RXI path -- see the REG_FTDR case
+ * below:
+ *   - type 0xF0 (the boot-time identify request): a bare ACK, no payload
+ *     -- matches the real 0xFE/0xF0/0xFD frame this model's own TX side
+ *     sends for the same request, and is all `scif3_frame_dispatch_by_type`
+ *     needs to clear the handshake's busy flag.
+ *   - type 0x00-0x1F (an ordinary status/data frame -- the handshake's
+ *     own *second* wait loop, reached once the identify ACK above lets it
+ *     continue, blocks on one of these next, confirmed live): a 1-byte
+ *     dummy-payload echo of the same type. Real front-panel-MCU protocol
+ *     fidelity (an actually meaningful reply payload) isn't needed, only
+ *     enough real structure for scif3_frame_dispatch_by_type's own length
+ *     check to accept it and set its "real frame received" status bit. */
+static void rza1h_scif3_frontpanel_ack(uint8_t type)
+{
+    AddressSpace *as = &address_space_memory;
+    uint32_t frame_buf, desc, status_addr;
+    uint8_t byte, status;
+    bool identify = (type == 0xF0);
+
+    address_space_read(as, SCIF3_FRAME_BUF_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
+                       &frame_buf, 4);
+    address_space_read(as, SCIF3_DESC_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
+                       &desc, 4);
+    address_space_read(as, SCIF3_STATUS_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
+                       &status_addr, 4);
+
+    byte = type; /* frame buffer byte 0 = the dispatched frame's type */
+    address_space_write(as, frame_buf, MEMTXATTRS_UNSPECIFIED, &byte, 1);
+    if (!identify) {
+        byte = 0; /* one dummy payload byte, at frame buffer byte 1 */
+        address_space_write(as, frame_buf + 1, MEMTXATTRS_UNSPECIFIED,
+                            &byte, 1);
+    }
+
+    /* desc byte count, as if 0xFE then <type> (then, for the generic
+     * case, one payload byte) were each already processed by a real
+     * scif3_frame_rx_statemachine call. */
+    byte = identify ? 2 : 3;
+    address_space_write(as, desc, MEMTXATTRS_UNSPECIFIED, &byte, 1);
+
+    address_space_read(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
+    status &= 0xFE; /* clear bit 0 -- "frame in progress", set by a real
+                      * 0xFE byte's own processing */
+    address_space_write(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
 }
 
 static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
@@ -168,15 +361,11 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
          * transition even when the condition was "already true") --
          * applied the same way here on every TIE-enabling write, not just
          * the rising edge. */
-        if (s->channel == 3) {
-            qemu_log_mask(LOG_UNIMP, "rza1h-scif3: SCR write %#x -> %#x\n",
-                         s->scr, (unsigned)value);
-        }
         if (value & SCR_TIE) {
-            qemu_irq_lower(s->irq);
-            qemu_irq_raise(s->irq);
+            qemu_irq_lower(s->irq_tx);
+            qemu_irq_raise(s->irq_tx);
         } else {
-            qemu_irq_lower(s->irq);
+            qemu_irq_lower(s->irq_tx);
         }
         s->scr = value;
         break;
@@ -194,8 +383,59 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
          * byte, as every byte after a frame's first will be) -- explicit
          * lower+raise for the same reason as the REG_SCR case above. */
         if (s->scr & SCR_TIE) {
-            qemu_irq_lower(s->irq);
-            qemu_irq_raise(s->irq);
+            qemu_irq_lower(s->irq_tx);
+            qemu_irq_raise(s->irq_tx);
+        }
+        /* Virtual front-panel responder (channel 3 only) -- see this
+         * file's own comment. Tracks byte position within the outbound
+         * frame just enough to capture the type byte and recognize the
+         * terminator; doesn't otherwise parse frame contents (real 0xFF
+         * escape sequences in longer, unrelated frame types could confuse
+         * this simple tracking, but the only frame this model ever acts
+         * on -- the bare 3-byte 0xF0 identify request -- never contains
+         * one, so this is a deliberately narrow, sufficient
+         * simplification, not a general frame parser).
+         *
+         * Only 0xF0 (not 0xF1) is ever ACKed -- found needing this
+         * restriction the hard way, live: `scif3_frame_dispatch_by_type`'s
+         * own 0xF0 ACK sets status bits 0x60, and bit 0x40 of that same
+         * byte is exactly what `scif3_driver_pump_tick` reads as "send a
+         * 0xF1 keepalive ping" -- with no real serial timing to pace it,
+         * ACKing that resulting 0xF1 the same way re-set bit 0x40 right
+         * back, producing a genuine, self-sustaining fe/f1/fd ping-pong
+         * that never stopped on its own (confirmed: 65k+ frames in the
+         * first 12 real seconds alone). On real hardware this ping is
+         * presumably paced by something real (an actual timer, or a
+         * front panel that doesn't reply instantly) this project hasn't
+         * needed to find yet -- simply never ACKing 0xF1 sidesteps the
+         * whole question without needing to model that pacing: pump_tick
+         * clears bit 0x40 itself before sending, so with nothing setting
+         * it again, the ping fires exactly once and the driver settles. */
+        if (s->channel == 3) {
+            if (byte == 0xFE) {
+                s->tx_frame_pos = 0;
+            } else if (s->tx_frame_pos == 0) {
+                s->tx_frame_type = byte;
+                s->tx_frame_pos = 1;
+            } else if (s->tx_frame_pos >= 1) {
+                if (byte == 0xFD) {
+                    if (s->tx_frame_type == 0xF0 || s->tx_frame_type < 0x20) {
+                        qemu_log_mask(LOG_UNIMP,
+                            "rza1h-scif3: front-panel responder: canned "
+                            "ACK for outbound type %#x\n", s->tx_frame_type);
+                        rza1h_scif3_frontpanel_ack(s->tx_frame_type);
+                        s->frdr = 0xFD; /* the one byte actually delivered
+                                          * through the normal RXI path --
+                                          * see rza1h_scif3_frontpanel_ack's
+                                          * own comment for why the other
+                                          * two aren't */
+                        s->rx_pending = true;
+                        qemu_irq_lower(s->irq_rx);
+                        qemu_irq_raise(s->irq_rx);
+                    }
+                    s->tx_frame_pos = -1;
+                }
+            }
         }
         break;
     case REG_FSR:
@@ -270,6 +510,8 @@ static void rza1h_scif_reset(DeviceState *dev)
     s->emr = 0;
     s->frdr = 0;
     s->rx_pending = false;
+    s->tx_frame_pos = -1;
+    s->tx_frame_type = 0;
 }
 
 static void rza1h_scif_realize(DeviceState *dev, Error **errp)
@@ -288,7 +530,8 @@ static void rza1h_scif_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &rza1h_scif_ops, s,
                           TYPE_RZA1H_SCIF, 0x2C);
     sysbus_init_mmio(sbd, &s->iomem);
-    sysbus_init_irq(sbd, &s->irq);
+    sysbus_init_irq(sbd, &s->irq_tx);
+    sysbus_init_irq(sbd, &s->irq_rx);
 }
 
 static const Property rza1h_scif_properties[] = {

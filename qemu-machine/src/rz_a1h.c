@@ -264,6 +264,10 @@ static void rza1h_init(MachineState *machine)
                            qdev_get_gpio_in(gic,
                                RZA1H_SCIF_TXI_BASE0 + i * RZA1H_SCIF_TXI_STRIDE
                                    - RZA1H_GIC_NUM_INTERNAL));
+        sysbus_connect_irq(SYS_BUS_DEVICE(scif), 1,
+                           qdev_get_gpio_in(gic,
+                               RZA1H_SCIF_RXI_BASE0 + i * RZA1H_SCIF_RXI_STRIDE
+                                   - RZA1H_GIC_NUM_INTERNAL));
     }
 
     /* Extension-roadmap item 5: real MMCIF command/response/data protocol,

@@ -57,7 +57,7 @@ Source: service manual "[DISPLAY UNIT]" IC list screenshot (2026-08-27).
 | Ref | Part | Role |
 |---|---|---|
 | IC101 | TPS61161ADRVR | LED backlight boost driver |
-| IC152 | UC6528XBNQ4GRC | Likely display/touch controller — function not confirmed |
+| IC152 | UC6528XBNQ4GRC | Likely display/touch controller — function not confirmed. **2026-09-09**: checked for a public datasheet, none found via easy sources — this part's protocol will need reverse engineering from scratch (firmware disassembly and/or live hardware tracing) if/when it becomes an actual blocker, not something to look up |
 | IC501 | R5F104LCAFB, marked **`SX-3765C-1`** | **Display unit's own MCU** (Renesas RL78 family) — this **confirms** the long-running "SX3765" identity question from [[multi-cpu-images]]: every `"SX3765 Vx.xx-yyy"` string found in the main firmware is a compatibility/version check against *this* chip's part number, not an embedded second-processor firmware image. Matches the partially-legible schematic label `(UX-3765C)` guessed at in [[hardware-debug-access]] — that was a misread of `S` as `U` |
 
 ## RF unit (separate board)
