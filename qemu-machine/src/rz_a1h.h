@@ -103,4 +103,12 @@
 #define RZA1H_SCIF_COUNT 8
 #define TYPE_RZA1H_SCIF "rza1h-scif"
 
+/* mmc.c -- matches the real reference struct layout (mmc_iodefine.h, see
+ * mmc.c's own comment) -- 0x80 bytes covers offset 0x00 (CE_CMD_SETH)
+ * through 0x7c (CE_VERSION) inclusive. First-pass plain storage only,
+ * real bit-level command/response semantics not yet confirmed. */
+#define RZA1H_MMC_BASE 0xE804C800
+#define RZA1H_MMC_SIZE 0x00000080
+#define TYPE_RZA1H_MMC "rza1h-mmc"
+
 #endif

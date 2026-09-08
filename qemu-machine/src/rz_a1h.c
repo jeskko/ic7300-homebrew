@@ -107,6 +107,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *spi_boot_status;
     DeviceState *gpio;
     DeviceState *l2c;
+    DeviceState *mmc;
     size_t i;
 
     cpu = ARM_CPU(cpu_create(machine->cpu_type));
@@ -239,6 +240,12 @@ static void rza1h_init(MachineState *machine)
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(scif), 0,
                                 RZA1H_SCIF0_BASE + i * RZA1H_SCIF_STRIDE, 0);
     }
+
+    /* Extension-roadmap item 5: real MMCIF command/response/data protocol,
+     * see mmc.c's own comment. */
+    mmc = qdev_new(TYPE_RZA1H_MMC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(mmc), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(mmc), 0, RZA1H_MMC_BASE, 0);
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }

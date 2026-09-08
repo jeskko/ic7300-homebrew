@@ -110,6 +110,17 @@ time.
   `emu/peripherals/*.py` module. CPG/MTU2/RIIC0-2 (plain storage, no behavior) don't get a
   dedicated file each — `rz_a1h.c`'s `add_plain_ram_region()` covers them with bare RAM
   regions, the simplest possible C equivalent of "arbitrary read/write, no side effects".
+  `scif.c` (8 real SCIF UARTs) and `mmc.c` (the MMCIF SD/MMC controller) are genuinely new
+  work, not ports — no `emu/peripherals/` Python original exists for either, see their own
+  README sections above.
+- **`tools/gdbrsp.py`** / **`tools/test_irq.py`** / **`tools/trial_irq.py`** — the raw
+  GDB-remote-serial-protocol driver, the single-shot IRQ-delivery test, and the
+  repeated-trial escape-rate measurement (see the MMC section above for why the latter
+  exists — a single boot snapshot isn't a reliable regression test once real
+  interrupt-driven scheduling is involved).
+- **`tools/test_mmc.py`** — standalone validation of `mmc.c`'s command/response/data
+  protocol against a small test disk image, independent of whether body.bin's own driver
+  has been found yet.
 - **`patches/hw-arm-build.patch`** — the one small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in a pinned, vendored QEMU checkout. Kept as a patch rather than a
   fork since this is private and pinned, not meant to be upstreamed.
@@ -118,8 +129,6 @@ time.
 - **`tools/build_flash.py`** — thin wrapper around the already-existing, already-tested
   `emu/flash_image.py` (no reimplementation of the container-offset-correction logic) —
   produces the flat flash image `rz_a1h.c` loads via `-kernel`.
-- **`tools/gdbrsp.py`** / **`tools/test_irq.py`** — the raw GDB-remote-serial-protocol driver
-  and the IRQ-delivery investigation script built around it, see the Status section above.
 - Gitignored: `qemu-src/` (recreated by `setup.sh`), `flash.bin` (recreated by `build_flash.py`).
 
 ## Running it
@@ -166,6 +175,78 @@ of earlier snapshots. **Lesson for later sessions**: don't conclude "stuck" from
 snapshot showing IRQ-mode CPSR near the start of RAM -- read `LR` first, it settles whether
 this is a real hang or just an ordinary ISR-in-progress snapshot.
 
+## MMC/SD host controller (extension-roadmap item 5, first pass, 2026-09-08)
+
+`mmc.c` -- a real, protocol-level model of the RZ/A1H's MMCIF (MMC Host Interface), the one
+hardware block servicing the 4-bit SD bus this schematic wires up (`SD_CMD`/`SD_CLK`/
+`SD_D0`-`D3`/`SD_WP` on `P4_8`-`P4_14`, per `notes/ic7300-signal-chain.md`). This is the
+`sdk/roadmap.md` Phase 0 payoff item -- a fully-offline way to test whether a custom
+`body.bin` gets accepted and boots, without JTAG -- and the first peripheral in this
+directory whose bit-level layout came from the real Renesas hardware manual (Chapter 51,
+pages 51-1 to 51-42) rather than `~/Downloads/rza1.svd` (which lists this peripheral's
+register names/offsets but zero bit fields, unlike every other peripheral here).
+
+**What's implemented**: the real register set (`CE_CMD_SETH`/`SETL`, `CE_ARG`,
+`CE_BLOCK_SET`, `CE_RESP0`-`3`, `CE_INT`, `CE_HOST_STS1`/`2`, `CE_DETECT`, etc., all at their
+real bit positions) plus a permissive virtual SD card sharing the same device (real MMCIF
+host-controller behavior and a fake-but-protocol-correct card are simplest to model
+together here, see the file's own comment) -- `CMD0`/`CMD8`/`CMD55`+`ACMD41`/`CMD2`/`CMD3`/
+`CMD9`/`CMD7`/`CMD16`/`CMD17`/`CMD18`/`CMD24`/`CMD12`/`CMD13`, always reporting SDHC
+(high-capacity, so read/write command arguments are block indices, not byte addresses) and
+a card permanently "inserted". A real, documented MMCIF-specific quirk worth remembering:
+`CE_CMD_SETH`'s own name is backwards from its address -- it holds the notional register's
+*upper* 16 bits despite living at the *lower* offset (`+0x00`, with `CE_CMD_SETL` at
+`+0x02`) -- and writing it is what the manual says triggers command transmission, regardless
+of whether software writes it as its own 16-bit store or as half of a combined 32-bit write.
+Backed by a flat raw disk image via the `"image"` device property (`-global
+rza1h-mmc.image=/path/to/file.img`) -- reads with no image configured (or past its end)
+synthesize zero blocks rather than faulting.
+
+**Validated standalone**, the same methodology this session already used for GIC/OSTM0:
+`tools/test_mmc.py` drives a full real identification sequence against a small test image
+with known per-block content and confirms every response, then single-block, multi-block
+(with auto-`CMD12`), and write-then-read-back all round-trip correctly.
+
+**Not yet found: where body.bin's own SD driver actually is.** A direct whole-image search
+for this peripheral's base address (`0xE804C800`) as a literal 32-bit word, and a Ghidra
+`references_to` check, both came back with **zero hits** — a real, currently-unexplained
+negative result. Either the driver code sits in a not-yet-disassembled region (this
+project's own established recurring pattern — see the OSTM0-arming-code find two commits
+back in this same file) or it loads the base via a split `MOVW`/`MOVT` pair a literal-word
+search can't find, or (least likely, given the schematic's own native 4-bit-bus wiring)
+SD access doesn't go through this controller at all. Confirmed empirically too: running an
+untouched boot for 10 real seconds with `-d unimp` produced zero accesses to this device at
+all — SD-card access isn't part of the boot path this project has already traced (matches
+`notes/firmware-update.md`: the update flow is reached via the SD menu, `sd_menu_dispatch_
+task` case `0xb`, an on-demand user action, not anything boot-time).
+
+**One real scare while testing this, resolved — not a regression, a lesson worth keeping.**
+After adding `mmc.c`, a couple of `tools/test_irq.py` runs showed the CPU still parked in the
+idle loop after arming OSTM0 -- looked exactly like the escape-rate regressing. Built
+`tools/trial_irq.py` (manages the QEMU process directly via `subprocess.Popen`, sidestepping
+this session's own repeated shell pkill/pgrep self-match footguns) to measure the *rate*
+across repeated trials rather than reacting to single samples: ~50% escaped with `mmc.c`
+present, ~65% with it temporarily `#if 0`'d out and rebuilt -- indistinguishable given the
+sample size, and both a world away from the guaranteed-0% rate before real IRQ delivery
+worked at all (this session's very first fix). **Reframed, this makes complete sense**: once
+a real periodic tick genuinely drives real scheduling, the system spends real wall-clock time
+actually *running its normal workload*, not just idling — a coarse sample landing on "doing
+real work" versus "idle" a roughly a coin flip's worth of the time is expected behavior for a
+working scheduler, not evidence of anything wrong. **Lesson**: a single boot-snapshot
+comparison is not a reliable regression test once real interrupt-driven scheduling is
+involved -- use `tools/trial_irq.py`'s repeated-trial approach (or at minimum several
+independent fresh-boot trials) before concluding a change regressed IRQ delivery.
+
+**Next steps**: (1) find body.bin's real SD/MMCIF driver, most likely by triggering
+`firmware_update_main`/`sd_menu_dispatch_task` directly via GDB (forcing PC + a plausible
+register/stack state) rather than waiting for it to run on its own, since nothing reaches it
+during ordinary boot; (2) build a real FAT-formatted card image (`tools/build_sdcard.py`,
+not yet written) containing a repacked, byte-patched update container from `tools/icom_fw`,
+matching the exact on-disk shape `firmware_update_main` expects; (3) see whether the whole
+chain -- MMCIF command sequence, this project's own (non-FatFs, see
+`notes/sd-card-filesystem-security.md`) VFS layer, the update orchestrator's checksum/flash-
+write logic -- actually accepts and would boot a custom `body.bin`, entirely offline.
+
 ## Extension roadmap
 
 Items 1 and 2 from the original plan are both **done** (2026-09-08, second pass) — see the
@@ -187,9 +268,14 @@ untouched boot) and statically (direct disassembly of the arming code at `0x200b
    plain-storage ones (CPG ×2 clusters, MTU2, RIIC0-2). Spot-checked against a live boot
    (masked set/clear + `PNOT` toggle on GPIO, `CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear on
    L2C, plain roundtrip on the rest) — no regression on the IRQ-delivery test either.
-4. ~~SCIF UART output~~ — done, same day: `scif.c`, see its own section above.
-5. Now that (1)-(4) are done, the same downstream roadmap `emu/README.md` already lists:
-   SD-card/VFS testing for `sdk/roadmap.md`'s Phase 0, the big payoff. Real SCIF traffic
-   hasn't actually been observed yet in a boot run (nothing's confirmed to write to any SCIF
-   channel during the portion of boot exercised so far) — worth a longer real-time run with
-   `-d unimp` to see if anything shows up before assuming a driver needs to be poked manually.
+4. ~~SCIF UART output~~ — done, same day: `scif.c`, see its own section above. Real SCIF
+   traffic hasn't actually been observed yet in a boot run (nothing's confirmed to write to
+   any SCIF channel during the portion of boot exercised so far) — worth a longer real-time
+   run with `-d unimp` to see if anything shows up before assuming a driver needs to be
+   poked manually.
+5. **SD-card/VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — first pass done, same day:
+   `mmc.c`, a real protocol-level MMCIF model, validated standalone (`tools/test_mmc.py`).
+   See its own section above for what's next: body.bin's real SD driver hasn't been found or
+   triggered yet (zero static xrefs to the MMCIF base, zero dynamic accesses during a plain
+   boot), and no real FAT-formatted card image with a repacked update container has been
+   built yet either — both still open, this is genuinely a multi-session-scale item.
