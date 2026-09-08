@@ -4,10 +4,13 @@
  * A from-scratch QEMU machine for a SoC QEMU has no board support for --
  * see qemu-machine/README.md for why this exists (the Unicorn-based
  * emulator in emu/ hit a real engine limitation: no correctly-delivered
- * asynchronous interrupt injection) and what's deliberately deferred out of
- * this first slice (every peripheral except the GIC and one real timer
- * falls through to QEMU's own generic "unimplemented-device", exactly
- * mirroring emu/peripherals/stub.py's role in the Unicorn version).
+ * asynchronous interrupt injection). The first slice modeled only the GIC
+ * and two OSTM timers; 2026-09-08's second pass (after confirming real IRQ
+ * delivery and finding body.bin's real tick source) added the rest of
+ * emu/peripherals/'s modules -- GIC/OSTM0/OSTM1/GPIO/L2C/CPG/MTU2/RIIC0-2
+ * are now real. Everything else still falls through to QEMU's own generic
+ * "unimplemented-device", the same role emu/peripherals/stub.py plays in
+ * the Unicorn version.
  *
  * Deliberately does *not* use hw/arm/boot.c's arm_load_kernel() -- that
  * machinery is Linux-boot-oriented (kernel image format detection, device
@@ -62,6 +65,25 @@ static const struct RzA1hIoRegion rza1h_io_regions[] = {
     { "io-ffff0000",              0xFFFF0000, 0x00010000 },
 };
 
+/* CPG/MTU2/RIIC (see rz_a1h.h's own comments on each) are, like their
+ * emu/peripherals/ Python originals, plain read/write storage with zero
+ * side effects modeled -- a bare RAM region is the simplest and most
+ * direct C equivalent of "arbitrary read/write, no behavior", not a
+ * simplification of anything those Python modules actually did. Needs
+ * the `_overlap` variant since each of these ranges sits inside the
+ * broader "io-fcfe0000" unimplemented-device catch-all mapped later in
+ * rza1h_init() -- see spi_boot_status's own comment for why plain
+ * memory_region_add_subregion() can't be used for a sub-range of an
+ * already-mapped sibling region. */
+static void add_plain_ram_region(MemoryRegion *sysmem, const char *name,
+                                 hwaddr base, hwaddr size)
+{
+    MemoryRegion *mr = g_new(MemoryRegion, 1);
+
+    memory_region_init_ram(mr, NULL, name, size, &error_fatal);
+    memory_region_add_subregion_overlap(sysmem, base, mr, 0);
+}
+
 static void rza1h_cpu_reset(void *opaque)
 {
     ARMCPU *cpu = opaque;
@@ -82,6 +104,8 @@ static void rza1h_init(MachineState *machine)
     DeviceState *ostm0;
     DeviceState *ostm1;
     DeviceState *spi_boot_status;
+    DeviceState *gpio;
+    DeviceState *l2c;
     size_t i;
 
     cpu = ARM_CPU(cpu_create(machine->cpu_type));
@@ -171,6 +195,34 @@ static void rza1h_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(spi_boot_status), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(spi_boot_status), 0,
                             RZA1H_SPI_BOOT_STATUS_BASE, 0);
+
+    /* Extension-roadmap item 3, 2026-09-08: port the remaining Unicorn-side
+     * peripherals (emu/peripherals/{gpio,cpg,l2c,mtu2,riic}.py) to real
+     * devices here, now that (1) real IRQ delivery and (2) body.bin's real
+     * tick source are both confirmed working -- see README.md's Status
+     * section. gpio.c/l2c.c carry real behavior (masked set/clear
+     * registers, PL310 cache-ID/REG7 semantics) so they're dedicated
+     * devices; cpg/mtu2/riic are plain storage, so add_plain_ram_region()
+     * covers them without a dedicated .c file each (see its own comment). */
+    gpio = qdev_new(TYPE_RZA1H_GPIO);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(gpio), 0, RZA1H_GPIO_BASE, 0);
+
+    /* l2c.c's own address (0x3ffff000) isn't inside any unimplemented-device
+     * range above -- it was simply unmapped before this, so a plain (non-
+     * overlap) mapping is correct and sufficient here. */
+    l2c = qdev_new(TYPE_RZA1H_L2C);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(l2c), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(l2c), 0, RZA1H_L2C_BASE);
+
+    add_plain_ram_region(sysmem, "rza1h.cpg-main",
+                         RZA1H_CPG_MAIN_BASE, RZA1H_CPG_MAIN_SIZE);
+    add_plain_ram_region(sysmem, "rza1h.cpg-deep-standby",
+                         RZA1H_CPG_DEEP_STANDBY_BASE, RZA1H_CPG_DEEP_STANDBY_SIZE);
+    add_plain_ram_region(sysmem, "rza1h.mtu2", RZA1H_MTU2_BASE, RZA1H_MTU2_SIZE);
+    add_plain_ram_region(sysmem, "rza1h.riic0", RZA1H_RIIC0_BASE, RZA1H_RIIC_SIZE);
+    add_plain_ram_region(sysmem, "rza1h.riic1", RZA1H_RIIC1_BASE, RZA1H_RIIC_SIZE);
+    add_plain_ram_region(sysmem, "rza1h.riic2", RZA1H_RIIC2_BASE, RZA1H_RIIC_SIZE);
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }

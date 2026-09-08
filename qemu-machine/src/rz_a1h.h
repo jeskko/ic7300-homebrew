@@ -52,4 +52,45 @@
 #define RZA1H_SPI_BOOT_STATUS_BASE 0x3FEFA048
 #define TYPE_RZA1H_SPI_BOOT_STATUS "rza1h-spi-boot-status"
 
+/* All addresses below are already-confirmed ground truth carried over
+ * unchanged from the matching emu/peripherals/ Python module (see each C
+ * file's own comment for the full derivation) -- 2026-09-08's port of the
+ * remaining Unicorn-side peripherals to real QEMU devices. */
+
+/* gpio.c -- matches emu/peripherals/gpio.py's PORT_BASE, one MMIO claim
+ * covering both the PORT_BASE and IBC_BASE clusters (IBC_BASE is
+ * PORT_BASE + 0x4000, see gpio.py's own IBC_BASE constant) since
+ * board.py registers them as a single region too. */
+#define RZA1H_GPIO_BASE            0xFCFE3000
+#define RZA1H_GPIO_SIZE            0x00005000
+#define RZA1H_GPIO_IBC_REL_OFFSET  0x4000
+#define TYPE_RZA1H_GPIO "rza1h-gpio"
+
+/* l2c.c -- matches emu/peripherals/l2c.py's BASE/SIZE (real PL310 base). */
+#define RZA1H_L2C_BASE 0x3FFFF000
+#define RZA1H_L2C_SIZE 0x00001000
+#define TYPE_RZA1H_L2C "rza1h-l2c"
+
+/* cpg.c is not a dedicated device -- see rz_a1h.c: matches
+ * emu/peripherals/cpg.py's two plain-storage clusters exactly, wired as
+ * two bare RAM regions (no side effects modeled, same as the Python
+ * version). */
+#define RZA1H_CPG_MAIN_BASE         0xFCFE0000
+#define RZA1H_CPG_MAIN_SIZE         0x00000500
+#define RZA1H_CPG_DEEP_STANDBY_BASE 0xFCFF1800
+#define RZA1H_CPG_DEEP_STANDBY_SIZE 0x00000020
+
+/* Matches emu/peripherals/mtu2.py's BASE/SIZE -- also a bare RAM region,
+ * see rz_a1h.c. */
+#define RZA1H_MTU2_BASE 0xFCFF0000
+#define RZA1H_MTU2_SIZE 0x00000400
+
+/* Matches emu/peripherals/riic.py's per-instance base addresses (one
+ * RIIC0-2 instance each, all bare RAM regions -- see rz_a1h.c). RIIC2 is
+ * the diode-matrix EEPROM's controller, per notes/ic7300-hardware.md. */
+#define RZA1H_RIIC0_BASE 0xFCFEE000
+#define RZA1H_RIIC1_BASE 0xFCFEE400
+#define RZA1H_RIIC2_BASE 0xFCFEE800
+#define RZA1H_RIIC_SIZE  0x00000044
+
 #endif

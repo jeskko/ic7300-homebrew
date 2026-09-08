@@ -23,7 +23,11 @@ else
 fi
 
 echo "Symlinking sources..."
-for f in rz_a1h.c rz_a1h.h ostm.c; do
+# NOTE: this list was missing spi_boot.c until 2026-09-08's peripheral-port
+# pass caught it (it was already symlinked by hand in an earlier session,
+# so the gap was latent -- a from-scratch qemu-src/ checkout would have
+# failed to build). Keep this in sync with meson.build's files() list.
+for f in rz_a1h.c rz_a1h.h ostm.c spi_boot.c gpio.c l2c.c; do
     ln -sf "../../../src/$f" "$QEMU_SRC/hw/arm/$f"
 done
 

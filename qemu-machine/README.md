@@ -104,7 +104,12 @@ time.
   already-confirmed ground truth carried over from `emu/board.py`/`emu/peripherals/`, not new
   derivation), `rz_a1h.c` (the machine), `ostm.c` (real timer + real IRQ — see its own file
   comment for the full `CNT`-semantics story), `spi_boot.c` (the one real peripheral needed to
-  get past `base.dat`'s own SPI-ready poll, direct C port of `emu/peripherals/spi_boot.py`).
+  get past `base.dat`'s own SPI-ready poll), `gpio.c`/`l2c.c` (2026-09-08: the two remaining
+  peripherals with real modeled behavior — masked set/clear registers and PL310 cache-ID/
+  `REG7` semantics respectively) — all direct C ports of the matching
+  `emu/peripherals/*.py` module. CPG/MTU2/RIIC0-2 (plain storage, no behavior) don't get a
+  dedicated file each — `rz_a1h.c`'s `add_plain_ram_region()` covers them with bare RAM
+  regions, the simplest possible C equivalent of "arbitrary read/write, no side effects".
 - **`patches/hw-arm-build.patch`** — the one small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in a pinned, vendored QEMU checkout. Kept as a patch rather than a
   fork since this is private and pinned, not meant to be upstreamed.
@@ -113,6 +118,8 @@ time.
 - **`tools/build_flash.py`** — thin wrapper around the already-existing, already-tested
   `emu/flash_image.py` (no reimplementation of the container-offset-correction logic) —
   produces the flat flash image `rz_a1h.c` loads via `-kernel`.
+- **`tools/gdbrsp.py`** / **`tools/test_irq.py`** — the raw GDB-remote-serial-protocol driver
+  and the IRQ-delivery investigation script built around it, see the Status section above.
 - Gitignored: `qemu-src/` (recreated by `setup.sh`), `flash.bin` (recreated by `build_flash.py`).
 
 ## Running it
@@ -140,13 +147,18 @@ OSTM0 (GIC ID 134, `CMP`=32000), confirmed both dynamically (register read-back 
 untouched boot) and statically (direct disassembly of the arming code at `0x200b93b0`).
 
 1. ~~Root-cause the GDB scripting reliability gap~~ — done, `tools/gdbrsp.py`.
-2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/CMP=32000. Not yet
-   annotated in Ghidra (never-before-disassembled region, ARM mode; fix request queued in
-   `scratch/armthumb_fix_requests.txt` for the user to run) — worth finishing so this has a
-   real function name and can be cross-referenced from `notes/kernel-rtos.md`, but doesn't
-   block anything else here.
-3. Port `emu/peripherals/{gpio,cpg,l2c,mtu2,riic}.py` to C devices here — mechanical (each is
-   already a tiny `read`/`write` pair), deliberately deferred so this slice stayed focused.
-4. Now that (1)+(2) are done: SCIF UART output, then the same downstream roadmap
+2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/CMP=32000. Now
+   annotated in Ghidra too (`ostm0_tick_arm_and_get_irq_id` at `0x200b93b0`,
+   `idle_loop_wfe_spin` at `0x200b939c`) — the region needed the user to run
+   `tools/ghidra_scripts/FixArmThumbMode.java` once (queued via
+   `scratch/armthumb_fix_requests.txt`, done 2026-09-08) since it had never been disassembled
+   at all. Its caller (presumably a GIC-enable helper taking the returned `134`) still has no
+   static xref — a loose end, not blocking.
+3. ~~Port `emu/peripherals/{gpio,cpg,l2c,mtu2,riic}.py` to C devices here~~ — done, same day:
+   `gpio.c`/`l2c.c` (real behavior) plus `rz_a1h.c`'s `add_plain_ram_region()` for the
+   plain-storage ones (CPG ×2 clusters, MTU2, RIIC0-2). Spot-checked against a live boot
+   (masked set/clear + `PNOT` toggle on GPIO, `CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear on
+   L2C, plain roundtrip on the rest) — no regression on the IRQ-delivery test either.
+4. Now that (1)-(3) are done: SCIF UART output, then the same downstream roadmap
    `emu/README.md` already lists (SD-card/VFS testing for `sdk/roadmap.md`'s Phase 0, the big
    payoff).
