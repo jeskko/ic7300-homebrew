@@ -251,13 +251,53 @@ loaded into RAM at boot, and *is* reachable by at least one genuine feature (Ban
 condition not yet fully traced — a meaningfully stronger position than "no consumer found" from the 20th
 session, though the exact trigger for real JP hardware remains the one open piece.
 
-**Concrete next steps for a future session**: (1) find a writer of the flag at `0x203de4cc+0x22` — likely
-by searching for `STR`-family instructions immediately following one of the 50+ literal-pool loads of
-`0x203de4cc`, or by finding the settings-item record for "Band Edge Beep" in the catalog table
-(`0x2018ed48`-based, same table the 4630kHz checkbox was found in) and tracing its write-handler; (2) once
-found, check directly whether it's ever set based on `region_code`, D420, or D423, versus being a plain
-menu-selectable 0/1/2 mode; (3) as a fallback, live JTAG verification remains the most direct route if
-static tracing stalls again.
+### 22nd session — closed: the factory-reset default itself is the trigger, and it applies to USA and JAP alike
+
+Found the flag's writer directly, without needing the "50+ literal-pool copies" brute-force search — asked
+a more specific question instead: "Band Edge Beep" is a real, named settings item, so it must have an entry
+in the already-documented **326-item factory-reset defaults table** (base `0x20190ecc`, 64-byte-stride
+records, the same table this file's diode-matrix companion already fully decoded for six diode/region-
+conditional item codes). Searched ROM directly for a second "Band Edge" string fragment
+(`"Band Edge Beep"`, found at `0x2035cca8` — a different, more complete string than the truncated one used
+elsewhere) and got exactly one hit, landing precisely at record-offset `+0x28` (the confirmed name-field
+offset for this table) of the record at `0x2019174c` (item code **`0x22`**, computed directly from
+`(0x2019174c - 0x20190ecc) / 0x40 = 34 = 0x22`).
+
+**This is an exact, already-known item code** — `notes/diode-matrix.md`'s "Factory reset / restore-defaults
+mechanism" section had documented years ago (10th session) that item `0x22`'s factory-reset default is
+force-set to `3` specifically when `region_code == 0`, without ever having identified *which* settings item
+`0x22` actually was. It's Band Edge Beep.
+
+Read the record directly and confirmed every piece:
+
+- Offset `+0x00` (the live-value byte pointer): `0x203de4ee` — **exactly** `DAT_200183b8 + 0x22`
+  (`0x203de4cc + 0x22`), the flag `band_edge_beep_check_and_fire` reads to pick its classification mode.
+- Offset `+0x28` (name): `"Band Edge Beep"`.
+- Offset `+0x3c` (option-string table, `0x2019074c`): 4 real option strings —
+  `"OFF"` (0), `"ON (Default)"` (1), `"ON (User)"` (2), `"ON (User) & TX Limit"` (3).
+- Re-decompiled `reset_apply_item_default` (`0x2003dcc0`) directly and confirmed the literal code:
+  `if (item_code == 0x22) { *(byte*)puVar3 = 3; return; }` inside the `is_region_code_zero()` branch,
+  where `puVar3` is read straight from this exact record's own live-value pointer field.
+
+**Full, closed chain, entirely confirmed by decompile — no inference left**: on factory reset (and
+presumably first-ever EEPROM initialization), Band Edge Beep's value gets forced to `3`
+("ON (User) & TX Limit") whenever `region_code == 0`. Since mode `3 > 1`, `band_edge_beep_check_and_fire`
+calls `classify_frequency_to_band(freq, 1)`, which classifies against `DAT_2003c840` — the buffer that
+holds `tx_band_table_jp_narrow_region0_override` (Japan's real JARL-matching band plan) precisely when
+`region_code == 0`. **Both conditions key off the identical `region_code == 0` test — the same bucket both
+USA and JAP diode configurations land in.** So: by factory default, Band Edge Beep on a `region_code=0`
+unit — USA *or* JAP alike, not distinguished — beeps according to Japan's narrow band segments, not the
+plain contiguous USA-shaped table. This is a real, confirmed, slightly surprising consequence of the
+firmware's design, not a guess: as with everything else traced in this whole investigation, **D420 and
+D423 play no role anywhere in this chain** — the behavior is undifferentiated between USA and JAP hardware.
+(The user can change the setting away from mode 3 via the normal settings UI like any other item; this is
+a factory default, not a hard-coded permanent state.)
+
+**This closes the JP-band-table mystery this file opened two sessions ago.** Japan's real band plan exists
+in ROM, is loaded at boot, and has a real, fully-traced, confirmed consumer — a beep-mode default — that
+happens to apply equally to USA-market hardware. No further open link remains in this specific chain; the
+only genuinely open items left are the ones listed below (region 5 TPE's external verification, and
+region_code 1's unclaimed variant).
 
 ## External verification (19th session)
 

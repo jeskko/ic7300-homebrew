@@ -1276,6 +1276,40 @@ closing most, but not quite all, of the gap the user flagged.
 + 1 substantial plate comment on `classify_frequency_to_band`, all from direct decompile/memory reads
 performed live this session. No new ARM/Thumb fix queued.
 
+## 22nd session — closed: item `0x22` is "Band Edge Beep," forced to JP-narrow-table mode on region_code==0 (USA and JAP alike)
+
+Direct continuation, same day. Found the flag's writer by asking a sharper question than "who writes this
+address" — "Band Edge Beep" is a real settings item, so it must have a record in the already-documented
+326-item factory-reset table (`0x20190ecc`, 64-byte stride — this file's own 10th-session section had
+already found that item `0x22`'s default is forced to `3` when `region_code==0`, without ever identifying
+which item `0x22` was). Searched ROM for the full string `"Band Edge Beep"` and got exactly one hit, at the
+confirmed name-field offset (`+0x28`) of the record at `0x2019174c` — `(0x2019174c - 0x20190ecc)/0x40 = 34
+= 0x22`. It's the same item.
+
+Read the record directly: offset `+0x00` (live-value pointer) = `0x203de4ee`, **exactly**
+`band_edge_beep_check_and_fire`'s `DAT_200183b8+0x22` flag address from the 21st session. Offset `+0x3c`
+(option table, `0x2019074c`) gives the 4 real mode names: `"OFF"`, `"ON (Default)"`, `"ON (User)"`,
+`"ON (User) & TX Limit"`. Re-decompiled `reset_apply_item_default` (`0x2003dcc0`) and confirmed the exact
+line: `if (item_code == 0x22) { *(byte*)puVar3 = 3; return; }`, inside the `is_region_code_zero()` branch,
+`puVar3` read straight from this record's own live-value field.
+
+**Fully closed, no inference left**: factory reset forces Band Edge Beep to mode `3`
+("ON (User) & TX Limit") whenever `region_code==0`. Mode `3>1` makes `band_edge_beep_check_and_fire`
+classify against `DAT_2003c840` — the buffer holding `tx_band_table_jp_narrow_region0_override` precisely
+when `region_code==0`. **Both the beep-mode default and the JP-table load key off the exact same
+`region_code==0` test — the bucket both USA and JAP land in.** So by factory default, Band Edge Beep beeps
+according to Japan's real narrow band segments on `region_code=0` hardware regardless of whether it's a
+USA or JAP unit — a real, confirmed, slightly surprising consequence, not a guess. As with every other step
+in this whole investigation, **D420/D423 play no role anywhere in this chain** — USA and JAP get identical
+treatment. (User-changeable via the normal settings UI, not a permanent hard-code.)
+
+This closes the JP-band-table mystery this thread opened two sessions ago. Full write-up in
+`notes/band-plans.md`'s 22nd-session subsection.
+
+**Files touched this session**: `notes/band-plans.md` (22nd-session subsection), `notes/diode-matrix.md`
+(this section). Ghidra database: 1 label (`band_edge_beep_item_record`, `0x2019174c`) + 1 plate comment,
+from direct decompile/memory reads performed live this session. No new ARM/Thumb fix queued.
+
 ## Open questions
 
 1. ~~Country/market name correlation to internal region codes 1-7~~ —

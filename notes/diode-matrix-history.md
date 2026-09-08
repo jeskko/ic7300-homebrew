@@ -2293,5 +2293,73 @@ at all."
 **Files touched this session**: `notes/band-plans.md` (new 21st-session subsection with full trace and
 next steps), `notes/diode-matrix.md` (new 21st-session section), `notes/diode-matrix-history.md` (this
 entry). Ghidra database: 2 renames + 1 plate comment, listed above, all from direct decompile/memory reads
-performed live this session (no subagent used). No new ARM/Thumb disassembly gaps queued. No git commit
-made yet this session.
+performed live this session (no subagent used). No new ARM/Thumb disassembly gaps queued. Committed
+(`b481b12`).
+
+## 22nd session — closed: found the flag's writer, and it's a factory-reset default keyed on region_code==0
+
+Direct continuation, same day, following the user's "proceed with next steps." Instead of grinding through
+the 21st session's "50+ literal-pool copies of `0x203de4cc`" brute-force plan, asked a sharper question:
+"Band Edge Beep" is a real, named settings item — it must have a record in the already-documented 326-item
+factory-reset defaults table (`0x20190ecc`, 64-byte-stride records). That table's 10th-session write-up had
+already found, years ago, that item code `0x22`'s factory-reset default is force-set to `3` specifically
+when `region_code==0` — without ever identifying which settings item `0x22` actually was. Went looking for
+that connection directly.
+
+Searched ROM for the literal string `"Band Edge Beep"` (the full string, not the truncated "Band Edge"
+fragment from the 21st session) and got exactly one hit. It landed precisely at the confirmed name-field
+offset (`+0x28`) of a 64-byte record at `0x2019174c`. Computed the item code directly from the table's own
+addressing formula: `(0x2019174c - 0x20190ecc) / 0x40 = 34 = 0x22`. **Exact match** to the already-known
+special-cased item code.
+
+Read the record directly, confirming every field:
+- `+0x00` (live-value byte pointer): `0x203de4ee` — **exactly** `band_edge_beep_check_and_fire`'s
+  `DAT_200183b8 + 0x22` flag address, found in the 21st session.
+- `+0x28` (name): `"Band Edge Beep"`.
+- `+0x3c` (option-string table pointer, `0x2019074c`): 4 real mode names, read directly —
+  `"OFF"` (0), `"ON (Default)"` (1), `"ON (User)"` (2), `"ON (User) & TX Limit"` (3).
+
+Re-decompiled `reset_apply_item_default` (`0x2003dcc0`, previously found in the 10th session but never
+connected to this item) to confirm the exact code, not just the table row: `if (item_code == 0x22) {
+*(byte*)puVar3 = 3; return; }`, inside the `is_region_code_zero()` branch, `puVar3` read straight from this
+exact record's own live-value pointer field — a byte-for-byte match, no ambiguity.
+
+### The full, closed chain
+
+1. `reset_apply_item_default` forces Band Edge Beep (item `0x22`) to mode `3` ("ON (User) & TX Limit")
+   whenever `region_code==0` — on factory reset (and, presumably, first-ever EEPROM initialization).
+2. `band_edge_beep_check_and_fire` (21st session) reads that stored mode; since `3 > 1`, it calls
+   `classify_frequency_to_band(freq, 1)`.
+3. That classifies against `DAT_2003c840` (21st session) — the buffer `FUN_2003c20c` (20th session) loads
+   with `tx_band_table_jp_narrow_region0_override` (Japan's real JARL-matching band plan) precisely when
+   `region_code==0`.
+
+**Both the beep-mode default (step 1) and the JP-table load condition (step 3) key off the identical
+`region_code==0` test — the same bucket both USA and JAP diode configurations resolve to.** So: by factory
+default, a `region_code=0` unit's Band Edge Beep checks against Japan's real, narrow band segments — for
+USA hardware exactly as much as for JAP hardware. This is a genuine, fully-confirmed, mildly surprising
+consequence of the firmware's design (not spun as either a bug or an intentional feature — just reported as
+what the code does), and it's user-changeable via the normal settings UI like any other item, not a
+permanent hard-code.
+
+**As with every single step traced across this entire multi-session thread, D420 and D423 play no role
+anywhere in this chain.** USA and JAP hardware get identical Band Edge Beep behavior; the diode/region_code
+mechanism that does the actual work is the same one that drives every other piece of band-edge logic in
+this firmware, and it has never once, at any point in this investigation, tested D420 or D423.
+
+### Net assessment
+
+This closes the JP-band-table mystery this thread opened at the 20th session. The original question — is
+there a real, findable consumer of Japan's ROM-resident band data, and does it involve D420/D423 — now has
+a complete, decompile-verified answer: yes, a real consumer (Band Edge Beep), and no, D420/D423 are not
+involved anywhere. No further open link remains in this specific chain.
+
+### Renames and comments (Ghidra database)
+
+- `0x2019174c` → `band_edge_beep_item_record` (label), with a full plate comment covering the record
+  layout, the option names, and the closed-loop trace.
+
+**Files touched this session**: `notes/band-plans.md` (new 22nd-session subsection, closing the mystery),
+`notes/diode-matrix.md` (new 22nd-session section), `notes/diode-matrix-history.md` (this entry). Ghidra
+database: 1 label + 1 plate comment, listed above, from direct decompile/memory reads performed live this
+session (no subagent used). No new ARM/Thumb disassembly gaps queued. No git commit made yet this session.
