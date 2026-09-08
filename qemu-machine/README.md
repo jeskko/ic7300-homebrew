@@ -15,8 +15,8 @@ evidence trail behind everything below — this file carries only the current st
 active resume point.
 
 ## Status, 2026-09-09 — the SCIF3 front-panel handshake fully resolves for the first time ever;
-## boot reaches real ITRON task activation; the active blocker is a new, so-far-unadvancing
-## task-readiness counter one step past it
+## boot reaches real ITRON task activation; the task-readiness counter blocking the next step
+## is now fully traced to one concrete missing device: a real MTU2 channel 3 (GIC ID 154)
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -82,14 +82,6 @@ completes for real, and boot reaches genuine ITRON task activation for the first
   resolved each case. Don't trust an isolated single-step trace's "it worked" over a full
   real-time trace's "and then what" when the two disagree.
 
-**Active resume point — the concrete next step:** `cold_boot_hw_init`, right after activating
-the new task, busy-waits on a task-readiness counter (`*DAT_2002b4ec`'s dereferenced target,
-`0x2039076c` this run — a per-boot address, don't hardcode it) bounded at `0x32` (50) — this
-is a genuinely new counter, unrelated to the SCIF3 one above (different address, different
-containing function, found immediately after task activation, not inside the SCIF3 driver at
-all). Confirmed via live polling that it stays at `0` for 20+ continuous real seconds even with
-the task already activated.
-
 **The activated task's identity is already known — no re-derivation needed.** `itron_act_tsk`'s
 own argument here (`DAT_2002b4e8`) reads `0x2019889c` in the static image (confirmed directly),
 an exact match for an existing row in `notes/kernel-rtos.md`'s task catalog: caller
@@ -100,26 +92,44 @@ window surface (the touchscreen's actual resolution) plus a 960×552 off-screen 
 surface, then runs a 2-state init/present-frame loop. Not one of the catalog's two genuinely
 open identities (`kernel_start`'s mystery task, `thunk_FUN_2007ea68`'s dynamic activation).
 
-Given that identity, the most promising lead: the same catalog entry documents that
-`ui_graphics_lifecycle_task`'s own startup is what activates `thunk_FUN_2007ea68`
-(`slv5_periph_connect_disconnect_handler`), which touches an unidentified peripheral at
-`0xE8100000` (RZ/A1H bus-matrix slave SLV5) — currently completely unmodeled in
-`qemu-machine` (no device registered there at all, so it falls through to QEMU's generic
-unimplemented-device stub, which just discards writes and returns 0 on reads with no real
-side effects). A real, concrete hypothesis worth testing directly: the readiness counter is
-waiting on some effect of this SLV5 access that the stub can never produce. Worth checking
-with a GDB breakpoint on `thunk_FUN_2007ea68`/`slv5_periph_connect_disconnect_handler`
-(`0x2007ea84`) before building anything — confirm it's actually reached and what exact
-register access on `0xE8100000` it makes, rather than guessing what a stub device would need
-to fake. If that's a dead end, the fallback leads from earlier still apply: check whether
-this emulator's context-switch mechanism (`irq_context_switch_id86`/`id0`, already confirmed
-real for the existing `sys_monitor_task_entry` task) genuinely handles a *second*
-concurrently-scheduled task correctly — every prior milestone was still effectively
-single-tasked. Two tools worth reusing directly: `gdbrsp.py`'s new watchpoint support (fast,
-conclusive "does anything write here at all" answers — faster than manual `references_to`
-sweeps for a dynamically-allocated RAM target); and a live
-`-d unimp` register trace whenever a fix looks right in isolation but the overall state still
-doesn't budge, per the methodology point above.
+**The SLV5 (`0xE8100000`) hypothesis from the previous resume point is now retired, checked
+live before any build effort went into it**: a full 22-second `-d unimp,guest_errors` boot
+trace shows zero accesses anywhere in the `0xE8100000`-area regions — `thunk_FUN_2007ea68`/
+`slv5_periph_connect_disconnect_handler` is simply never reached this early, so it cannot be
+today's blocker. See README-history.md's newest section for the trace.
+
+**Active resume point — the concrete next step, now a fully traced, live-confirmed root
+cause rather than a hypothesis:** `cold_boot_hw_init`'s task-readiness busy-wait
+(`*0x2039076c` — a fixed literal-pool address in this build, confirmed unchanged this session,
+bounded at `0x32`/50) is incremented by a generic multi-rate system-tick handler
+(`FUN_200b7910`) that only ever runs as the registered ISR for **GIC ID 154** — cross-derived
+two independent ways (the same "`ICDISRn` register-index×32+bit" SVD formula already
+confirmed for OSTM0=134 and SCIF3 TXI/RXI=236/235, plus the literal `0x9a` argument to the
+same `GICD_ISENABLERn`-shaped helper SCIF3's TXI fix already confirmed) as **MTU2 (Multi-
+Function Timer Pulse Unit 2) channel 3's `TGI3A`** compare-match-A interrupt. Live-confirmed
+directly, not guessed: with the CPU genuinely parked at the busy-wait (`PC=0x2002b04c`) after
+20 real seconds, `GICD_ISENABLER4` (`0xE8201110`) reads back bit 26 **set** — the guest has
+already armed this exact interrupt — while `GICD_ISPENDR4` (`0xE8201210`) reads bit 26
+**clear** the whole time: MTU2 has never once asserted it, because `rz_a1h.c` currently maps
+the whole MTU2 region via `add_plain_ram_region()` (plain storage, no behavior at all — see
+the Confirmed-peripherals table). The guest's own real configuration for this channel is also
+already traced (via `references_to` on the SVD's real per-channel register offsets, not the
+peripheral's bare base address): `TCR_3=0` (prescaler Pφ/1, undivided), `TCNT_3` reset to 0,
+**`TGRA_3=8000`** (the real compare-match period, don't hardcode — confirm live each build),
+`TIER_3`'s enable bit set.
+
+**The concrete next step: build a real `src/mtu2.c`**, mirroring `ostm.c`'s already-proven
+real-`QEMUTimer`-plus-real-IRQ pattern, for at minimum channel 3 — free-running 16-bit
+`TCNT_3` counted against `TGRA_3` (read live from the guest's own write, the way `ostm.c`
+already reads `OSTM0.CMP` rather than hardcoding it), raising GIC ID 154 on compare-match,
+gated on `TIER_3`'s enable bit. Per this project's own hard-earned discipline from the SCIF3
+TXI bugs (README-history.md's "SCIF3 TXI made real" section): check the interrupt's real
+configured trigger mode and re-arm semantics live (`GICD_ICFGR` bits for ID 154) before
+assuming a bare pulse/level pattern copied from another device is safe. Once wired, retest
+with the same `gdbrsp.py` poll used to confirm this root cause: watch `*0x2039076c` actually
+climb past `0x32` and `cold_boot_hw_init` fall through into `FUN_200b5b64` and beyond. Full
+derivation, live evidence, and the exact addresses involved are in README-history.md's newest
+section — this Status section only tracks the current, most-advanced state.
 
 ## Confirmed peripherals
 
@@ -130,7 +140,8 @@ doesn't budge, per the methodology point above.
 | SPI boot status | `spi_boot.c` | Real — the one register `base.dat`'s SPI-ready poll needs |
 | GPIO/port registers | `gpio.c` | Real (masked set/clear, `PNOT` toggle, live `PPR` pin levels) — `P1_6`/`PDV` (power-fail detector) defaults high, see Status above |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
-| CPG, MTU2 | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
+| CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
+| MTU2 | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — **now the identified blocker**: channel 3's `TGI3A` (GIC ID 154) is confirmed armed by the guest but can never fire, see Status above |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI on channel 3 too, backing a virtual front-panel responder (SCIF3 only) — see Status above |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
@@ -195,8 +206,8 @@ spot-check.
 2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/`CMP`=32000, now
    annotated in Ghidra (`ostm0_tick_arm_and_get_irq_id` at `0x200b93b0`).
 3. ~~Port the remaining Unicorn-side peripherals to real C devices~~ — done: `gpio.c`/`l2c.c`
-   (real behavior), `add_plain_ram_region()` for CPG/MTU2 (plain storage, nothing traced needs
-   more yet).
+   (real behavior), `add_plain_ram_region()` for CPG/MTU2 (plain storage; MTU2 channel 3's real
+   compare-match timer is now a confirmed, pinpointed gap — see item 5).
 4. ~~SCIF UART output~~ — done: TX plus real per-channel TXI, real RXI + a virtual front-panel
    responder on channel 3 (2026-09-09). The SCIF3 front-panel handshake now fully resolves for
    the first time ever, and boot reaches real ITRON task activation as a direct result.
@@ -204,8 +215,9 @@ spot-check.
    built and validated standalone; `riic.c` built and validated end-to-end against a real
    natural boot; `FUN_2002b29c`'s entire cold-boot branch gate now clears; the SCIF3
    front-panel handshake now genuinely completes; boot reaches real `itron_act_tsk` task
-   activation. **Currently blocked on**: a new task-readiness counter that doesn't advance yet
-   (see "Active resume point" above) — once past that, the original question — does the
+   activation. **Currently blocked on**: a real `src/mtu2.c` for MTU2 channel 3's `TGI3A`
+   (GIC ID 154) — confirmed armed by the guest, confirmed never fired, see "Active resume
+   point" above for the full live-confirmed trace. Once built, the original question — does the
    SD-card update flow reach MMCIF against a *properly* kernel-created task, and would the
    whole chain accept and boot custom firmware entirely offline — becomes directly retestable
    with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.

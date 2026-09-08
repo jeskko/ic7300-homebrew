@@ -720,3 +720,111 @@ yet either) and the next resume point.
   way to answer "does anything write here at all" for a dynamically-allocated RAM target that
   static `references_to` analysis can't usefully search (no fixed literal address to look for).
   Reach for it before spending real effort tracing a counter's *hypothetical* writer.
+
+## The SLV5 hypothesis retired, the real readiness-counter writer traced end to end: MTU2
+## channel 3's TGI3A (GIC ID 154) — confirmed armed by the guest, confirmed never fired
+
+Picking up the previous section's "Active resume point" directly: before building anything
+against the `0xE8100000` (SLV5) hypothesis, checked it live first, per this project's own
+established discipline of testing a hypothesis before spending build effort on it.
+
+**SLV5 hypothesis retired, empirically.** Booted the existing `flash.bin`/`riic2_eeprom.img`
+combination with `-d unimp,guest_errors -D /tmp/unimp_trace.log` for 22 continuous real
+seconds (no GDB, just a free-running boot) and grepped the full trace for any access to the
+`io-e8100000`/`io-e8000000`/`io-e8030000`/`io-e8200000` unimplemented-device regions
+(`rz_a1h.c`'s own names for the SLV5-area catch-alls): **zero hits, across the whole window**.
+Only `spi-status-and-neighbors`, `io-fcfe0000`, `rza1h-scif3`, and `gic_dist_writeb` ever
+appear. `thunk_FUN_2007ea68`/`slv5_periph_connect_disconnect_handler` is simply never reached
+this early in boot — it cannot be today's blocker, whatever else it turns out to be later.
+Recorded here so a future session doesn't re-open this lead without new evidence.
+
+**Traced the readiness counter's real writer instead, via Ghidra's `references_to` on the
+counter's own dereferenced RAM address (`0x2039076c`, confirmed still the same fixed value
+this session — it comes from a literal-pool constant baked into the static image at
+`DAT_2002b4ec`, not a genuinely per-boot-random address as the previous session's phrasing
+cautiously assumed; worth re-verifying live each time regardless, since nothing rules out a
+future build changing it).** `references_to 0x2039076c` returns exactly the two RAM-struct
+touch points inside `cold_boot_hw_init` already known (reset to 0 at `0x2002b048`, the
+busy-wait read at `0x2002b04c`/`LAB_2002b04c`, and the post-loop reset to 0 at `0x2002b0e8`)
+**plus a completely separate pair**: a read at `0x200b7a7c` and a write at `0x200b7aa0`,
+both inside `FUN_200b7910` — a generic multi-rate software-timer tick handler (increments a
+base-rate pair of 16-bit fields unconditionally every call, then cascades to slower-rate
+fields and countdown timers every 2/4/8/200 calls via bitmasking `bVar3`, a classic ITRON-style
+shared system-tick housekeeping routine). This is the real writer.
+
+**`FUN_200b7910` is only ever called from one place**: `FUN_20005b98`, which calls it every
+other invocation (`(bVar1+1 & 1) == 0`) alongside `ssif0_bring_up_and_pump`/
+`ssif1_bring_up_and_pump` and a `+8000` accumulator bump. `FUN_20005b98` itself has exactly one
+static reference anywhere in the image: as the `handler_ptr` argument to
+`register_event_handler(0x9a, FUN_20005b98)` inside `FUN_20005c08`. `register_event_handler`
+is the same confirmed-generic id-indexed dispatch-table primitive documented in the
+`register_event_handler` decompile's own comment (49+ call sites project-wide, `event_id` is a
+plain array index bounds-checked against `*DAT_200b9684`) — and `FUN_20005c08` immediately
+follows registration with `FUN_200b83d0(0x9a,0x10)` (priority), `FUN_200b8244(0x9a,1)`
+(trigger-mode-shaped), and `FUN_200b8308(0x9a)`, which is the exact same
+`*(GICD_base + (id>>5)*4 + 0x100) = 1<<(id&0x1f)` `GICD_ISENABLERn`-shaped helper the SCIF3 TXI
+IRQ investigation already confirmed (`README-history.md`'s "SCIF3 TXI made real" section) — so
+`event_id` here is a **plain absolute GIC ID**, not an ITRON-abstract event number: **GIC ID
+0x9a = 154**.
+
+**Identified GIC ID 154 independently, via the same SVD-derived "register-index×32+bit"
+formula already cross-checked twice** (OSTM0=134 from `ICDISR4`/`OSTM0TINT` bit 6, SCIF3
+TXI3/RXI3=236/235 from `ICDISR7`'s `TXIn=224+4n`/`RXIn=223+4n` fields):
+`ICDISR4` (register index 4, covering absolute IDs 128-159) has bit 26 named **`TGI3A`** —
+`4*32+26 = 154`, an exact match. **`TGI3A` is MTU2 (Multi-Function Timer Pulse Unit 2) channel
+3's Timer-General-Interrupt-A, the compare-match-A interrupt** — confirmed against
+`~/Downloads/rza1.svd`'s own `MTU2` peripheral block (base `0xFCFF0000`) and its channel-3
+register offsets (`TCR_3`=0x200, `TMDR_3`=0x202, `TIORH_3`/`TIORL_3`=0x204/0x205,
+`TIER_3`=0x208, `TCNT_3`=0x210, `TGRA_3`=0x218 — all 16-bit-spaced, matching the real MTU2
+extended-channel layout).
+
+**Found `FUN_20005c08`'s own MTU2 channel-3 setup, via `references_to` on those exact SVD
+offset addresses** (`0xFCFF0200`/`0xFCFF0218` etc., not the earlier, misleading single hit on
+the bare peripheral base `0xFCFF0000` alone — that one turned out to belong to a *different*,
+post-loop reconfiguration of MTU2 **channel 0**, `FUN_200b5b64`, called only after
+`cold_boot_hw_init`'s busy-wait already exits, and is not this counter's blocker): `iVar1 =
+DAT_20005e1c` (the MTU2 base) with `TCR_3=0` (prescaler Pφ/1, undivided, no TCR-driven
+auto-clear), `TMDR_3=0`, `TIORH_3=TIORL_3=0`, `TCNT_3` reset to 0, **`TGRA_3=8000`** (the real
+compare-match period), and `TIER_3`'s enable bit set via `FUN_20360adc(iVar1+0x208,1,0)` —
+a genuine, real periodic hardware-timer configuration, not a guess. `FUN_20005c08` itself has
+exactly two static callers project-wide: inside `select_active_slot_resources` (`0x20062c64`,
+called from `0x2003bb6c`) and inside the CI-V-retraction/firmware-update retry loop
+(`README-history.md`'s earlier session, `notes/`'s own Fup_AutoEnd tracing) — the former reads
+like an ordinary per-boot "pick the active configuration slot" step, not something exclusive to
+firmware-update mode, consistent with what live testing confirmed next.
+
+**Live-confirmed, not just statically inferred**: booted with `-S`, let it free-run 20 real
+seconds, then read `GICD_ISENABLER4` (`0xE8201110`) and `GICD_ISPENDR4` (`0xE8201210`)
+directly over `gdbrsp.py` while confirming the CPU was genuinely parked at the busy-wait
+(`PC=0x2002b04c`, exactly `LAB_2002b04c`) with the counter still reading `0`:
+
+```
+PC after 20s: 0x2002b04c
+readiness counter *0x2039076c (low byte): 0
+GICD_ISENABLER4: 0x4000040  bit26 (ID 154) set: True   (bit 6 = ID 134 = OSTM0, also set)
+GICD_ISPENDR4:   0x80       bit26 (ID 154) set: False
+```
+
+**This is the real, now fully pinpointed blocker, not a hypothesis**: the guest itself has
+already armed GIC ID 154 exactly as the trace above predicts (`ISENABLER4` bit 26 = 1) by the
+time it reaches the busy-wait — `select_active_slot_resources` (or whatever the real normal-
+boot caller turns out to be) does run before `cold_boot_hw_init`'s task-readiness wait, so the
+registration path is not in question. But `ISPENDR4` bit 26 staying `0` across the whole 20
+seconds means MTU2 has never once asserted this line — expected, since `rz_a1h.c` currently
+maps the whole MTU2 region via `add_plain_ram_region()` (plain storage, zero behavior, per the
+Confirmed-peripherals table) — there is no real counter running behind it at all, so a real
+compare-match event can never occur.
+
+**Next step, not yet built**: a real `src/mtu2.c`, mirroring `ostm.c`'s already-proven
+real-QEMU-timer + real-IRQ pattern, for at minimum MTU2 channel 3 — a free-running 16-bit
+`TCNT_3` counted against a real `QEMUTimer`, comparing against `TGRA_3` (`8000`, though don't
+hardcode it — read the guest's own configured value the same way `ostm.c` reads `OSTM0.CMP`),
+raising GIC ID 154 on compare-match, respecting `TIER_3`'s enable bit the way `ostm.c` already
+gates on its own control register, and — per this project's own hard-earned discipline from
+the SCIF3 TXI bugs — checking the interrupt's real configured trigger mode
+(`GICD_ICFGR` bits for ID 154) and re-arm semantics live before assuming a bare
+`qemu_irq_pulse()`/`qemu_set_irq()` pattern is safe, rather than copying another device's
+pattern on faith. Once wired, retest with the same `gdbrsp.py` poll used here: watch
+`*0x2039076c` actually climb past `0x32` and `cold_boot_hw_init` fall through past the
+busy-wait into `FUN_200b5b64`/`FUN_200b5be0`/`FUN_200b5ea4`/`FUN_200b5f38` and beyond. See
+`README.md`'s Status section for the current resume point.
