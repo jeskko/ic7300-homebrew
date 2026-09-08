@@ -100,6 +100,21 @@ class GdbRsp:
             regs[name] = int.from_bytes(le_bytes, "little")
         return regs
 
+    def write_registers(self, regs: dict):
+        """Write r0-r15 + cpsr in one 'G' packet. `regs` must be a dict
+        as returned by read_registers() (same key names) -- typically
+        read_registers() first, mutate a few keys, then pass it back
+        here, so every register keeps its current value except the ones
+        deliberately changed."""
+        names = [f"r{i}" for i in range(16)] + ["cpsr"]
+        data = "".join(
+            regs[name].to_bytes(4, "little").hex() for name in names
+        )
+        self.send_packet(f"G{data}")
+        reply = self.read_packet()
+        if reply != "OK":
+            raise GdbRspError(f"write_registers error: {reply}")
+
     def read_memory(self, addr: int, length: int) -> bytes:
         self.send_packet(f"m{addr:x},{length:x}")
         raw = self.read_packet()

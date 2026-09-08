@@ -121,6 +121,13 @@ time.
 - **`tools/test_mmc.py`** — standalone validation of `mmc.c`'s command/response/data
   protocol against a small test disk image, independent of whether body.bin's own driver
   has been found yet.
+- **`tools/build_sdcard.py`** — builds a real FAT16 virtual SD card image (`mkfs.vfat` +
+  `mtools`, no loopback mount needed) with an update container placed at the exact path
+  Icom's own manual documents (`\IC-7300\<filename>`) — see the "Forcing
+  `firmware_update_main`" section above.
+- **`tools/force_call_fup.py`** — forces a direct call into `firmware_update_main` over
+  GDB, bypassing the SD-menu/file-browser UI entirely. See its own section above for what
+  it found and where it currently gets stuck.
 - **`patches/hw-arm-build.patch`** — the one small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in a pinned, vendored QEMU checkout. Kept as a patch rather than a
   fork since this is private and pinned, not meant to be upstreamed.
@@ -237,15 +244,60 @@ comparison is not a reliable regression test once real interrupt-driven scheduli
 involved -- use `tools/trial_irq.py`'s repeated-trial approach (or at minimum several
 independent fresh-boot trials) before concluding a change regressed IRQ delivery.
 
-**Next steps**: (1) find body.bin's real SD/MMCIF driver, most likely by triggering
-`firmware_update_main`/`sd_menu_dispatch_task` directly via GDB (forcing PC + a plausible
-register/stack state) rather than waiting for it to run on its own, since nothing reaches it
-during ordinary boot; (2) build a real FAT-formatted card image (`tools/build_sdcard.py`,
-not yet written) containing a repacked, byte-patched update container from `tools/icom_fw`,
-matching the exact on-disk shape `firmware_update_main` expects; (3) see whether the whole
-chain -- MMCIF command sequence, this project's own (non-FatFs, see
-`notes/sd-card-filesystem-security.md`) VFS layer, the update orchestrator's checksum/flash-
-write logic -- actually accepts and would boot a custom `body.bin`, entirely offline.
+## Forcing `firmware_update_main` directly, and where it actually gets stuck (2026-09-08, same day)
+
+Followed through on this section's own "next steps" the same day. **`firmware_update_main`
+(`0x20025ae4`) turns out to take no arguments at all** — confirmed by decompile: it opens a
+fixed global path (`DAT_200264a0`), not a caller-supplied one. That global has **zero static
+writers anywhere in `body.bin`** — initially as unexplained as the missing MMCIF xrefs — but
+this session found the real reason: it's populated at runtime by the generic SD-card
+file-browser/selection UI (a separate subsystem, deliberately not traced or driven here),
+using a path built from a folder name and whatever file the user picked from a list. **Found
+the real expected convention directly from Icom's own published manual** (section 15,
+"Updating the firmware", `IC-7300_ENG_FM_12b.pdf`): *"Copy the downloaded firmware data into
+the IC-7300 folder on an SD card"* — i.e. `\IC-7300\<original filename>` at the SD card
+root, browsed and picked by name, not a single hardcoded path.
+
+Since `firmware_update_main` is a pure function of that one global, driving it doesn't
+require reverse-engineering the file-browser UI at all: **`tools/force_call_fup.py`**
+writes a path string directly into the RAM `DAT_200264a0` already points to (confirmed via
+`tools/icom_fw`'s own decompressor that this address is genuinely past the end of the static
+image — real writable RAM, not a Ghidra gap) and jumps the CPU straight to the function's
+entry point over GDB, self-verified via single-stepping through the real prologue before
+switching to real-time execution. **`tools/build_sdcard.py`** (a thin `mkfs.vfat` +
+`mtools` wrapper, no loopback mount needed) builds a real FAT16 image with a repacked
+container (round-tripped through `tools/icom_fw`'s existing `unpack`/`pack`, per
+`sdk/roadmap.md`'s own Phase 0 recipe) placed at exactly that path.
+
+**Real, concrete progress, but not yet reaching MMC.** Single-stepping the forced call
+confirmed genuine execution through the real prologue, the internal `FUN_20037604` (a
+one-shot lock check, not a hang), and into `FUN_200bc5f4` — which turns out to *post* an
+"open" request onto an internal ring buffer (`file_rpc_post_command`, real command ID `0xf`)
+consumed by a **separate, already-running service task**,
+`sdcard_file_rpc_dispatch_task` (`0x200b9c00` — this project's own past retraction of an
+earlier "CI-V dispatcher" guess for this same function, see `notes/sd-card-filesystem-
+security.md`, turned out right: it's a generic internal file-RPC service, and its real
+consumer role is exactly what's exercised here). The caller then blocks in a genuine,
+uncapped wait (`FUN_200b9af8` with an infinite-timeout parameter) for that task to respond.
+**With both a blank image and a real, valid FAT16 image containing the update file at the
+documented path, the result was identical**: the CPU keeps legitimately executing (context
+switches to a different, real stack observed; no fault/abort mode ever seen) but never
+reaches any MMCIF register access, and `firmware_update_main` never returns, within a
+10-second window either way. Since the *image content* provably didn't change the outcome,
+the blocker sits upstream of any actual filesystem/card access — most likely in how cleanly
+a hand-hijacked context (the idle task's registers overwritten via GDB, not a properly
+FreeRTOS-created task) interoperates with this RTOS's own semaphore/queue/task-scheduling
+internals, which may carry assumptions this shortcut doesn't satisfy.
+
+**Left as a genuinely open, well-scoped next thread** rather than guessed further: (1) does
+`sdcard_file_rpc_dispatch_task` actually run and receive the posted command at all (would
+need real RTOS-internals visibility — task list/TCB state, not just PC/CPSR snapshots — to
+tell blocked-forever-on-a-real-precondition apart from never-scheduled apart from
+silently-misrouted); (2) whether hijacking a properly-idle, genuinely-blocked task context is
+fundamentally sound for this RTOS's synchronization primitives, or whether reaching this deep
+into a live multitasking system requires either creating a *real* new task (going through the
+kernel's own task-creation API instead of repurposing an existing context) or finding a
+lower-risk injection point closer to where a real button-press would land.
 
 ## Extension roadmap
 
@@ -273,9 +325,13 @@ untouched boot) and statically (direct disassembly of the arming code at `0x200b
    any SCIF channel during the portion of boot exercised so far) — worth a longer real-time
    run with `-d unimp` to see if anything shows up before assuming a driver needs to be
    poked manually.
-5. **SD-card/VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — first pass done, same day:
-   `mmc.c`, a real protocol-level MMCIF model, validated standalone (`tools/test_mmc.py`).
-   See its own section above for what's next: body.bin's real SD driver hasn't been found or
-   triggered yet (zero static xrefs to the MMCIF base, zero dynamic accesses during a plain
-   boot), and no real FAT-formatted card image with a repacked update container has been
-   built yet either — both still open, this is genuinely a multi-session-scale item.
+5. **SD-card/VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — substantial progress, same
+   day, genuinely open item still: `mmc.c` (real protocol-level MMCIF model, validated
+   standalone via `tools/test_mmc.py`); found the real expected SD-card path convention
+   straight from Icom's own manual and forced a direct call into `firmware_update_main`
+   over GDB (`tools/force_call_fup.py`) against a real FAT16 image built with the documented
+   path (`tools/build_sdcard.py`) — confirmed real progress into the internal file-RPC layer,
+   but not yet as far as any actual MMCIF access. See the dedicated section above for the
+   full trace and the specific, well-scoped question left open (does the consumer task run
+   at all against a hand-hijacked context, or does reaching this depth need a properly
+   kernel-created task instead).
