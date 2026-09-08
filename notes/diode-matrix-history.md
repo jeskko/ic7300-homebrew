@@ -1893,3 +1893,74 @@ addendum, new 16th-session section), `notes/diode-matrix-history.md` (this entry
 renames + 4 plate/EOL comments, listed above, all independently re-verified by direct decompile/memory
 reads rather than accepted from the tracing subagent's report alone. No new ARM/Thumb disassembly gaps
 queued. No git commit made, per the user's standing instruction.
+
+## 17th session — D417 ruled out as the 70 MHz/4m gate: it's purely `region_code`-driven, confirmed with real ROM band-table bytes
+
+Straight follow-up question after D420's resolution: D417 is populated only on `EUR`/`ITR`/`ESP`
+(`[#03][#05][#06]` per the parts list), exactly Icom's official "HF/50/70 MHz" (4m-unlocked) country group
+— first caught and fixed a stale error in this file's own living table, which had misread `#06` as `KOR`
+instead of `ESP`. Does D417 gate 70 MHz directly, the way D420 gates 4630kHz, or is 70 MHz access just a
+consequence of the already-resolved `region_code`?
+
+Delegated the trace to a subagent with the fresh D420-session lesson built into the brief (Ghidra's
+`references_to` can miss a real diode-bit read — don't trust it alone), then independently re-verified the
+central claim by hand: read the raw bytes of `tx_band_table_ptrs_by_region_code` (`0x20198a20`, an 8-entry
+pointer array indexed directly by `region_code`) and every table it points to for region codes 0, 2, 3, and
+4, and manually decoded each `{min_hz, max_hz}` row (little-endian u32 pairs, `0xffffffff` sentinel) by
+hand rather than trusting any tool's summary.
+
+**Confirmed by direct byte decode**: region 0's table (`0x20198ad0`, region 1 shares it — its data starts
+immediately after region 0's own sentinel) runs 1.8-2.0/3.5-4.0/5.255-5.405/7.0-7.3/10.1-10.15/14.0-14.35/
+18.068-18.168/21.0-21.45/24.89-24.99/28.0-29.7/50-54 MHz then sentinel — **no 70 MHz row at all**. Regions
+2 (`0x20198b88`) and 3 (`0x20198bec`) both carry the identical band plan except a narrower 160m/80m/40m/6m
+(1.81 or 1.83-2.0/3.5-3.8/7.0-7.2/50-52) **plus a `70.000-70.500 MHz` row** right before their sentinel.
+Region 4 (`0x20198c50`) matches 2/3's narrowed HF/6m shape but gets a **visibly different, narrower**
+70 MHz slice: `70.150-70.250 MHz`. Regions 5/6 (spot-checked structurally, not fully hand-decoded this
+session) are the already-known heavily channelized/restrictive tables — no 70 MHz row.
+
+**Exactly 3 region codes (2, 3, 4) carry a 70 MHz row — matching the exactly-3-country 70MHz-unlocked group
+from the parts list, one-to-one.** `FUN_2003be94` (TX)/`FUN_2003bd80` (RX) select these tables purely by
+indexing `tx_band_table_ptrs_by_region_code`/`rx_band_table_ptrs_by_region_code` with `region_code` (itself
+computed only from D404/407/410/413, confirmed no D417 involvement anywhere in that formula); the
+functions' other diode-bit inputs (D401/D416/D402/D405) only adjust clamping/merging of already-selected
+rows. **No bit-13 (`0x2000`, D417) test exists anywhere in this selection chain** — checked by full
+decompile plus a targeted raw-listing sweep of the neighborhood where D420's gate turned up, not by
+`references_to` alone.
+
+### Net assessment
+
+**It's `region_code`, not D417.** `region_code` alone fully determines 70 MHz access; D417 plays no role
+anywhere in this mechanism. The D417-population/70MHz-country correlation looks coincidental in the causal
+sense — Icom populates D417 on the same 3 country PCBs that get region codes 2/3/4, but nothing found so
+far shows D417 itself driving any software behavior. This also **corrects** this file's own previously-
+derived, never-verified `EUR`=2/`ITR`=4/`ESP`=5 guess: region 5's table is the heavily-restricted one
+grouped with region 6, not CEPT-shaped, so `ESP` can't be region 5 — the real 70MHz-unlocked set is
+`{2,3,4}` as a set, matching `{EUR,ITR,ESP}` as a set, with region 4's distinctly narrower 70MHz slice
+(and tighter 1.81-1.85 MHz 160m allocation) as a real fingerprint difference between the three, still not
+pinned to a specific country name.
+
+D417 itself remains genuinely unconfirmed — this session narrows what it *isn't* (definitively not the
+4m-band gate, checked with real ROM data rather than another `references_to` negative) without finding
+what it *is*. New leads for a future session: the raw-listing bit-13 sweep only covered the
+`0x2003e0xx`-`0x2003ecxx` neighborhood and the already-known diode/region-code function list, not the full
+~110KB of the still-corrupted `settings_list_builder` auto-detected function range
+(`0x2003e5f0`-`0x2005ea37`); a non-frequency EUR/ITR/ESP-specific behavior (compliance string, duty-cycle/
+power table, regulatory label) is a more promising direction than more band-edge searching, since
+`region_code` already fully explains the band-access angle; live JTAG toggling of bit 13 remains the most
+direct fallback if static analysis keeps coming up empty.
+
+### Renames and comments (Ghidra database)
+
+- `DAT_2003c82c`/`0x20198a20` and its RX counterpart `0x20198a00` → `tx_band_table_ptrs_by_region_code` /
+  `rx_band_table_ptrs_by_region_code`, with plate comments documenting the per-region-code table layout.
+- Per-region table addresses labeled: `0x20198ad0` (region 0/1, no 70MHz), `0x20198b88` (region 2, full
+  70MHz), `0x20198bec` (region 3, full 70MHz), `0x20198c50` (region 4, narrow 70MHz), `0x20198cb4`/
+  `0x20198d20` (regions 5/6, no 70MHz, channelized).
+- Plate comment on `FUN_2003be94` documenting the region-code-only selection logic and the confirmed
+  absence of any D417/bit-13 test.
+
+**Files touched this session**: `notes/diode-matrix.md` (D417 living-reference row, Open Question 1
+correction, the `#06`=ESP not KOR fix in two places, new 17th-session section), `notes/diode-matrix-history.md`
+(this entry). Ghidra database: 2 renames + 6 plate/label comments, listed above, all independently
+re-verified this session by direct memory reads and hand-decoded table bytes, not accepted from the tracing
+subagent's report alone. No new ARM/Thumb disassembly gaps queued. No git commit made yet this session.
