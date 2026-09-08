@@ -2179,4 +2179,119 @@ updated), `notes/diode-matrix.md` (new 20th-session section — also fixed a sel
 re-reading the file: the 18th-session edit had accidentally dropped the `## Open questions` header,
 restored), `notes/diode-matrix-history.md` (this entry). Ghidra database: 1 rename + 2 plate comments,
 listed above, all independently re-verified this session by direct decompile/memory reads, not taken from
-the subagent's report alone. No new ARM/Thumb disassembly gaps queued. No git commit made yet this session.
+the subagent's report alone. No new ARM/Thumb disassembly gaps queued. Committed (`3832650`).
+
+## 21st session — found the missing link: real enforcement runs through one master classifier, and a real feature (Band Edge Beep) can consult the JP table
+
+Direct continuation of the 20th session's open gap, this time traced entirely firsthand (no subagent) —
+the user pushed back that "if we can't find how it's used, we don't have good enough understanding," which
+was exactly right and worth taking seriously rather than settling for the 20th session's negative.
+
+### Placed the diode-matrix refresh precisely in the real boot sequence
+
+Decompiled `cold_boot_hw_init` (`0x2002afc0`) directly and found it calls `FUN_2003c530()` — the master
+"rescan the diode matrix and rebuild everything" routine (this project already knew this function
+partially, from session 9's D406/D409 classification-byte work, but had never placed it in the boot
+sequence). Read its raw listing (not just decompile) to get the exact order:
+`bl 0x2003bc58` → capture the pre-scan diode value into `r5` (`ldr r5,[r4,#4]` at `0x2003c540`, *before*
+the fresh scan) → `bl 0x2003bb88` (`scan_diode_matrix_p5`, the real GPIO scan) → `bl 0x2003bc68`
+(`sync_diode_matrix_to_eeprom`) → `bl 0x2003c0ec` (builds the live TX/RX tables) → `bl 0x2003c4dc` → the
+D406/D409 classification byte write → `bl 0x2003c27c`, called with the *pre-scan* value (`r5`) still in
+`r0`, not the fresh post-scan one → `bl 0x2003c174`. The pre-scan-vs-fresh-scan distinction in the
+`FUN_2003c27c` call is a genuine, confirmed subtlety (some kind of "did this change since an earlier
+capture" check) that doesn't change this session's main finding but is worth remembering for whoever
+picks this up next.
+
+### The missing link: `classify_frequency_to_band`
+
+Found by asking a different question than prior sessions: not "what reads `DAT_2003c840`" but "what is
+`region_code` actually FOR, downstream of the live-table construction — is there a consumer at all?" Ran
+`references_to` on `FUN_20013218` and got 21 call sites spread across the whole firmware — the
+user-band-edge setter `FUN_2000e448`, a general frequency/range validity checker `FUN_20040508`
+(itself called from contexts that look like "is this a legal single frequency or {min,max} pair"), the
+diode-matrix self-checks already known from the 20th session, and many more. Decompiled `FUN_20013218`
+itself:
+
+```c
+uint FUN_20013218(uint param_1,int param_2)
+{
+  if (param_2 == 0) {
+    return FUN_20013154(param_1, DAT_200134ec);
+  }
+  // else: walk DAT_200134e8 directly, an inline {min,max}-pair classifier
+}
+```
+
+Read `DAT_200134ec`'s actual stored value directly: `0x203d9ff4` — **exactly** `DAT_2003c83c`'s target,
+the live TX table `FUN_2003c0ec` builds from `region_code` (D404/407/410/413) plus D401/D402/D405/D416.
+Renamed `FUN_20013218` → `classify_frequency_to_band`. **This is the piece the 20th session's trace was
+missing**: the diode/region_code mechanism isn't a dead end that only feeds a scratch buffer nobody reads
+— it's the literal, sole basis for "is this frequency in a valid ham band" used by dozens of call sites
+across the entire firmware, confirmed end-to-end from the GPIO scan to this one classifier.
+
+### A real feature reaches the JP table too — Band Edge Beep
+
+The *other* branch of `classify_frequency_to_band` (`param_2!=0`) reads `DAT_200134e8` directly instead —
+read its value: `0x203de24c`, exactly `DAT_2003c840`'s target (the JP-narrow-table scratch buffer from the
+20th session). Searched the raw listing around every one of the 21 call sites for a nonzero second
+argument and found exactly one: `0x20017864` (`bl 0x20013218`), preceded at `0x20017850` by `mov r1,#0x1`.
+That call sits inside `FUN_20017830`. Decompiled it fully:
+
+```c
+void FUN_20017830(int param_1) {
+  if (*(byte*)(DAT_200183b8 + 0x22) != 0) {
+    bVar1 = FUN_20013218(*DAT_200183c4, 1 < *(byte*)(DAT_200183b8 + 0x22));
+    if (param_1 == 0) { *(byte*)(DAT_200183a4 + 6) = bVar1; }
+    else {
+      bVar2 = *(byte*)(DAT_200183a4 + 6) ^ bVar1;
+      if (/* classification changed */) {
+        if (bVar1 & 0x80) FUN_2000a17c(7); else FUN_2000a17c(6);
+      }
+    }
+  }
+}
+```
+
+`FUN_20017830` (renamed `band_edge_beep_check_and_fire`) is called twice from `FUN_20017a78` — a
+per-tuning-tick VFO-frequency-change handler (`FUN_20017830(0)` to snapshot the new classification,
+some work, then `FUN_20017830(1)` to compare against the snapshot and fire on a change). Decompiled
+`FUN_2000a17c` to see what events 6/7 actually do: it indexes a beep-pattern table and pushes tones into
+an audio sequencer — **a beep player, confirmed by decompile, not inferred from the name**. Searched ROM
+for the string "Band Edge" and found two real hits (`0x2035a6b1`, `0x2035cca8`) — this is Icom's actual
+**"Band Edge Beep"** feature (a real IC-7300 menu setting: beep when tuning crosses a band boundary), not
+a guessed label.
+
+### The one piece still open
+
+`band_edge_beep_check_and_fire`'s JP-table mode only fires when `*(0x203de4cc + 0x22)` is greater than 1
+(the expression is literally `1 < *(byte*)(DAT_200183b8 + 0x22)`, and `DAT_200183b8` itself resolves to
+`0x203de4cc`). Tried to find the writer: a raw hex search for `0x203de4cc` as a 4-byte literal returned
+**over 50 hits** scattered across the firmware — by far the widest fan-out any single base pointer has
+shown in this project, evidently a giant, widely-shared "current operating state" struct touched from
+dozens of unrelated subsystems. Checking each candidate site for a `STR`-family write to offset `+0x22`
+was not completed this session — a real, precisely-scoped next step, not a vague one. So: confirmed that
+Band Edge Beep *can* classify against the JP-narrow table; not yet confirmed *when* it actually does, or
+whether that's tied to `region_code`/D420/D423 at all versus being a plain, hardware-independent
+user-selectable beep mode.
+
+### Net assessment
+
+A substantially better position than the 20th session's clean negative. The diode/region_code mechanism is
+now confirmed to reach real, broad, everyday frequency validation (not merely to build tables nobody
+reads), and the JP-narrow table is now confirmed reachable by a real, named, findable feature — Band Edge
+Beep — under a condition that's precisely identified even though its trigger isn't yet nailed down. This
+directly answers the user's standing worry: we now do have a concrete, verified understanding of the
+process, with one well-scoped remaining unknown rather than an open-ended "we don't know if this is used
+at all."
+
+### Renames and comments (Ghidra database)
+
+- `FUN_20013218` → `classify_frequency_to_band`, with a full plate comment covering both modes, the
+  live-table link, and the Band Edge Beep consumer.
+- `FUN_20017830` → `band_edge_beep_check_and_fire`.
+
+**Files touched this session**: `notes/band-plans.md` (new 21st-session subsection with full trace and
+next steps), `notes/diode-matrix.md` (new 21st-session section), `notes/diode-matrix-history.md` (this
+entry). Ghidra database: 2 renames + 1 plate comment, listed above, all from direct decompile/memory reads
+performed live this session (no subagent used). No new ARM/Thumb disassembly gaps queued. No git commit
+made yet this session.

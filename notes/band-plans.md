@@ -194,43 +194,70 @@ margin — not independently dated. The missing 60m band and the 7.0-7.2 MHz 40m
 allocations too. This is unambiguous: Icom's engineers did encode Japan's actual regulatory band plan
 somewhere in this firmware image.
 
-**But it isn't gated by D420 or D423.** Fully traced (direct decompile, independently re-verified in this
-session, not taken from a subagent's word):
+**Not gated by D420 or D423 at the table-selection layer** — re-confirmed directly:
 
-- The function that loads this table, `FUN_2003c20c`, branches purely on `is_region_code_zero()` (i.e.
-  `region_code == 0`) — no test of D420 (`0x4000`) or D423 (`0x8000`) anywhere in it.
-- `FUN_2003c0ec` — the function that builds the actual "live" TX/RX tables (`DAT_2003c83c`/`DAT_2003c838`)
-  that real operating code is presumed to consult — uses only `region_code` plus D401/D402/D405/D416.
-  Re-decompiled and re-checked directly: no D420/D423 test anywhere in it either.
-- The table this session found gets copied not into the live table, but into a *separate* scratch buffer
-  (`DAT_2003c840`, `0x203de24c`) whenever `region_code==0` — **for both USA and JAP alike**, since neither
-  diode distinguishes them at this point. A raw whole-ROM hex search for that buffer's own address (not
-  just Ghidra's `references_to`, given this project's prior experience with that missing real reads) found
-  only 2 hits total: the buffer's own storage slot and one self-consistency check
-  (`FUN_2003c27c`/`FUN_2003c320`, which re-validates that the buffer's segments still classify cleanly
-  against a universal ham-band table and, if not, just reloads it — a self-healing/sanity mechanism, not an
-  enforcement swap). **No real-time TX-permission consumer of this buffer was found.**
+- `FUN_2003c20c` (loads this table) branches purely on `is_region_code_zero()` — no D420/D423 test.
+- `FUN_2003c0ec` (builds the "live" TX/RX tables) uses only `region_code` plus D401/D402/D405/D416 — no
+  D420/D423 test either.
+- The JP table loads into a *separate* scratch buffer (`DAT_2003c840`, `0x203de24c`), identically for USA
+  and JAP, whenever `region_code==0`.
 
-**Current best answer**: no — as far as every reachable piece of this specific mechanism goes, populating
-D420 and/or D423 on top of a `region_code=0` configuration does **not** change the enforced TX/RX band
-tables. The band-edge selection logic only ever looks at `region_code` (from D404/407/410/413) plus
-D401/D402/D405/D416; USA and JAP get identical treatment there. Japan's real, correct band plan is
-genuinely present in ROM, and is loaded into RAM under the right condition (`region_code==0`), but this
-investigation could not find where — or whether — it actually reaches the real go/no-go transmit decision.
-That's either a real design quirk (unlikely for a shipping product that must meet Japanese regulations) or,
-more likely, **an open gap in this trace**: the actual VFO/TX-frequency-validation function itself (as
-opposed to the table-selection and table-refresh functions checked this session) hasn't been identified and
-checked for whether it reads `DAT_2003c840` under some condition not yet found, or for a D420/D423 test of
-its own.
+### 21st session — the missing link found: real enforcement runs through one master classifier, and a real (if not fully pinned down) consumer of the JP buffer exists
 
-**Concrete next steps for a future session**: (1) find the real TX-permission/frequency-validation function
-(what actually runs when the user tunes or presses PTT) and check what buffer *it* reads —
-`DAT_2003c83c`/`DAT_2003c838`, `DAT_2003c840`, or something else entirely; (2) if it turns out to read
-`DAT_2003c83c`/`DAT_2003c838` only, check whether `FUN_2003c0ec`'s build step is ever passed a different
-region_code specifically for D420/D423-populated hardware (i.e. whether `region_code` itself, not just the
-table lookup, could be conditionally altered upstream — not checked this session); (3) as a fallback, live
-JTAG verification (populate D420/D423 on a `region_code=0` test board, watch whether `DAT_2003c83c`/`838`
-or `DAT_2003c840` actually changes, or whether TX genuinely gets blocked on JARL-restricted frequencies).
+Traced this fully via direct decompile — no subagent this round. Two findings close most of the remaining
+gap.
+
+**Finding 1 — the diode/region_code mechanism DOES reach broad, real enforcement**, through a single
+function used everywhere: **`classify_frequency_to_band`** (renamed from `FUN_20013218`, `0x20013218`).
+This is called from dozens of sites across the whole firmware — the user-band-edge setter
+(`FUN_2000e448`), a general frequency-validity checker (`FUN_20040508`, used by whatever calls it to
+decide if a proposed frequency/range falls inside one clean, currently-valid ham band), the diode-matrix
+self-checks, and many more (21 call sites found via `references_to`). Its default mode (`param_2==0`,
+essentially every caller) delegates to `FUN_20013154(freq, DAT_200134ec)`, and `DAT_200134ec` resolves
+(confirmed by direct memory read) to `0x203d9ff4` — **the exact same live TX-table buffer**
+`FUN_2003c0ec` builds from `region_code`+D401/402/405/416. So `region_code` is not a dead end sitting only
+in a display feature — it's the actual, sole basis for "is this frequency in a valid band" everywhere in
+the firmware that calls this one classifier. This had not been confirmed before this session.
+
+**Finding 2 — a real, named feature can classify against the JP-narrow-table buffer, though its trigger
+condition isn't fully pinned down.** `classify_frequency_to_band`'s *other* mode (`param_2!=0`) walks
+`DAT_200134e8` directly, which resolves to `0x203de24c` — `DAT_2003c840`'s target, the JP-table scratch
+buffer. Found exactly one real caller using this mode: **`band_edge_beep_check_and_fire`** (renamed from
+`FUN_20017830`, called with a hardcoded `param_2=1` at its call site `0x20017864`), itself called from a
+per-tuning-tick VFO-frequency-change handler (`FUN_20017a78`). Traced its effect fully: when the
+classification of the current frequency changes or goes invalid across two successive calls, it invokes
+`FUN_2000a17c(6)`/`FUN_2000a17c(7)` — confirmed, by decompile, to be a **beep-pattern player** (indexes a
+beep-sequence table and pushes tones into an audio queue). Two "Band Edge" strings exist in ROM
+(`0x2035a6b1`/`0x2035cca8`), confirming this is Icom's real **"Band Edge Beep"** feature (a real IC-7300
+menu setting that beeps when tuning crosses into/out of a valid band) — not a cosmetic guess, a named,
+findable feature.
+
+**What's still open**: `band_edge_beep_check_and_fire` only uses the JP-buffer mode when a flag byte at a
+shared state-struct offset (`*(0x203de4cc + 0x22)`) is greater than 1 (0/1 use the live table; the check
+is `1 < flag`). This session could not find what *writes* that flag — `0x203de4cc` is an extremely
+widely-shared "current operating state" struct pointer with 50+ separate literal-pool copies scattered
+across the firmware (a scale of fan-out this project hasn't hit before), too many to exhaustively check by
+hand in one session. So it's confirmed that Band Edge Beep *can* consult the JP table, but not yet
+confirmed *when* — whether that's tied to `region_code`/D420/D423 at all, or is simply a generic
+user-selectable beep-mode setting (e.g. "beep only at the edge of the currently active band" vs. "beep at
+every classified boundary crossing including the JP-narrow segments") unrelated to which hardware variant
+is running.
+
+**Best current answer to the original question**: the diode-matrix mechanism (`region_code` +
+D401/402/405/416) is now confirmed to drive real, broad frequency validation via
+`classify_frequency_to_band` — this is a genuinely new, load-bearing finding, not previously confirmed.
+D420/D423 still do not appear anywhere in that specific chain. Japan's real band plan is real, ROM-resident,
+loaded into RAM at boot, and *is* reachable by at least one genuine feature (Band Edge Beep) under a
+condition not yet fully traced — a meaningfully stronger position than "no consumer found" from the 20th
+session, though the exact trigger for real JP hardware remains the one open piece.
+
+**Concrete next steps for a future session**: (1) find a writer of the flag at `0x203de4cc+0x22` — likely
+by searching for `STR`-family instructions immediately following one of the 50+ literal-pool loads of
+`0x203de4cc`, or by finding the settings-item record for "Band Edge Beep" in the catalog table
+(`0x2018ed48`-based, same table the 4630kHz checkbox was found in) and tracing its write-handler; (2) once
+found, check directly whether it's ever set based on `region_code`, D420, or D423, versus being a plain
+menu-selectable 0/1/2 mode; (3) as a fallback, live JTAG verification remains the most direct route if
+static tracing stalls again.
 
 ## External verification (19th session)
 
