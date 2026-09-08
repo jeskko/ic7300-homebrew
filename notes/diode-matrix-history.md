@@ -2056,4 +2056,48 @@ the well-known "open TX" hardware mod (physically removing D422 to leave only D4
 resolved, new 18th-session section), `notes/diode-matrix-history.md` (this entry). Ghidra database: 6
 renames + 1 plate comment, listed above, all backed by direct memory reads performed this session, not
 taken from any subagent report (no subagent was used this session). No new ARM/Thumb disassembly gaps
-queued. No git commit made yet this session.
+queued. Committed (`fd5113a`).
+
+## 19th session — externally verified ITR/ESP/KOR against real national band plans; caught an unsourced "ITR=Italy" claim
+
+Two sharp follow-up questions from the user: what's the actual source for "`ITR`=Italy," and why does the
+EUR/ITR difference show up only in the 160m edge rather than somewhere else? Worth taking seriously rather
+than defending the prior write-up — went back to the primary source and then checked externally.
+
+**The manual itself never says "Italy."** Re-extracted the real service-manual PDF page directly
+(`pdftotext -layout` on `IC-7300_Servicio.pdf`'s actual `MODEL/VERSION/VERSION NUMBER/OPERATABLE BANDS`
+table) rather than trusting the prior session's paraphrase — confirmed the table prints only the bare
+3-letter codes (`USA`/`EUR`/`ITR`/`ESP`/`TPE`/`KOR`/`EXP`), never a spelled-out country name anywhere. The
+"(Italy)"/"(Spain)"/"(Taiwan)"/"(Korea)" parentheticals this file has carried since an early session were
+always this project's own inference (`ESP`→Spain and `KOR`→Korea are essentially unambiguous; `ITR`→Italy
+was the shakiest of the four, never independently confirmed until now). Corrected `notes/band-plans.md`'s
+variant table to flag this plainly instead of stating it as manual-sourced fact.
+
+**Then checked it — and it holds up, with the 160m difference being exactly the right explanation.** Web
+search against real national amateur-radio band plans, three exact matches:
+
+- **Spain (region 4)**: real allocation extended to exactly `70.150-70.250 MHz` on 27 October 2017 (ARRL
+  news) — an exact match to region 4's ROM table, not just "narrower."
+- **Italy (region 3)**: real 160m allocation starts at `1.830 MHz`, not the general European/CEPT
+  `1.810 MHz` edge — an exact match to region 3's 160m row. Directly answers the user's second question:
+  re-checked region 2 vs region 3's full ROM tables byte-by-byte (already done in the 17th/18th sessions,
+  re-confirmed here), and the 160m edge is the *only* difference between them — every other band is
+  byte-identical. That's not a weirdly narrow way to distinguish EUR from Italy; it's the actual, correct,
+  single real-world distinguishing feature between the general-European and Italian national allocations
+  on this specific band. `region_code` 2 = EUR follows by elimination, no longer just a derivation.
+- **Korea (region 6)**: real band plan (Korea Amateur Radio League, `karl.or.kr`) gives 160m
+  `1.800-1.825 MHz` and 80m `3.500-3.550 kHz` — both exact matches to region 6's table.
+
+**Taiwan (region 5) remains unconfirmed** — no citable Taiwanese national allocation table turned up in
+search to check its channelized 80m/30m/6m slices against. The diode-presence derivation itself stays
+exhaustive and unambiguous either way (TPE is the only variant with D407+D410 but not D413).
+
+These are `WebSearch` results, not primary regulatory PDFs pulled and read directly — flagged in the notes
+as strong corroborating evidence (three independent exact numeric matches), not the same evidentiary tier
+as the ROM reads or the service-manual PDF text itself.
+
+**Files touched this session**: `notes/band-plans.md` (country-name sourcing caveat, new "External
+verification" section, Open Questions 2/3 updated), `notes/diode-matrix.md` (Open Question 1 addendum),
+`notes/diode-matrix-history.md` (this entry). No Ghidra database changes this session (no new RE, just
+external verification of an existing finding). No new ARM/Thumb disassembly gaps queued. No git commit made
+yet this session.

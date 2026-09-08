@@ -9,18 +9,27 @@ per band, terminated by an `0xffffffff` sentinel.
 
 ## The 8 official Icom variants
 
-Per the service manual's own `MODEL/VERSION/VERSION NUMBER/OPERATABLE BANDS` table (§ Introduction) plus
-the §5 Parts List diode-population tags — see [[ic7300-signal-chain]] and `notes/diode-matrix.md`'s "Official
-per-version population data" section for sourcing:
+Per the service manual's own `MODEL/VERSION/VERSION NUMBER/OPERATABLE BANDS` table (§ Introduction, page 1
+— re-extracted directly from the source PDF this session, `pdftotext -layout` on
+`IC-7300_Servicio.pdf`) plus the §5 Parts List diode-population tags — see `notes/diode-matrix.md`'s
+"Official per-version population data" section for the parts-list sourcing.
+
+**Important caveat on the country names**: the manual's own table prints **only the 3-letter codes**
+(`USA`/`EUR`/`ITR`/`ESP`/`TPE`/`KOR`/`EXP`) — it never spells out full country names anywhere. The full
+names below (Italy, Spain, Taiwan, Korea) are this project's own inference, not manual text. `ESP`=Spain
+and `KOR`=Korea are essentially unambiguous (standard abbreviations). `TPE`=Taiwan (Taipei) is very likely
+right but unconfirmed. `ITR`=Italy was the least certain of the set — **now strongly corroborated
+externally, see "External verification" below**, but still technically an inference, not a manual-stated
+fact.
 
 | Version # | Country/market | Manual's stated band access |
 |---|---|---|
 | `#01` | JAP (Japan) | not in this manual's table (JP-specific diodes D420/D423 layer JP-only features separately — see below) |
 | `#02` | USA | HF/50 MHz |
 | `#03` | EUR | **HF/50/70 MHz** |
-| `#05` | ITR (Italy) | **HF/50/70 MHz** |
+| `#05` | ITR (Italy — inferred, see caveat above) | **HF/50/70 MHz** |
 | `#06` | ESP (Spain) | **HF/50/70 MHz** |
-| `#07` | TPE (Taiwan) | HF/50 MHz |
+| `#07` | TPE (Taiwan — inferred) | HF/50 MHz |
 | `#08` | KOR (Korea) | HF/50 MHz |
 | `#12` | EXP (export/general coverage) | HF/50 MHz |
 
@@ -126,7 +135,7 @@ derivations live in `notes/diode-matrix.md`; summarized here for a single refere
 | **D423** | JP-only (`#01`) | Master gatekeeper for a large set of region-conditional menu items/features (`is_feature_enabled_for_region`) plus the factory-reset display-language default; not itself a band-table gate |
 | **D417** | EUR/ITR/ESP only (`#03`/`#05`/`#06`) | **Checked directly this session and ruled out as a band-table gate of any kind** (see below) — its actual function is still unknown |
 
-## Region 5/6 identity: TPE (Taiwan) and KOR (Korea) — newly derived, not yet externally cross-checked
+## Region 5/6 identity: TPE (Taiwan) and KOR (Korea)
 
 Derived purely from the diode-presence intersection above (region_code 5 = TPE, region_code 6 = KOR — see
 the mapping table), independently supported by the two tables' real content being clearly distinguishable
@@ -140,12 +149,12 @@ and each internally consistent:
   one 10 kHz — 40m to 7.0-7.2 pre-clamp) but leaves 30m, 6m, and everything above fully open — a
   meaningfully different, less-restrictive shape than region 5's.
 
-**Confidence**: high on the *mapping derivation* itself (clean, exhaustive diode-presence intersection with
-no ambiguity — TPE is the only variant with D407+D410 but not D413, KOR is the only variant with all three
-of D407/D410/D413). **Not yet cross-checked** against real, independently-documented Taiwanese/Korean
-amateur radio band plans — that would be the natural next step to fully close this out (worth searching for
-each country's actual national frequency allocation table and comparing the specific channelized slices
-above against it).
+**KOR externally confirmed** (see "External verification" below) — Korea's real, published amateur band
+plan is 160m `1.800-1.825 MHz` and 80m `3.500-3.550 kHz`, an **exact** match to region 6's 160m row and to
+the first of its two 80m segments. **TPE still unconfirmed** — web search turned up no specific, citable
+Taiwanese national allocation table for 80m/40m/6m to check the channelized slices against; the diode-
+presence derivation (TPE is the only variant with D407+D410 but not D413) is exhaustive and unambiguous, so
+confidence stays high, but this one specific piece is not independently verified the way KOR/ITR/ESP now are.
 
 ## D417 and the 70 MHz question — ruled out, still unexplained
 
@@ -157,17 +166,48 @@ Icom populates D417 on the same 3 PCBs that happen to get region_code 2/3/4, not
 that behavior. D417's real function remains unknown — see `notes/diode-matrix.md`'s 17th session for the
 full negative trace and open leads.
 
+## External verification (19th session)
+
+Checked the diode-derived region_code↔country assignments against real, independently-published national
+amateur band plans via web search. Three separate, exact matches found — strong, independent evidence the
+identification is correct, not just a clean-looking coincidence of the diode arithmetic:
+
+- **ESP (region 4) — confirmed.** Spain's real amateur 70 MHz allocation was extended to exactly
+  **70.150-70.250 MHz** effective 27 October 2017 (ARRL/IARU reporting). This is an **exact** match to
+  region 4's ROM table, down to the kHz — not just "narrower," the identical numbers.
+- **ITR (region 3) — confirmed, and this directly answers the "why does EUR/ITR only differ in 160m"
+  question below.** Italy's real amateur 160m allocation is `1.830-2.000 MHz`/`1.830-1.850 MHz` (per
+  Italian regulatory sourcing found via search), not the general European/CEPT `1.810-2.000 MHz` edge —
+  an **exact** match to region 3's 160m row, and the *only* thing that differs between region 2 and region
+  3's ROM tables (every other band is byte-identical between them — re-checked directly, not assumed). So
+  the 160m-only difference this project found is not a weirdly narrow way to distinguish EUR from ITR —
+  it's the actual, correct, single real-world distinguishing feature between the general European and
+  Italian national allocations on this particular band. `region_code` 2 = EUR follows by elimination.
+- **KOR (region 6) — confirmed** on two independent bands: Korea's real published band plan (Korea Amateur
+  Radio League, `karl.or.kr`) gives 160m `1.800-1.825 MHz` and 80m `3.500-3.550 kHz` — both an **exact**
+  match to region 6's ROM table (160m row, and the first of its two 80m segments).
+- **TPE (region 5)** — no specific, citable Taiwanese national allocation table found this session to check
+  against; remains derived-but-unconfirmed (see above).
+
+These are all `WebSearch` results, not primary regulatory documents pulled directly — treat as corroborating
+evidence (three independent exact numeric matches is strong), not the same evidentiary tier as the ROM
+reads or the service-manual PDF text itself. Worth pulling the actual Italian (ARI)/Korean (KARL)/Spanish
+(URE) primary source documents directly if this ever needs to be airtight.
+
+Sources: [ARRL: Spain Extends Amateur Privileges on 70 MHz](https://www.arrl.org/news/spain-extends-amateur-privileges-on-70-mhz), [Tourist Ham Radio in Italy — IW5EDI](https://www.iw5edi.com/ham-radio-reference/tourist-ham-radio-in-italy), [KARL Band Plan 1.8 MHz (160M)](https://myerseng.com/Publico/Korea-Band-Plan-2004.pdf), [Band Plan in Korea — karl.or.kr](https://www.karl.or.kr/bbs/board.php?bo_table=info&wr_id=15).
+
 ## Open questions
 
 1. **Region_code 1's owner is unknown** — no documented variant's diode tags produce it. Undocumented 9th
    variant, or genuinely unused? The gap in Icom's public Version# numbering (`#04`/`#09`/`#10`/`#11` never
    seen) is suggestive but unconfirmed.
-2. **Region 4 (ESP)'s exact band-plan fingerprint** — narrower 70.150-70.250 MHz slice (vs regions 2/3's
-   full 70.000-70.500) and a tighter 1.810-1.850 MHz 160m allocation — hasn't been cross-checked against
-   Spain's actual published amateur band plan. Doing so would both confirm region4=ESP directly and pin
-   region2/region3 to EUR/ITR specifically (currently only known as a set, not individually assigned).
-3. **Region 5/6 = TPE/KOR identification** — solid by diode-presence derivation, not yet independently
-   confirmed against real national band plans (see above).
+2. ~~Region 4 (ESP)'s exact band-plan fingerprint hasn't been cross-checked~~ — **resolved, 19th session**,
+   see "External verification" above: exact match to Spain's real, current 70.150-70.250 MHz allocation.
+   `region2`=EUR/`region3`=ITR is also now resolved the same way (Italy's real 1.830 MHz 160m edge is an
+   exact match to region 3, and is the *only* difference between region2/region3's tables).
+3. **Region 5 (TPE) identification** — solid by diode-presence derivation, region 6 (KOR) now externally
+   confirmed on two bands (see above), but TPE itself still has no independent national-band-plan check —
+   the one piece of this file's identifications still resting on derivation alone.
 4. **D405's exact real-hardware effect** on the single ~5.255 MHz RX edge point is still a narrow,
    unresolved nuance (see `notes/diode-matrix.md`) — doesn't affect anything in this file's tables, which
    are all TX-side or the unrestricted general-coverage RX range, but worth closing for completeness.

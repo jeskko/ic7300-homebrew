@@ -1187,15 +1187,23 @@ performed in this session, not taken from any subagent report. No new ARM/Thumb 
    unique region_code), `EUR`→2, `ITR`→3, `ESP`→4, `TPE`→5, `KOR`→6,
    `EXP`→7. This also resolves the 17th session's "which of {2,3,4} is
    which of {EUR,ITR,ESP}" sub-question directionally (`EUR`=2, `ITR`=3,
-   `ESP`=4) via the same clean diode-intersection method, though the
-   17th session's suggested band-plan cross-check against each country's
-   real, independently-documented allocation (especially to confirm
-   `ESP`=4's distinctively narrow 70.150-70.250 MHz slice) hasn't been
-   done yet — worth doing to be fully sure. `region_code` 1 is unclaimed
-   by any of the 8 documented variants (no diode combination among them
-   produces it) — still open, see Open Question 2. Full derivation and
-   every region's complete band table: `notes/band-plans.md` (new
-   consolidated reference file, 18th session).
+   `ESP`=4) via the same clean diode-intersection method. **19th
+   session: externally confirmed via web search against real published
+   national band plans** — Spain's real 70MHz allocation is exactly
+   `70.150-70.250 MHz` (exact match to region 4), Italy's real 160m
+   allocation starts at exactly `1.830 MHz` (exact match to region 3,
+   and the *only* difference between region 2 and region 3's tables —
+   so `EUR`=2/`ITR`=3 is no longer just a clean derivation, it's
+   independently verified), and Korea's real band plan matches region
+   6 exactly on both 160m (`1.800-1.825 MHz`) and 80m (`3.500-3.550
+   MHz`). Only `TPE`=5 still rests on the diode-derivation alone — no
+   citable Taiwanese national allocation table found to check it
+   against. `region_code` 1 remains unclaimed by any of the 8 documented
+   variants (no diode combination among them produces it) — still open,
+   see Open Question 2. Full derivation, every region's complete band
+   table, and the external verification with sources:
+   `notes/band-plans.md` (new consolidated reference file, 18th
+   session).
 2. ~~Icom's public "Version #" numbering goes at least to 12, but the
    internal 4-bit region code only reaches 7~~ — **mostly resolved, 18th
    session**, once Open Question 1's lookup-table bug is fixed: it's not
