@@ -12,6 +12,10 @@ from unicorn import Uc
 
 from . import flash_image as flash_image_mod
 from .core import Cpu
+from .peripherals.cpg import Cpg
+from .peripherals.cpg import DEEP_STANDBY_CLUSTER_BASE, DEEP_STANDBY_CLUSTER_SIZE
+from .peripherals.cpg import MAIN_CLUSTER_BASE, MAIN_CLUSTER_SIZE
+from .peripherals.gic import GicCpuInterface, GicDistributor
 from .peripherals.gpio import GpioBlock
 from .peripherals.ostm import Ostm
 from .peripherals.registry import PeripheralRegistry
@@ -70,8 +74,29 @@ class Board:
         # register -- there are well over a hundred of those.
         self.gpio = GpioBlock()
         self.registry.register("gpio", 0xFCFE3000, 0x00005000, self.gpio)
+        self.ostm0 = Ostm(base=0xFCFEC000)
+        self.registry.register("ostm0", self.ostm0.base, self.ostm0.size, self.ostm0)
         self.ostm1 = Ostm(base=0xFCFEC400)
         self.registry.register("ostm1", self.ostm1.base, self.ostm1.size, self.ostm1)
+        self.cpg = Cpg()
+        self.registry.register("cpg_main", MAIN_CLUSTER_BASE, MAIN_CLUSTER_SIZE, self.cpg)
+        self.registry.register(
+            "cpg_deep_standby", DEEP_STANDBY_CLUSTER_BASE, DEEP_STANDBY_CLUSTER_SIZE, self.cpg
+        )
+        self.gic_distributor = GicDistributor()
+        self.registry.register(
+            "gic_distributor",
+            self.gic_distributor.base,
+            self.gic_distributor.size,
+            self.gic_distributor,
+        )
+        self.gic_cpu_interface = GicCpuInterface()
+        self.registry.register(
+            "gic_cpu_interface",
+            self.gic_cpu_interface.base,
+            self.gic_cpu_interface.size,
+            self.gic_cpu_interface,
+        )
 
         self._trace_log: list[int] = [] if trace else None  # type: ignore[assignment]
         self.cpu = Cpu(trace=self._on_trace if trace else None)

@@ -12,6 +12,8 @@ from typing import Callable
 from unicorn import Uc, UC_ARCH_ARM, UC_MODE_ARM, UC_HOOK_CODE
 from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_PC, UC_CPU_ARM_CORTEX_A9
 
+from .exceptions import ExceptionEntry
+
 # ARM state, SVC mode, IRQ+FIQ masked -- the documented Cortex-A reset convention.
 CPSR_RESET = 0x000000D3
 
@@ -29,6 +31,11 @@ class Cpu:
                 "falling back to Unicorn's default ARM model -- see emu/README.md's "
                 "open-risks section"
             )
+
+        # Handles SWI/UDEF/abort/IRQ/FIQ entry (bank LR/SPSR, switch mode, jump to the
+        # guest's own vector table) -- see exceptions.py. Without this, Unicorn raises a
+        # bare UC_ERR_EXCEPTION and stops on the guest's first SWI/trap.
+        self.exceptions = ExceptionEntry(self.uc)
 
         if trace is not None:
             self.uc.hook_add(UC_HOOK_CODE, lambda uc, addr, size, _ud: trace(addr, size))

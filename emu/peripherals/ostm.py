@@ -3,9 +3,12 @@ busy-wait to see time actually pass.
 
 Register offsets confirmed against `/home/jvaarani/Downloads/rza1.svd` (`OSTM0` base
 `0xFCFEC000`, `OSTM1` derived at `0xFCFEC400`; `CMP`=`+0x0`, `CNT`=`+0x4`, `TE`=`+0x10`,
-`TS`=`+0x14`, `TT`=`+0x18`, `CTL`=`+0x20`). Found via this exact address while extending
-the emulator, 2026-09-08: `FUN_2002b878`'s GPIO-pin-settle busy-wait (see gpio.py's
-docstring) polls `OSTM1.CNT` (`0xfcfec404`) as a timeout guard alongside a PPR1 pin read.
+`TS`=`+0x14`, `TT`=`+0x18`, `CTL`=`+0x20`). One instance of this class is created per real
+timer (see `board.py`). Found via `OSTM1.CNT` (`0xfcfec404`) while extending the emulator,
+2026-09-08: `FUN_2002b878`'s GPIO-pin-settle busy-wait (see gpio.py's docstring) polls it
+as a timeout guard alongside a PPR1 pin read. `OSTM0` followed shortly after, once real
+ARM exception entry (see `../exceptions.py`) unblocked much more of `body.bin`'s own boot
+code -- writes to its `TT` register suggest FreeRTOS's own system-tick timer setup.
 
 This is **not** a faithful OSTM model -- real hardware counts actual elapsed bus cycles;
 `CMP`/`CTL`/`TE`/`TS`/`TT` are plain read/write storage here with no real timer behavior

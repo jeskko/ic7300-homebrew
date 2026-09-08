@@ -8,6 +8,44 @@ project overall, and the planning session (2026-09-08) this implements.
 
 ## Status
 
+### Real ARM exception entry, CPG, GIC, and OSTM0 added, 2026-09-08 (same day, third pass)
+
+Chasing the CPG stub hit below led somewhere much bigger: `body.bin` executes a genuine `SWI`
+instruction (very likely FreeRTOS's own "start the first task" mechanism, per
+[[kernel-rtos]]'s `swi_handler` -- the general shape matches, not yet individually
+re-confirmed this session) partway through its own init, and Unicorn has no built-in handling
+for ARM exceptions -- it just raises a bare `UC_ERR_EXCEPTION` and stops. **`exceptions.py`**
+fixes this properly: a `UC_HOOK_INTR` handler that performs the real architectural
+exception-entry sequence (bank a return address into the target mode's `LR`, save `CPSR` into
+that mode's `SPSR`, switch mode/state, jump to `VBAR + vector_offset`) for `SWI`/`UDEF`/
+prefetch-and-data-abort/`IRQ`/`FIQ`. This is genuine ARMv7-A architecture behavior, not
+IC-7300-specific, so it lives alongside `core.py` rather than in `board.py`. Two real things
+worth remembering from building it:
+- **Unicorn banks `LR`/`SPSR` transparently per-mode** -- switch `CPSR`'s mode bits first, then
+  read/write the plain `UC_ARM_REG_LR`/`UC_ARM_REG_SPSR` constants and they transparently hit
+  the *current* mode's banked copy. Confirmed empirically (see `exceptions.py`'s docstring);
+  no per-mode register constants exist in this Unicorn build's ARM bindings, and none are
+  needed.
+- **A real host-API trap**: reading `VBAR` via `Uc.cpr_read(15, 0, 12, 0, 0, el=1, ...)` (`el=1`
+  looks obviously correct -- VBAR is an EL1 register, and that's what the API's own docstring
+  calls the parameter) silently reads back `0` even when a guest `mcr`+`mrc` pair round-trips
+  the real value correctly. `el=0` reads the true value instead. Root cause not fully chased
+  down (plausibly this argument actually selects a security-state bank despite its name), but
+  confirmed reproducible with an isolated test independent of this project's firmware --
+  documented in `exceptions.py` in case a future Unicorn upgrade needs re-checking.
+
+With exceptions handled, boot progresses vastly further -- straight past the `CPG.STBCR5` stub
+hit below (implemented as **`peripherals/cpg.py`**, plain read/write storage for the whole
+clock/standby/deep-standby register file, per the SVD -- nothing yet depends on real
+clock-gating behavior), through **`peripherals/gic.py`** (the ARM GIC Distributor
+`0xE8201000` + CPU Interface `0xE8202000`, both addresses already-confirmed ground truth from
+[[memory-map]]/[[kernel-rtos]]'s prior sessions; `gic_distributor_disable`/`FUN_200b848c`,
+already-decompiled real functions, configure it), and a second `Ostm` instance (`OSTM0`,
+`peripherals/ostm.py` -- already generic from the first one). Stage 2 now stops at a new,
+clean, standard location: a 4-byte read at `0x3ffff000`, confirmed via the SVD to be
+**`L2C.REG0_CACHE_ID`** (the ARM PL310-style L2 cache controller's identification register) --
+left as the next stub-hit signal, not implemented this pass.
+
 ### GPIO/port + OSTM1 timer added, 2026-09-08 (same day as the MVP)
 
 Implemented the peripheral the MVP's criterion 3 stopped on: `peripherals/gpio.py`, the full
@@ -127,26 +165,34 @@ fine for this project's own non-distributed research use.
   file's own address table — this replaced an earlier, narrower attempt that only mapped the
   two device windows `base.dat`'s own MMU translation table identity-maps, which turned out to
   miss real pre-MMU hardware pokes entirely).
+- **`exceptions.py`** — real ARMv7-A exception entry (`SWI`/`UDEF`/aborts/`IRQ`/`FIQ`), living
+  next to `core.py` rather than `board.py` since it's generic CPU architecture, not
+  IC-7300-specific. See the Status section above for what this unlocked and the real Unicorn
+  API trap it took to get `VBAR` reading correctly.
 - **`mvp.py`** — the runnable MVP check described above.
 
 ## Extension roadmap
 
-1. ~~**GPIO/port registers**~~ — **done, 2026-09-08**, see above (`peripherals/gpio.py` +
-   `peripherals/ostm.py`). Diode-matrix/EEPROM-specific behavior ([[diode-matrix]]) isn't
-   modeled yet -- GPIO so far is the generic port register file only, not any specific pin's
-   real-world meaning (no diode scan simulation, no RIIC2/EEPROM peripheral).
-2. **Immediate next stub hit**: `CPG.STBCR5` (`0xfcfe0428`, module clock/standby control) --
-   likely a small, mostly-inert family of registers (clock-gating bits) unless something checks
-   a "is this module's clock actually on" bit before touching it. Cheap to add generically
-   (plain read/write storage per `STBCRn`, matching the GPIO/OSTM approach of "implement the
-   register file faithfully, model behavior only where something is confirmed to depend on it").
+1. ~~**GPIO/port registers**~~, ~~**CPG**~~, ~~**GIC**~~, ~~**real ARM exception entry**~~ —
+   **all done, 2026-09-08**, see the Status section above. Diode-matrix/EEPROM-specific
+   behavior ([[diode-matrix]]) isn't modeled yet -- GPIO so far is the generic port register
+   file only, not any specific pin's real-world meaning (no diode scan simulation, no
+   RIIC2/EEPROM peripheral). The GIC has no real interrupt delivery/pending-state modeled,
+   only distributor/CPU-interface register storage plus an always-spurious `ICCIAR` — enough
+   for `body.bin`'s own init code, not enough for `IRQ`/`FIQ` to ever actually be taken yet.
+2. **Immediate next stub hit**: `L2C.REG0_CACHE_ID` (`0x3ffff000`, ARM PL310-style L2 cache
+   controller ID register) — likely another cheap, mostly-inert register-file addition like
+   `CPG`, unless something branches on the ID value or a real cache-maintenance operation
+   through this controller turns out to matter.
 3. **SCIF UART** (one channel) piped to stdout — first real "see something happen" milestone;
    register layout already documented in [[ic7300-signal-chain]].
-4. **Minimal timer + interrupt-controller stub** — enough for FreeRTOS's tick handler to fire,
-   to get the scheduler past its first context switch. `peripherals/ostm.py`'s free-running
-   counter is a start but has no interrupt output modeled yet. Open question to validate first:
-   whether Unicorn can inject asynchronous external interrupts at all — a firm "no" is the
-   trigger to graduate to a real QEMU machine instead of fighting Unicorn's model.
+4. **Real timer interrupt delivery** — `peripherals/ostm.py`'s free-running counters exist but
+   raise no `IRQ`; `exceptions.py` can now enter an `IRQ` handler correctly (untested against a
+   real one so far, see its own verification-status note) but nothing yet *asserts* one. This
+   is the concrete next step toward FreeRTOS's own tick handler and first real context switch.
+   Open question to validate: whether Unicorn exposes a way to assert an external interrupt
+   line asynchronously (rather than the synchronous `SWI` trap already working) — a firm "no"
+   is the trigger to graduate to a real QEMU machine instead of fighting Unicorn's model.
 5. **SD-card block device + enough VFS** to run [[firmware-update]]'s own update orchestrator
    inside the emulator — the big payoff: test a `tools/icom_fw`-repacked custom `body.bin` for
    "does it get accepted and boot" fully offline, ahead of (or instead of) the JTAG-gated live
