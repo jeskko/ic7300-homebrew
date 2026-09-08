@@ -9,6 +9,12 @@ read correctly (its "chunk4"/tail model) has since been fully decoded —
 see the sections below. Only a couple of small open questions remain, see
 the end of this file.
 
+**Packing (the inverse direction), 2026-09-08**: `tools/icom_fw/container.py`'s `pack()` (with a
+from-scratch LZSS encoder in `lzss.py`'s `compress()`) rebuilds a checksum-correct container from a
+modified decompressed body — everything outside the body's fixed slot is copied verbatim, and the
+checksum region documented below (`size1`'s role) is recomputed correctly. Round-trip-verified against
+all 10 releases (`tools/verify_pack.py`). See `tools/README.md` and `sdk/roadmap.md`'s Phase 0.
+
 ## Layout as currently understood
 
 | Offset | Size | Field | Notes |

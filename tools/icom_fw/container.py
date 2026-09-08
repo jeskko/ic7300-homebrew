@@ -20,6 +20,23 @@ layout this implements:
                      is exhausted. NOT read by the original tunk3.py at
                      all -- see /notes/multi-cpu-images.md.
 
+**`chunk4`/`chunk5_tail` are superseded by `dsp_chunks.py`'s 3-component model for the real firmware
+update mechanism** (see /notes/multi-cpu-images.md) -- kept here only for byte-accounting completeness,
+not as ground truth for what's actually in that region. One previously-unremarked-on detail worth noting:
+`chunk4`'s start offset, as computed here (`CHUNK3_OFFSET + 4 + chunk3.size`), is *exactly* the file offset
+`firmware-update.md` documents as the update mechanism's own 16-byte MD5 checksum field (`size1 + 0x2c`,
+verified empirically against every locally-held release) -- i.e. this module's "chunk4" actually starts by
+decoding the checksum bytes themselves as if they were LZSS stream data (garbage in, garbage out -- the
+decoder happily produces *some* 0x10000-byte output with no error, since it's driven purely by an output
+counter, not content validation). `dsp_chunks.py`'s independently-derived `component0_offset = size1+0x3c`
+is exactly 16 bytes later than this module's `chunk4` start -- i.e. exactly past that checksum field --
+which is what the real first DSP-related component's data actually starts at. Not fixed here (out of scope
+for this module, and `dsp_chunks.py` is already the authoritative source for this region) -- just documented
+so a future reader doesn't trust `chunk4`'s decompressed content as meaningful.
+
+`pack()` (below) never needs to resolve this: it treats everything from the body's fixed slot end through
+EOF as an opaque byte range to preserve verbatim, so it's correct regardless of how that region is modeled.
+
 Every offset below is a *hardcoded* constant, matching the original
 firmware's own build tool as far as we can tell (see
 /notes/firmware-versions.md for the evidence these are fixed, oversized
@@ -31,10 +48,11 @@ nothing is silently dropped the way the original script drops chunk5.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from dataclasses import dataclass, field
 
-from .lzss import decompress
+from .lzss import compress, decompress
 
 VERSION_STRING_OFFSET = 0x0
 VERSION_STRING_LEN = 16
@@ -48,6 +66,14 @@ BODY_OFFSET = 0x10030
 CHUNK1_OFFSET = 0x21002C  # font1 (.ttf)
 CHUNK2_OFFSET = 0x24002C  # font2 (.ttf)
 CHUNK3_OFFSET = 0x25002C  # unidentified, raw
+
+# Checksum region, per /notes/firmware-update.md's traced firmware_update_main sequence:
+# the update mechanism's own 16-byte MD5 digest covers file bytes [CHECKSUM_REGION_START,
+# size1+CHECKSUM_REGION_START) -- boot-loader region + main body + chunk1/2/3 fonts -- and is
+# itself stored at file offset size1+CHECKSUM_REGION_START. Confirmed empirically against every
+# locally-held release (byte-exact MD5 match); size1 == size_table[0].
+CHECKSUM_REGION_START = 0x2C
+CHECKSUM_LEN = 16
 
 CHUNK4_DECOMPRESSED_LEN = 0x10000  # unidentified, tightly packed after chunk3
 
@@ -245,3 +271,57 @@ def _decompress_to_eof(data: bytes, start: int):
                 emit(buffer[(offset + i) & WINDOW_MASK])
 
     return DecompressResult(data=bytes(out), consumed=pos - start)
+
+
+def pack(original_data: bytes, new_body: bytes) -> bytes:
+    """Rebuild a valid, checksum-correct container from `original_data`,
+    replacing its main body with `new_body` (already-decompressed bytes)
+    and recompressing it -- e.g. for `sdk/roadmap.md`'s Phase 0 test:
+    patch a byte in an unpacked `body.bin`, then repack it here to get a
+    container the real firmware-update mechanism will accept.
+
+    Deliberately conservative: every byte outside the body's own fixed
+    slot (fonts, chunk3, and everything after -- the DSP-related
+    components `dsp_chunks.py` covers, and anything past those) is copied
+    byte-for-byte from `original_data`, never re-encoded. Only the body's
+    slot and the checksum field get touched. This avoids any risk from
+    re-running our from-scratch LZSS encoder over regions we don't need to
+    change and don't fully understand the content of (chunk3, the DSP
+    components) -- there is no reason to touch bytes this operation
+    doesn't need to change.
+
+    Raises ValueError if the newly-compressed body doesn't fit in its
+    fixed slot (`CHUNK1_OFFSET - BODY_OFFSET` bytes) -- this project's own
+    from-scratch encoder tends to compress *better* than Icom's, per
+    `notes/decompression-lzss.md`'s own testing, so this should only ever
+    trip if `new_body` is substantially larger than the original.
+    """
+    compressed_body = compress(new_body)
+    slot_capacity = CHUNK1_OFFSET - BODY_OFFSET
+    if len(compressed_body) > slot_capacity:
+        raise ValueError(
+            f"recompressed body ({len(compressed_body)} bytes) does not fit in its "
+            f"fixed slot ({slot_capacity} bytes available, {BODY_OFFSET:#x}-{CHUNK1_OFFSET:#x}) -- "
+            f"try a smaller modification, or this container's fixed-slot layout may need revisiting"
+        )
+
+    out = bytearray(original_data)
+
+    out[BODY_LENGTH_OFFSET : BODY_LENGTH_OFFSET + 4] = struct.pack("<I", len(new_body))
+
+    body_end = BODY_OFFSET + len(compressed_body)
+    out[BODY_OFFSET:body_end] = compressed_body
+    if body_end < CHUNK1_OFFSET:
+        # Clear leftover slot slack rather than leaving stale bytes from the
+        # original (longer) compressed stream sitting there unreferenced --
+        # cosmetic only, the decompressor never reads past `body_end` since
+        # it's driven by the decompressed-length counter, not a delimiter.
+        out[body_end:CHUNK1_OFFSET] = bytes(CHUNK1_OFFSET - body_end)
+
+    size1 = struct.unpack_from("<I", original_data, SIZE_TABLE_OFFSET)[0]
+    checksum_region = bytes(out[CHECKSUM_REGION_START : CHECKSUM_REGION_START + size1])
+    digest = hashlib.md5(checksum_region).digest()
+    digest_offset = CHECKSUM_REGION_START + size1
+    out[digest_offset : digest_offset + CHECKSUM_LEN] = digest
+
+    return bytes(out)

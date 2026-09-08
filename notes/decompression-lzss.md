@@ -82,3 +82,12 @@ while remaining > 0:
 
 This is the basis for the rewritten unpacker in `tools/` (see
 [[container-format]] for how it's invoked against the container).
+
+**Compressor, 2026-09-08**: `tools/icom_fw/lzss.py`'s `compress()` is a from-scratch encoder for this
+exact format — not an attempt to reproduce Icom's own compressor's byte-for-byte output (their match-
+selection heuristic is unknown and irrelevant to correctness), just a valid encoder whose output this
+same decompressor reproduces the original data from exactly. Verified against every real firmware body
+in this project (all 10 releases) via `tools/verify_pack.py`; as a side note, it also happens to compress
+noticeably *better* than Icom's own encoder on real bodies (e.g. v1.42's 3,738,392-byte body: 1,464,385
+bytes here vs. Icom's 1,676,645 — roughly 13% smaller), though ratio was never a design goal, just a
+side effect of using a wider match-search chain than a simple/fast embedded encoder likely does.

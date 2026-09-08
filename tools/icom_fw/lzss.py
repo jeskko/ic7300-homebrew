@@ -35,6 +35,126 @@ class DecompressResult:
     consumed: int
 
 
+MAX_MATCH_LEN = 18  # (0xf & 4 bits) + MIN_MATCH_LEN
+MATCH_LOOKAHEAD = 3  # hash key length -- must equal MIN_MATCH_LEN
+
+
+def compress(data: bytes) -> bytes:
+    """Compress `data` into a stream `decompress()` will reproduce exactly.
+
+    This is a from-scratch encoder for the same Okumura-style LZSS format
+    `decompress()` implements -- it does not attempt to reproduce Icom's
+    own compressor's byte-for-byte output (their exact match-selection
+    heuristic is unknown and irrelevant, and doesn't matter), only to
+    produce a *valid* stream: any encoding this module's own decoder
+    reproduces `data` from is usable in the real container, since the
+    firmware's own decompressor implements this exact same algorithm.
+    Correctness is what's required, not matching Icom's compression ratio.
+
+    Design note: rather than simulating the decoder's ring buffer forward
+    (which requires careful handling of read-your-own-future-writes timing
+    for overlapping/self-referential matches), this works entirely off the
+    plain `data` array, which is simpler and easy to reason about as
+    correct: for any candidate match source position `p < i`, the decoder
+    is guaranteed to have already reproduced `data[p]` at ring-buffer slot
+    `(INITIAL_CURSOR + p) & WINDOW_MASK` by the time it reaches position
+    `i` (true by induction from the very first byte -- the decoder writes
+    every emitted byte, literal or matched, into that same formula's slot,
+    so ring content always mirrors `data` for every already-decoded
+    position). So a match is valid exactly when `data[p:p+length] ==
+    data[i:i+length]` and `p` is still within the 4095-byte window (not
+    yet overwritten by wraparound) -- including when `p+length > i`
+    (an overlapping/RLE-style repeat), which is well-defined and correct
+    against the plain array the same way it is against the ring buffer.
+
+    Uses a simple hash-chain match finder (3-byte prefix -> prior
+    positions, most recent first, capped per bucket for speed) and greedy
+    longest-match selection (no lazy matching) -- adequate for a
+    correctness-first tool; not tuned for best-possible ratio.
+    """
+    n = len(data)
+    out = bytearray()
+
+    MAX_CHAIN = 128
+    hash_chains: dict[bytes, list[int]] = {}
+
+    def find_match(i: int) -> tuple[int, int]:
+        """Returns (length, source_pos); length==0 if no match >= MIN_MATCH_LEN."""
+        if i + MATCH_LOOKAHEAD > n:
+            return 0, -1
+        best_len = 0
+        best_pos = -1
+        key = data[i : i + MATCH_LOOKAHEAD]
+        max_len = min(MAX_MATCH_LEN, n - i)
+        for cand in reversed(hash_chains.get(key, ())):
+            if i - cand > WINDOW_MASK:  # would already have been overwritten
+                continue
+            length = MATCH_LOOKAHEAD  # key match already guarantees the first 3 bytes
+            while length < max_len and data[cand + length] == data[i + length]:
+                length += 1
+            if length > best_len:
+                best_len = length
+                best_pos = cand
+                if best_len >= MAX_MATCH_LEN:
+                    break
+        return best_len, best_pos
+
+    def insert_positions(start: int, count: int) -> None:
+        for j in range(start, start + count):
+            if j + MATCH_LOOKAHEAD > n:
+                break
+            key = data[j : j + MATCH_LOOKAHEAD]
+            chain = hash_chains.setdefault(key, [])
+            chain.append(j)
+            if len(chain) > MAX_CHAIN:
+                del chain[0]
+
+    ctrl_bits: list[int] = []
+    tokens: list[bytes] = []
+
+    def flush_group() -> None:
+        if not ctrl_bits:
+            return
+        ctrl_byte = 0
+        for bit_index, bit in enumerate(ctrl_bits):
+            ctrl_byte |= bit << bit_index
+        out.append(ctrl_byte)
+        for t in tokens:
+            out.extend(t)
+        ctrl_bits.clear()
+        tokens.clear()
+
+    def emit_literal(b: int) -> None:
+        ctrl_bits.append(1)
+        tokens.append(bytes((b,)))
+        if len(ctrl_bits) == 8:
+            flush_group()
+
+    def emit_match(ring_offset: int, length: int) -> None:
+        b1 = ring_offset & 0xFF
+        b2 = ((ring_offset >> 4) & 0xF0) | (length - MIN_MATCH_LEN)
+        ctrl_bits.append(0)
+        tokens.append(bytes((b1, b2)))
+        if len(ctrl_bits) == 8:
+            flush_group()
+
+    i = 0
+    while i < n:
+        length, source_pos = find_match(i)
+        if length >= MIN_MATCH_LEN:
+            ring_offset = (INITIAL_CURSOR + source_pos) & WINDOW_MASK
+            emit_match(ring_offset, length)
+            insert_positions(i, length)
+            i += length
+        else:
+            emit_literal(data[i])
+            insert_positions(i, 1)
+            i += 1
+
+    flush_group()
+    return bytes(out)
+
+
 def decompress(data: bytes, out_len: int, start: int = 0) -> DecompressResult:
     """Decompress `out_len` bytes of LZSS-compressed data from `data[start:]`.
 

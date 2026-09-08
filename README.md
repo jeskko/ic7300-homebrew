@@ -29,7 +29,13 @@ class) matching the shape of the radio's own SD directory-reading code.
   every firmware file's bytes across all 10 releases (see `tools/`,
   `notes/container-format.md`) — the original extraction script
   (`tunk3.py`) silently dropped ~37% of each file.
-- ✅ LZSS decompression algorithm fully documented (`notes/decompression-lzss.md`).
+- ✅ LZSS decompression algorithm fully documented (`notes/decompression-lzss.md`), and a working
+  compressor built to match (`tools/icom_fw/lzss.py`'s `compress()` — a valid encoder for this exact
+  format, not a byte-for-byte match to Icom's own, which isn't needed for correctness and, incidentally,
+  compresses somewhat better in practice). Paired with a new container packer
+  (`tools/icom_fw/container.py`'s `pack()`) that rebuilds a checksum-correct update file from a modified
+  body, round-trip-verified against all 10 real releases (`tools/verify_pack.py`) — this was
+  `sdk/roadmap.md`'s Phase 0 tooling gap, now filled; only the live-hardware test itself remains.
 - ✅ Boot ROM / vector table structure in `base.dat` mapped, and the full
   boot sequence traced in Ghidra through to the main firmware's entry
   point (`notes/base-loader.md`).

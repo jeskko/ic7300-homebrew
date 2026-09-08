@@ -62,10 +62,19 @@ goal (a) forever after" gets the goal (a) experience on a foundation that's alre
   `notes/multi-cpu-images.md`), so any custom container must carry the *original, unmodified* bytes for
   those components and only touch `body.bin`. Not expected to be a problem (there's no need to touch them
   for this goal), just worth stating as a hard constraint on how a custom container gets built.
-- **No packer/compressor exists yet in `tools/icom_fw`** — only `lzss.decompress`/`container.parse`. A
-  real custom-firmware build needs the *inverse* operations (LZSS compress, container pack) plus a
-  self-computed MD5 — a well-scoped, concrete piece of engineering, not a research question.
-- **The"app" injection point/API design is still an open design question**, not just an engineering one —
+  **Resolved as a non-issue, 2026-09-08**: `container.pack()` (below) never touches or re-derives these
+  components at all — everything outside the body's own fixed slot is copied byte-for-byte verbatim from
+  the source container, so this constraint is enforced by construction, not by care.
+- ~~No packer/compressor exists yet in `tools/icom_fw`~~ — **filled, 2026-09-08**: `lzss.compress()` (a
+  from-scratch encoder producing a *valid* stream for this exact format — not byte-identical to Icom's own
+  compressor, which doesn't matter for correctness; empirically compresses *better* than the original on
+  every real body tested) and `container.pack()` (patches a new decompressed body into its fixed slot,
+  recomputes the update mechanism's own MD5 over the correct checksummed region, leaves every other byte
+  untouched). Round-trip-verified against all 10 real releases (`tools/verify_pack.py`) — patch bytes at
+  the start/middle/end of a real body plus a length-changing append, repack, re-parse, confirm the body
+  comes back exactly and nothing else in the container moved. See `tools/README.md` for usage. **Not yet
+  tested against real hardware** — this fills the tooling gap Phase 0 needed, not Phase 0 itself.
+- **The "app" injection point/API design is still an open design question**, not just an engineering one —
   see the roadmap below.
 
 ## Roadmap
@@ -73,19 +82,17 @@ goal (a) forever after" gets the goal (a) experience on a foundation that's alre
 Ordered by leverage/effort, not strict dependency (some phases can run in parallel):
 
 ### Phase 0 — prove the update mechanism really is unauthenticated (highest leverage, do first)
-Build the minimum viable test: unpack a real release with the existing `tools/icom_fw` code, flip a few
+Build the minimum viable test: unpack a real release with `tools/icom_fw` (`cli.py unpack`), flip a few
 harmless bytes in `body.bin` (e.g. a string constant, not executable code — lowest risk of bricking
-anything if some other check *is* found), recompute the MD5, repack into a valid container (needs the
-packer/compressor gap above filled first — small task), and attempt a real SD-card update on real
-hardware. Success = the radio accepts and boots the modified image. This single test either confirms the
-whole reframing above or surfaces a check none of the static analysis found — genuinely worth knowing
-before investing further. **Needs**: real hardware access (already available — this isn't gated on JTAG).
+anything if some other check *is* found), repack into a valid container (`cli.py pack` — the packer/
+compressor gap is now filled, see above), and attempt a real SD-card update on real hardware. Success =
+the radio accepts and boots the modified image. This single test either confirms the whole reframing above
+or surfaces a check none of the static analysis found — genuinely worth knowing before investing further.
+**Needs**: real hardware access (already available — this isn't gated on JTAG). **The tooling side of this
+phase is done**; only the live hardware test itself remains.
 
-### Phase 1 — build the missing tooling
-- `tools/icom_fw`: add `lzss.compress()` (inverse of the already-solved decompressor) and
-  `container.pack()` (inverse of `parse()`), plus a small "rebuild a container from an unpacked directory,
-  recomputing all checksums" CLI command. This is what Phase 0 actually needs, and every later phase
-  depends on it too.
+### Phase 1 — remaining tooling
+- ~~`tools/icom_fw`: add `lzss.compress()`/`container.pack()`~~ — done, see above.
 - A minimal ARM/Thumb assembler or cross-compiler setup targeting this exact environment (no OS, no libc,
   raw physical/RAM addressing, ARMv7-A userspace-under-FreeRTOS per `notes/kernel-rtos.md`) — GCC's
   `arm-none-eabi` toolchain (already used for `objdump` in this project, see

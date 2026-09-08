@@ -1,4 +1,4 @@
-# `icom_fw` — IC-7300 firmware container unpacker
+# `icom_fw` — IC-7300 firmware container unpacker/packer
 
 A clean, tested rewrite of the existing ad-hoc `tunk.py`/`tunk3.py` scripts
 (read-only originals at `/data/misc/icom/7300/`). See `/notes/` for the
@@ -13,18 +13,43 @@ No third-party dependencies — pure standard library, Python 3.9+.
 Unpack one firmware file:
 
 ```
-python3 -m icom_fw.cli /data/misc/icom/7300/7300_142.dat scratch/out-142
+python3 -m icom_fw.cli unpack /data/misc/icom/7300/7300_142.dat scratch/out-142
 ```
 
 Writes `body.bin` (main ARM image), `chunk1_font1.ttf`, `chunk2_font2.ttf`,
 `chunk3.bin`, `chunk4.bin`, `chunk5_tail.bin`, and `manifest.json`
 (offsets/sizes/warnings, plus an accounted-vs-total byte count).
 
-Verify against all 10 known releases (diffs against the existing
+Repack a container with a modified body — e.g. `sdk/roadmap.md`'s Phase 0
+test (edit `body.bin`, get back a checksum-correct container to try flashing
+via the normal SD-card update flow):
+
+```
+python3 -m icom_fw.cli pack /data/misc/icom/7300/7300_142.dat scratch/out-142/body.bin scratch/repacked_142.dat
+```
+
+Recompresses the given body with this project's own from-scratch LZSS
+encoder (`icom_fw/lzss.py`'s `compress()` — produces a *valid* stream per
+this format, not a byte-for-byte match to Icom's own compressor's output,
+which doesn't matter for correctness), reinserts it into its fixed slot, and
+recomputes the update mechanism's own MD5 checksum
+(`notes/firmware-update.md`'s traced checksum region) — every other byte
+(fonts, chunk3, and everything after) is copied verbatim from the original
+container, untouched.
+
+Verify the unpacker against all 10 known releases (diffs against the existing
 `unpacked.dat` references, checks 100% of each container is accounted for):
 
 ```
 python3 tools/verify_all.py
+```
+
+Verify the compressor+packer round-trips correctly against all 10 known
+releases (patches a few bytes of each real body, repacks, re-parses, checks
+the body/fonts/chunk3/tail/checksum all come out exactly as expected):
+
+```
+python3 tools/verify_pack.py
 ```
 
 ## Layout
@@ -32,10 +57,11 @@ python3 tools/verify_all.py
 ```
 tools/
   icom_fw/
-    lzss.py        LZSS decompressor (see /notes/decompression-lzss.md)
-    container.py   container parser (see /notes/container-format.md)
-    cli.py          unpack one file -> component files + manifest.json
-  verify_all.py     cross-check against all 10 releases + existing refs
+    lzss.py        LZSS decompressor + compressor (see /notes/decompression-lzss.md)
+    container.py   container parser + packer (see /notes/container-format.md)
+    cli.py          unpack one file -> component files + manifest.json; pack a modified body back in
+  verify_all.py     cross-check the unpacker against all 10 releases + existing refs
+  verify_pack.py    cross-check the compressor+packer round-trip against all 10 releases
   arm_thumb_scan.py    per-window ARM-vs-Thumb region classifier (objdump heuristic)
   superset_disasm.py   full per-address ARM+Thumb disassembly, persisted to SQLite
   sjis_string_scan.py   whole-image Shift-JIS/ASCII string sweep, flags JP text with no adjacent English
