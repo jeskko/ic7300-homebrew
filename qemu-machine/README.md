@@ -13,6 +13,15 @@ all) — this is the escalation path for the one thing it can't do.
 ## Status, 2026-09-08 — real GIC IRQ delivery confirmed working, and body.bin's real tick
 ## source identified (OSTM0, ID 134, CMP=32000) as a side effect of fixing it
 
+**Latest, same day**: the `firmware_update_main` forced-call thread below is resolved, just
+not the way its own "left open" framing expected — see "The above resolved" section (after
+"Forcing `firmware_update_main` directly") for the full trace. Short version: `sdcard_file_rpc_
+dispatch_task` and essentially the entire feature-task set never get *created* at all in this
+emulation, because cold-boot's own I2C2/RIIC2 read (right after `riic2_driver_init`) busy-waits
+forever on a completion interrupt this machine's still-inert RIIC model never raises — a real
+peripheral-modeling gap (RIIC needs the same "real behavior" treatment GPIO/L2C/OSTM/MMCIF
+already got), not the RTOS-hijacked-context question originally suspected.
+
 **The migration's actual motivating question is now answered, with a real bug found and
 fixed getting there.** `rz_a1h.c` wired `OSTM0`/`OSTM1`'s IRQ outputs straight to
 `qdev_get_gpio_in(gic, 134)`/`qdev_get_gpio_in(gic, 135)`, treating those as absolute GIC
@@ -128,6 +137,10 @@ time.
 - **`tools/force_call_fup.py`** — forces a direct call into `firmware_update_main` over
   GDB, bypassing the SD-menu/file-browser UI entirely. See its own section above for what
   it found and where it currently gets stuck.
+- **`tools/test_fup_scheduling.py`** — breakpoint-based baseline-vs-forced-call comparison
+  that traced the above down to the real RIIC2 boot-time stall; also where `gdbrsp.py`'s
+  `set_breakpoint`/`remove_breakpoint` (real `Z0`/`z0` software breakpoints, not present in
+  the original polling-only client) were added. See "The above resolved" section.
 - **`patches/hw-arm-build.patch`** — the one small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in a pinned, vendored QEMU checkout. Kept as a patch rather than a
   fork since this is private and pinned, not meant to be upstreamed.
@@ -299,6 +312,91 @@ into a live multitasking system requires either creating a *real* new task (goin
 kernel's own task-creation API instead of repurposing an existing context) or finding a
 lower-risk injection point closer to where a real button-press would land.
 
+## The above resolved: `sdcard_file_rpc_dispatch_task` (and ~10 sibling feature tasks) never
+## get created at all in this emulation — a real RIIC2/I2C peripheral-modeling gap, not an
+## RTOS-hijacked-context problem (2026-09-08, next session)
+
+Settled item (1) above directly with real breakpoints instead of a full TCB-struct reverse-
+engineering effort (a from-scratch derivation looked expensive and uncertain — see
+`notes/kernel-rtos-history.md`'s "chased `pvPortMalloc`" section for why this project already
+backed off that path once). Added real software-breakpoint support to `gdbrsp.py`
+(`set_breakpoint`/`remove_breakpoint`, `Z0`/`z0` packets — generic in QEMU's TCG accel, not
+ARM-specific, confirmed against `gdbstub/{gdbstub,system}.c` in the vendored checkout) and
+built **`tools/test_fup_scheduling.py`**: breakpoints `sdcard_file_rpc_dispatch_task`'s own
+outer-wait-return point (`0x200b9d34`) and its real per-command-handler dispatch (`0x200b9da0`,
+the `blx r12`), run a baseline (no forced call) and the forced-call scenario back to back on
+fresh boots, and compare.
+
+**Neither breakpoint ever fires in either trial**, and neither does a third, deliberately
+weaker one added when that came back silent (`0x200b9e30`, fires the instant the task's wait
+call returns *at all*, matched command or not). But `file_rpc_post_command`'s own entry and its
+internal signal call (`FUN_20186e68`, the same handle `sdcard_file_rpc_dispatch_task` blocks on
+via `FUN_20186de4`) **do** fire, twice, with the real command ID (`0xf`) — confirming the post
+genuinely happens in this exact automated run, not just in the earlier manually-single-stepped
+session. The signal call's own handle argument reads `0x0`. Reading the shared control struct
+directly (`DAT_200ba174`/`DAT_200bbc50` both resolve to the same live address, `0x203907f0` —
+confirming poster and consumer really do share one struct) showed why: **`[+0x20]` and
+`[+0x28]`, the two wait/signal handles this whole mechanism depends on, are still zero even
+after 30 real seconds of idle-loop-reaching, untouched boot** — they're never initialized at
+all, on a completely stock boot, forced call or not.
+
+Traced why. Those fields are set by `sdcard_file_rpc_dispatch_task`'s own init/creation
+function (`FUN_200b995c`, which also creates the task itself via `itron_act_tsk`) — one of
+**~80 unconditional calls inside `system_mode_request_dispatch`** (`0x2002a6b8`), which runs
+inside `cold_boot_mode_dispatch`'s (`0x2002b1c8`) own loop. `cold_boot_mode_dispatch` is only
+entered from one place: `FUN_2002b29c`'s `if (bVar8==1 && *pcVar4=='\0')` branch — and a global
+flag this function sets as its very first instruction (`*DAT_2002b500`, "have I been entered")
+still reads back `0` after 30s, so **`cold_boot_mode_dispatch` — and therefore the *entire*
+feature-task-creation pass (`sdcard_file_rpc_dispatch_task`, `sd_menu_dispatch_task`, both
+`audio_buffer_task`s, the RTTY/voice pollers, etc. — essentially every task in
+`notes/kernel-rtos.md`'s catalog except the low-level kernel-internal ones) — never runs at
+all** in this QEMU machine. This isn't specific to the forced-call scenario; a completely
+untouched boot shows the exact same thing.
+
+Localized the actual stall with four more waypoint breakpoints across `FUN_2002b29c`'s own
+body (called once, early, confirmed reachable — `notes/diode-matrix.md`'s 14th session had
+already independently established `FUN_2002b29c` is "reachable only via message-dispatch,
+genuinely once per real hardware boot", a clean cross-validation of this same call site found
+independently here by dynamic tracing rather than static analysis): every pass reaches the
+call site right after `riic2_driver_init` (`0x2002b2e0`, calling `FUN_2002b274`) and never
+comes back. `FUN_2002b274` → `FUN_2001e510` → **`FUN_2001dd58`** is the real stall — a classic
+"post a request, then busy-wait `while (*pcVar1 != '\0') FUN_20062c1c();` for a completion
+flag some interrupt handler is supposed to clear" pattern, driving an I2C2/RIIC2 read
+(`*DAT_2001e6d0 = 0x58` — a real, plausible 7-bit I2C slave address) right after
+`riic2_driver_init` registers 6 real RIIC2 interrupt handlers (event IDs `0xcf`/`0xcd`/`0xce`/
+`0xd1`/`0xd0`/`0xd2` — already documented in `notes/memory-map.md` as RIIC2's own IDs,
+205–210). Since `qemu-machine/src/rz_a1h.c`'s RIIC0-2 are still `add_plain_ram_region()` —
+inert storage, zero interrupt-generating behavior (unlike GPIO/L2C/OSTM/MMCIF, which all got
+real behavior earlier this project) — the completion interrupt this busy-wait needs never
+fires, and the task stays parked here permanently. **Tempting, unconfirmed connection worth
+flagging rather than asserting**: this read happens on RIIC2, the diode-matrix EEPROM's own
+documented controller (`notes/memory-map.md`), at the very start of cold boot, into a global
+(`DAT_2002b504`) whose top bit later feeds the branch that decides `cold_boot_mode_dispatch`
+vs. the power-state loop — shaped exactly like a `region_code` read, but not traced far enough
+this session to claim that identification; a real next step if this specific global is chased
+further, distinct from the emulation-gap fix below.
+
+**Net effect: `force_call_fup.py`'s original "hijacked-context" hypothesis from the section
+above is superseded, not confirmed.** The reason nothing beyond `file_rpc_post_command` was
+ever observed has nothing to do with hijacking the idle task's context — `sdcard_file_rpc_
+dispatch_task` (along with essentially the whole feature-task set) simply doesn't exist yet in
+this emulated boot, full stop, regardless of how the call into `firmware_update_main` is
+made. This is a genuine peripheral-modeling gap in `qemu-machine/` itself (RIIC needs at least
+enough real interrupt-completion behavior to unblock this one boot-time read), the same class
+of fix every other peripheral here has already needed, not a deeper RTOS-semantics question.
+
+**Deliberately not attempted this session**: implementing real RIIC register/interrupt
+behavior. The real RZ/A1H hardware manual (`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_
+rz_a1h_MAT_20210129-2931443.pdf`, Section 18 "I²C Bus Interface") documents the
+named interrupt sources (`INTRIICTMOI`/`INTRIICALII`/`INTRIICSTI`/`INTRIICSPI`/`INTRIICNAKI`/
+`INTRIICRI`/`INTRIICTEI`/`INTRIICTI`) and the `RIICnCR1`/`CR2`/`MR1-3`/`FER`/`SER`/`IER`/`SR1`/
+`SR2`/`SAR0-2`/`BRL`/`BRH`/`DRT`/`DRR` register set (offsets also in `~/Downloads/rza1.svd`, but
+— like MMCIF before this — with zero bit-field detail, manual needed for real semantics), but
+which of `riic2_driver_init`'s 6 registered handlers actually clears `sdcard_file_rpc_dispatch_
+task`'s struct's completion flag, and via what exact `CR2`/`SR2` bit sequence, wasn't traced —
+a real, MMCIF-`mmc.c`-sized follow-on task, not a quick guess-and-check fix. See Extension
+roadmap item 5's continuation below.
+
 ## Extension roadmap
 
 Items 1 and 2 from the original plan are both **done** (2026-09-08, second pass) — see the
@@ -335,3 +433,18 @@ untouched boot) and statically (direct disassembly of the arming code at `0x200b
    full trace and the specific, well-scoped question left open (does the consumer task run
    at all against a hand-hijacked context, or does reaching this depth need a properly
    kernel-created task instead).
+   **Follow-up, next session, same calendar day**: that open question is answered — see "The
+   above resolved" section above. The real blocker is one level further upstream and
+   unrelated to the hijacked-context concern: `sdcard_file_rpc_dispatch_task` (and
+   essentially the whole feature-task set) never gets *created*, because cold boot's own
+   RIIC2/I2C read hangs forever on this machine's still-inert RIIC model. **New, concrete next
+   step**: give `qemu-machine/src/` a real `riic.c` (matching `mmc.c`'s own register-level
+   care, sourced from the real manual — `/data/misc/icom/7300/doc/REN_r01uh0403ej0600_
+   rz_a1h_MAT_20210129-2931443.pdf`, Section 18) with at minimum enough real
+   `CR2`/`SR2`/`IER` interrupt-completion behavior to unblock this one boot-time read;
+   whichever of `riic2_driver_init`'s 6 registered handlers actually clears the completion
+   flag (see the resolved section for their event IDs) still needs tracing to know the exact
+   bit sequence expected. Once that's unblocked, this whole roadmap item's original question
+   — does the SD-card update flow actually reach MMCIF against a *properly* kernel-created
+   task — becomes directly retestable with the existing `force_call_fup.py`/
+   `test_fup_scheduling.py` tooling, no further RTOS-internals work needed.

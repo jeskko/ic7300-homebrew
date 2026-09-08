@@ -168,3 +168,23 @@ class GdbRsp:
     def step(self) -> str:
         self.send_packet("s")
         return self.wait_stop()
+
+    # -- breakpoints ---------------------------------------------------
+    # 'Z0'/'z0' = software breakpoint (type 0), handled generically by
+    # QEMU's TCG accel (gdb_breakpoint_insert -> cpu_breakpoint_insert),
+    # confirmed against qemu-src/gdbstub/{gdbstub,system}.c -- not
+    # ARM-specific. `kind` is the instruction length in bytes; this
+    # project's breakpoints are all ARM-mode (4-byte) so it's hardcoded
+    # here rather than threaded through as a parameter.
+
+    def set_breakpoint(self, addr: int, kind: int = 4):
+        self.send_packet(f"Z0,{addr:x},{kind:x}")
+        reply = self.read_packet()
+        if reply != "OK":
+            raise GdbRspError(f"set_breakpoint({addr:#x}) error: {reply!r}")
+
+    def remove_breakpoint(self, addr: int, kind: int = 4):
+        self.send_packet(f"z0,{addr:x},{kind:x}")
+        reply = self.read_packet()
+        if reply != "OK":
+            raise GdbRspError(f"remove_breakpoint({addr:#x}) error: {reply!r}")
