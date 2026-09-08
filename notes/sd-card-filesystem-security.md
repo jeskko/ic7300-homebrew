@@ -422,6 +422,15 @@ recording + SD menu browsing + a firmware update, deliberately-interrupted opera
 card-eject/reinsert) would settle reachability far faster than further static analysis, and would also
 catch any bug in code this session hasn't looked at at all.
 
+**A second live-testing avenue opened up 2026-09-08, alongside JTAG**: `qemu-machine/`, the
+project's custom QEMU port, now has a real MMCIF (SD/MMC controller) model and can force a
+direct call into SD-menu-reachable code over GDB (see `qemu-machine/README.md`'s SD-card
+section) — genuinely offline, no hardware needed. Not yet usable for *this* file's own bug
+specifically (the forced-call testing done so far gets blocked before reaching any real
+filesystem/directory-listing code, at a task-scheduling question unrelated to this bug), but
+worth revisiting once that's resolved — reproducing `"GRP_FS: negative ..."` in the emulator
+would be strictly easier to iterate on than live hardware.
+
 ## Caveat
 
 None of this proves the IC-7300 shares literal compiled code with this reference package — the feature-flag

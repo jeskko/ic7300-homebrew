@@ -226,6 +226,52 @@ The full update sequence:
    pattern) with their own per-chunk checksum verification
    (`FUN_20025044`) before finishing.
 
+## `firmware_update_main`'s own calling convention, and the real SD-card path convention (2026-09-08, `qemu-machine/` dynamic-testing session)
+
+Found while trying to *drive* `firmware_update_main` directly (forcing a call via GDB against
+the `qemu-machine/` QEMU port, rather than reaching it through the real SD-menu UI — see
+`qemu-machine/README.md`'s "Forcing `firmware_update_main` directly" section for the full
+dynamic-testing narrative; this note covers only the durable RE facts that came out of it).
+
+**`firmware_update_main` (`0x20025ae4`) takes no arguments at all.** It opens a single fixed
+global path, `DAT_200264a0`, via `FUN_200bc5f4` — not anything passed in by its caller
+(`sd_menu_dispatch_task`'s case `0xb`, already established above). **`DAT_200264a0` has zero
+static writers anywhere in `body.bin`** — genuinely surprising at first (matches this
+project's recurring "computed/indexed write defeats direct xref tracing" pattern), until
+cross-checked against `tools/icom_fw`'s own LZSS decompressor: the address it points to
+(`0x203d86c4`) falls **past the end of the real decompressed body** (`3,738,392` bytes,
+ending at RAM `0x20395b18` — confirmed exactly, not approximately). So this isn't a missed
+static reference at all — it's genuinely a **runtime-only RAM buffer** (BSS/heap), populated
+at runtime by the SD-card file-browser/file-selection UI (an entirely separate subsystem,
+not traced here) with whatever full path the user picked from a displayed list, before
+`firmware_update_main` ever runs. `firmware_update_main` itself is a pure function of that
+one buffer's content at call time.
+
+**The real path convention, found directly in Icom's own published manual** (not derived
+from firmware code at all — `pdftotext` of `/data/misc/icom/7300/doc/
+IC-7300_ENG_FM_12b.pdf`, section 15 "Updating the firmware"): *"Copy the downloaded firmware
+data into the IC-7300 folder on an SD card"*, followed by a file-selection screen showing
+the available firmware files by name (e.g. "7300_101") for the user to pick from. This
+matches — and now explains the shared convention behind — the already-documented
+`C:\IC-7300\Voice`/`C:\IC-7300\VoiceTx` folders `notes/kernel-rtos.md`'s task catalog
+records for the voice-recording/playback features: **`IC-7300\` is this firmware's one
+shared SD-card feature-folder root**, with per-feature subfolders (`Voice`, `VoiceTx`) for
+some features and the update file dropped directly in the root `IC-7300\` folder itself for
+firmware updates specifically (per the manual — not independently confirmed against code,
+since the actual join happens inside the untraced file-browser UI, not
+`firmware_update_main` itself).
+
+**Genuinely still open, not attempted by tracing further**: whether the browser scans
+`IC-7300\` for *any* file matching a recognizable firmware-container shape (size/header
+sanity, matching "Touch the Firmware (Example: 7300_101)" implying multiple candidates can
+be listed) or expects one specific fixed filename — the manual's own wording ("the
+Firmware") reads as the former. Also open: the drive-letter/path-separator convention this
+custom (non-FatFs, see [[sd-card-filesystem-security]]) VFS layer actually expects for a
+directly-supplied path string (`\IC-7300\...` vs `C:\IC-7300\...` vs no prefix at all) —
+`qemu-machine/`'s own forced-call testing tried the backslash-only form and got real
+progress into the file-RPC layer either way (blocked on something unrelated to path
+parsing — see that README section), so this specific detail wasn't pinned down conclusively.
+
 ## Precise checksum timing in `firmware_update_main` (traced in full)
 
 The full sequence, addresses/offsets exact:

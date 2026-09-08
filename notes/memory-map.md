@@ -80,6 +80,20 @@ what lives in the "8 KB I/O" region listed above (`0x3fefa000`–`0x3fefbfff`).
 Status register at `SPI_BASE+0x48` (`0x3fefa048`). `PORT_BASE = 0xfcfe7000`,
 inside the `0xfcfe0000`–`0xfcffffff` I/O region.
 
+**MMC Host Interface (MMCIF), `MMC_BASE = 0xe804c800`** — inside the
+`0xe8030000`–`0xe804ffff` I/O region above. Confirmed via the RZ/A1H
+hardware manual's Chapter 51 (full register bit layout extracted 2026-09-08
+while building `qemu-machine/`'s `mmc.c`, see that file's own comment) and
+the real Renesas reference software package's own `mmc_iodefine.h` struct
+layout. This is the one hardware block servicing the schematic's native
+4-bit SD bus (`SD_CMD`/`SD_CLK`/`SD_D0`-`D3`/`SD_WP` on `P4_8`-`P4_14`, see
+[[ic7300-signal-chain]]). **Not yet confirmed as actually used by
+`body.bin`**: zero static literal/xref hits for this base address anywhere
+in the image, and zero dynamic MMIO accesses during a plain boot in the
+QEMU port — see `qemu-machine/README.md`'s SD-card section for the
+ongoing investigation (this project's real SD-card driver code hasn't
+been located yet, static or dynamic).
+
 **Flash slot layout (the resolution of the old "second image" open
 question below) — see [[firmware-update]] for the full derivation and
 [[multi-cpu-images]] for how it was found:**
