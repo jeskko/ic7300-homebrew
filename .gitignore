@@ -19,3 +19,4 @@ __pycache__/
 # recreates the flash image from a real container -- see qemu-machine/README.md)
 qemu-machine/qemu-src/
 qemu-machine/flash.bin
+qemu-machine/riic2_eeprom.img
