@@ -2099,5 +2099,84 @@ as the ROM reads or the service-manual PDF text itself.
 **Files touched this session**: `notes/band-plans.md` (country-name sourcing caveat, new "External
 verification" section, Open Questions 2/3 updated), `notes/diode-matrix.md` (Open Question 1 addendum),
 `notes/diode-matrix-history.md` (this entry). No Ghidra database changes this session (no new RE, just
-external verification of an existing finding). No new ARM/Thumb disassembly gaps queued. No git commit made
-yet this session.
+external verification of an existing finding). No new ARM/Thumb disassembly gaps queued. Committed
+(`8d03bc4`).
+
+## 20th session — Japan's real band plan found in ROM; D420/D423 don't gate it, and neither does anything else found
+
+Direct follow-up: JAP and USA both resolve to `region_code` 0 and share the literal same ROM band table,
+but Japan's real (JARL) band plan is known to be substantially different — especially 80m, which is a set
+of narrow non-contiguous segments, not a plain continuous band. Does populating the JP-only diodes D420
+and/or D423 actually change the enforced band edges? Delegated the initial trace to a subagent, then
+independently re-verified every material claim by direct decompile and memory read before writing anything
+up (this project's standing practice whenever a subagent's finding is this consequential).
+
+### A real, deliberately-authored JP band table exists in ROM
+
+Found by searching ROM directly for JARL's published 80m segment edges as raw little-endian Hz bytes —
+code-first tracing hadn't turned this up in any prior session. `tx_band_table_jp_narrow_region0_override`
+(`0x20198940`), a 16-segment `{min,max}` Hz-pair table, independently re-decoded byte-by-byte in this
+session (not taken from the subagent's summary):
+
+```
+160m: 1.800-1.875 & 1.9075-1.9125 MHz   (split, vs. region0's plain 1.800-2.000)
+80m:  3.500-3.580, 3.599-3.612, 3.662-3.687, 3.702-3.716, 3.745-3.770, 3.791-3.805 MHz
+      (6 narrow segments, vs. region0's plain 3.500-4.000)
+60m:  (no entry at all — region0 has 5.255-5.405)
+40m:  7.000-7.200 MHz (vs. region0's 7.000-7.300)
+30m and up: byte-identical to region0
+```
+
+Cross-checked against JARL's own published band plan: 4 of 5 checked 80m segment edges
+(`3.599-3.612`/`3.702-3.716`/`3.745-3.770`/`3.791-3.805`) match exactly; the fifth
+(`3.662-3.687` here vs. JARL's current `3.680-3.687`) differs only on the low edge — possibly an older
+JARL revision, not independently dated. The missing 60m entry and the 7.0-7.2 MHz 40m cap both match
+Japan's real allocations too. Unambiguous: this is genuine, deliberately-encoded Japanese regulatory data,
+not filler or coincidence.
+
+### Traced its wiring — no D420/D423 test anywhere in the chain
+
+- `FUN_2003c20c`, the function that loads this table, branches purely on `is_region_code_zero()`
+  (`region_code==0`) — re-decompiled directly, confirmed no D420 (`0x4000`)/D423 (`0x8000`) test anywhere
+  in it.
+- `FUN_2003c0ec`, the function that builds the actual "live" TX/RX tables (`DAT_2003c83c`/`DAT_2003c838`)
+  that real operating code is presumed to consult, uses only `region_code` plus the already-known
+  D401/D402/D405/D416 bits — re-decompiled directly, same result: no D420/D423 test.
+- The JP table gets copied not into the live table but into a separate scratch buffer (`DAT_2003c840`,
+  `0x203de24c`) whenever `region_code==0` — identically for USA and JAP, since neither diode distinguishes
+  them at this point in the chain.
+- Did a whole-ROM raw hex search for `DAT_2003c840`'s own literal address (`4c e2 3d 20`), independent of
+  Ghidra's `references_to` (given this project's prior, confirmed experience of real reads that xrefs
+  miss, from the 16th session) — found only 2 hits total: the buffer's own storage slot, and one
+  self-consistency check. Decompiled that check (`FUN_2003c27c`/`FUN_2003c320`): it re-validates that the
+  buffer's segments still classify cleanly into single ham bands (`FUN_20013218`) and, if not, just
+  reloads the buffer — a self-healing sanity check, not a path to enforcement. **No real-time
+  TX-permission consumer of this buffer was found anywhere.**
+
+### Net assessment
+
+**No** — as far as every function reachable in this trace goes, populating D420 and/or D423 on top of a
+`region_code=0` configuration does not change the enforced TX/RX band tables. The selection logic only
+ever looks at `region_code` (from D404/407/410/413) plus D401/D402/D405/D416; USA and JAP get identical
+treatment. Japan's correct, real band plan genuinely exists in this ROM image and does get loaded into RAM
+under the right condition, but this session could not find where — or whether — it actually reaches the
+real go/no-go transmit decision. Treated as a real, honest open gap rather than either overclaiming
+resolution or dismissing the JP table as dead/unused: the next concrete step is finding the actual
+VFO/TX-frequency-validation function (what runs when the user tunes or presses PTT) and checking which
+buffer *it* reads, or whether `region_code` itself could be altered upstream of `FUN_2003c0ec` for
+D420/D423-populated hardware in a way not yet checked. Live JTAG verification (populate D420/D423 on a
+region_code=0 test board, watch which buffer actually changes / whether TX gets blocked on JARL-restricted
+frequencies) remains the most direct fallback.
+
+### Renames and comments (Ghidra database)
+
+- `0x20198940` → `tx_band_table_jp_narrow_region0_override`, with a full plate comment (table contents,
+  JARL cross-check, the wiring trace, and the open enforcement question).
+- Plate comment on `FUN_2003c20c` documenting the copy mechanism and its callers.
+
+**Files touched this session**: `notes/band-plans.md` (new dedicated section, D420/D423 overlay-table rows
+updated), `notes/diode-matrix.md` (new 20th-session section — also fixed a self-inflicted slip caught while
+re-reading the file: the 18th-session edit had accidentally dropped the `## Open questions` header,
+restored), `notes/diode-matrix-history.md` (this entry). Ghidra database: 1 rename + 2 plate comments,
+listed above, all independently re-verified this session by direct decompile/memory reads, not taken from
+the subagent's report alone. No new ARM/Thumb disassembly gaps queued. No git commit made yet this session.

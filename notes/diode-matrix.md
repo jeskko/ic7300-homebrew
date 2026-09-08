@@ -1172,6 +1172,55 @@ resolved, this section), `notes/diode-matrix-history.md` (18th-session entry). G
 (`tx_band_table_region0_usa_jap`/`region1_unclaimed`/`region4_esp_narrow_70mhz`, `rxtx_band_table_
 region5_tpe_channelized`/`region6_kor`, `tx_band_table_region7_exp`), all backed by direct memory reads
 performed in this session, not taken from any subagent report. No new ARM/Thumb fix queued.
+
+## 20th session — Japan's real band plan found baked into ROM, but D420/D423 don't gate it (and neither does anything else found)
+
+Sharp follow-up: since JAP and USA both resolve to `region_code` 0 and share the literal same ROM table,
+and Japan's real band plan is known to differ substantially (especially the fragmented 80m allocation),
+does populating the JP-only diodes D420/D423 change the enforced band edges?
+
+Delegated the trace to a subagent, then independently re-verified every material claim by direct
+decompile/memory read (this project's standing practice for subagent findings this significant).
+
+**Found a real, deliberately-authored JP-specific band table**, `tx_band_table_jp_narrow_region0_override`
+(`0x20198940`) — located by searching ROM directly for JARL's published 80m segment edges as raw bytes, not
+by tracing code first. 16 `{min,max}` Hz pairs: 160m split into two slivers (1.800-1.875 &
+1.9075-1.9125), 80m split into 6 narrow segments (3.500-3.580, 3.599-3.612, 3.662-3.687, 3.702-3.716,
+3.745-3.770, 3.791-3.805), no 60m entry at all, 40m capped at 7.0-7.2 (vs. region0's 7.0-7.3), everything
+30m-and-up byte-identical to region0. Cross-checked against JARL's own published band plan: 4 of 5 checked
+80m edges match exactly; the fifth (3.662 here vs. JARL's current 3.680) differs only on the low edge,
+possibly reflecting an older JARL revision. This is unambiguous, deliberate JP regulatory data — re-verified
+directly by reading the raw ROM bytes and hand-decoding them myself, not taken from the subagent's summary.
+
+**But traced its wiring and found no D420/D423 test anywhere.** `FUN_2003c20c` (the function that loads this
+table) branches purely on `is_region_code_zero()` — confirmed by direct re-decompile. `FUN_2003c0ec` (the
+function that builds the actual "live" TX/RX tables everything else is presumed to consult,
+`DAT_2003c83c`/`DAT_2003c838`) uses only `region_code` plus D401/D402/D405/D416 — also re-decompiled
+directly, no D420 (`0x4000`)/D423 (`0x8000`) test anywhere. The JP table gets copied not into the live
+table but into a separate scratch buffer (`DAT_2003c840`) whenever `region_code==0` — for USA and JAP
+alike, since nothing distinguishes them at this point. A whole-ROM raw hex search for that buffer's own
+address (not just `references_to`, given this project's prior experience with real reads that xrefs miss)
+found only 2 hits: the buffer's own storage slot, and a self-consistency check
+(`FUN_2003c27c`/`FUN_2003c320`) that just re-validates and reloads the buffer if it looks internally
+inconsistent — not an enforcement path. **No real-time TX-permission consumer of this buffer was found.**
+
+**Net answer**: no — as far as every function reachable in this trace goes, populating D420/D423 on a
+`region_code=0` board does not change the enforced TX/RX band tables. Japan's correct band plan is
+genuinely present and gets loaded into RAM under the right condition, but this session could not find where
+(or whether) it reaches the actual go/no-go transmit decision. Flagged as a real, honest open gap rather
+than either overclaiming resolution or dismissing the JP table as unused — full detail, the exact table
+contents, and concrete next steps in the new dedicated section of `notes/band-plans.md`.
+
+**Files touched this session**: `notes/band-plans.md` (new section, D420/D423 overlay-table rows updated),
+`notes/diode-matrix.md` (this section), `notes/diode-matrix-history.md` (20th-session entry). Also fixed a
+self-inflicted slip caught while re-reading the file: the 18th-session edit had accidentally dropped the
+`## Open questions` header separating it from the numbered list below — restored. Ghidra database: 1 rename
++ 1 plate comment (`tx_band_table_jp_narrow_region0_override`, `0x20198940`) plus a plate comment on
+`FUN_2003c20c`, all independently re-verified this session by direct decompile/memory reads, not taken from
+the subagent's report alone. No new ARM/Thumb fix queued.
+
+## Open questions
+
 1. ~~Country/market name correlation to internal region codes 1-7~~ —
    **resolved, 18th session.** The old "derived arithmetic mapping" bug
    was computing the raw pre-lookup 4-bit index (0-15) and calling it

@@ -131,8 +131,8 @@ derivations live in `notes/diode-matrix.md`; summarized here for a single refere
 | **D405** | present, all documented variants | Gates a specific ~5.255 MHz point in the RX range table (`FUN_2003bd80`) — a narrow RX-side edge-inclusion nuance, not a whole-band exclusion (60m 5.255-5.405 MHz TX is confirmed present in every region's raw table above). Exact real-hardware effect on the single 5.255 MHz point not fully pinned down; see `notes/diode-matrix.md` |
 | **D416** | present, all documented variants | With D416 present, RX for region_code 5/6 (TPE/KOR) switches from their own restrictive/channelized table to the same unrestricted 0.03-74.8 MHz general-coverage table everyone else gets — **so real TPE/KOR units get full general-coverage RX despite their narrower, channelized TX allocations shown above** |
 | **D419** / **D422** | **both present**, all documented variants | `FUN_2003bd34` selects a *third*, separate "continuous coverage" TX range depending on which of these two is present: D419-only → continuous TX 0.1-74.8 MHz; D422-only → continuous TX 1.6-54 MHz. **On real hardware both are always present together**, so neither override fires and the normal per-region_code table above applies — this pair is very likely the mechanism behind the well-known "open TX" hardware mod (physically removing D422 to leave only D419, unlocking continuous 0.1-74.8 MHz TX) |
-| **D420** | JP-only (`#01`) | Gates visibility of the JP-exclusive "4630kHz" Emergency-mode checkbox (forces CW-only TX on 4630 kHz) — unrelated to the band tables above; see `notes/diode-matrix.md`'s 16th session |
-| **D423** | JP-only (`#01`) | Master gatekeeper for a large set of region-conditional menu items/features (`is_feature_enabled_for_region`) plus the factory-reset display-language default; not itself a band-table gate |
+| **D420** | JP-only (`#01`) | Gates visibility of the JP-exclusive "4630kHz" Emergency-mode checkbox (forces CW-only TX on 4630 kHz) — checked directly (20th session) against the band-edge/table-selection chain below: no test of this diode exists anywhere in it |
+| **D423** | JP-only (`#01`) | Master gatekeeper for a large set of region-conditional menu items/features (`is_feature_enabled_for_region`) plus the factory-reset display-language default — also checked directly (20th session) against the band-edge chain: no test of this diode there either |
 | **D417** | EUR/ITR/ESP only (`#03`/`#05`/`#06`) | **Checked directly this session and ruled out as a band-table gate of any kind** (see below) — its actual function is still unknown |
 
 ## Region 5/6 identity: TPE (Taiwan) and KOR (Korea)
@@ -165,6 +165,72 @@ confirmed directly against the ROM tables above. The D417/70MHz-country correlat
 Icom populates D417 on the same 3 PCBs that happen to get region_code 2/3/4, not because D417 itself drives
 that behavior. D417's real function remains unknown — see `notes/diode-matrix.md`'s 17th session for the
 full negative trace and open leads.
+
+## Japan's real band plan exists in ROM — but D420/D423 don't gate it, and neither does anything else found so far (20th session)
+
+Direct user question: real JARL (Japan) band plans are known to differ substantially from the US's —
+Japan's 80m allocation in particular is a set of narrow, non-contiguous segments, not a simple continuous
+band. Since **JAP and USA both resolve to `region_code` 0** (neither has any of D404/D407/D410/D413
+populated — see the mapping table above), and share the literal same ROM table
+(`tx_band_table_region0_usa_jap`), does populating the JP-only diodes **D420**/**D423** change the enforced
+band edges at all?
+
+**A real, deliberately-authored JP-specific band table does exist in ROM**, found this session by
+searching directly for JARL's published segment edges as raw bytes: **`tx_band_table_jp_narrow_region0_override`**
+(`0x20198940`, a separate table, not part of the region_code-indexed array):
+
+| Band | This table (JP) | region0 (USA/JAP shared table) |
+|---|---|---|
+| 160m | 1.800-1.875 & 1.9075-1.9125 | 1.800-2.000 |
+| 80m | 3.500-3.580, 3.599-3.612, 3.662-3.687, 3.702-3.716, 3.745-3.770, 3.791-3.805 (6 segments) | 3.500-4.000 |
+| 60m | *(no entry at all)* | 5.255-5.405 |
+| 40m | 7.000-7.200 | 7.000-7.300 |
+| 30m–6m | identical to region0 | identical to region0 |
+
+Cross-checked against JARL's own published band plan: 4 of 5 checked 80m segment edges match exactly
+(`3.599-3.612`/`3.702-3.716`/`3.745-3.770`/`3.791-3.805`); one (`3.662-3.687` here vs. JARL's currently
+published `3.680-3.687`) differs on the low edge only, possibly an older JARL revision or an Icom-internal
+margin — not independently dated. The missing 60m band and the 7.0-7.2 MHz 40m cap both match Japan's real
+allocations too. This is unambiguous: Icom's engineers did encode Japan's actual regulatory band plan
+somewhere in this firmware image.
+
+**But it isn't gated by D420 or D423.** Fully traced (direct decompile, independently re-verified in this
+session, not taken from a subagent's word):
+
+- The function that loads this table, `FUN_2003c20c`, branches purely on `is_region_code_zero()` (i.e.
+  `region_code == 0`) — no test of D420 (`0x4000`) or D423 (`0x8000`) anywhere in it.
+- `FUN_2003c0ec` — the function that builds the actual "live" TX/RX tables (`DAT_2003c83c`/`DAT_2003c838`)
+  that real operating code is presumed to consult — uses only `region_code` plus D401/D402/D405/D416.
+  Re-decompiled and re-checked directly: no D420/D423 test anywhere in it either.
+- The table this session found gets copied not into the live table, but into a *separate* scratch buffer
+  (`DAT_2003c840`, `0x203de24c`) whenever `region_code==0` — **for both USA and JAP alike**, since neither
+  diode distinguishes them at this point. A raw whole-ROM hex search for that buffer's own address (not
+  just Ghidra's `references_to`, given this project's prior experience with that missing real reads) found
+  only 2 hits total: the buffer's own storage slot and one self-consistency check
+  (`FUN_2003c27c`/`FUN_2003c320`, which re-validates that the buffer's segments still classify cleanly
+  against a universal ham-band table and, if not, just reloads it — a self-healing/sanity mechanism, not an
+  enforcement swap). **No real-time TX-permission consumer of this buffer was found.**
+
+**Current best answer**: no — as far as every reachable piece of this specific mechanism goes, populating
+D420 and/or D423 on top of a `region_code=0` configuration does **not** change the enforced TX/RX band
+tables. The band-edge selection logic only ever looks at `region_code` (from D404/407/410/413) plus
+D401/D402/D405/D416; USA and JAP get identical treatment there. Japan's real, correct band plan is
+genuinely present in ROM, and is loaded into RAM under the right condition (`region_code==0`), but this
+investigation could not find where — or whether — it actually reaches the real go/no-go transmit decision.
+That's either a real design quirk (unlikely for a shipping product that must meet Japanese regulations) or,
+more likely, **an open gap in this trace**: the actual VFO/TX-frequency-validation function itself (as
+opposed to the table-selection and table-refresh functions checked this session) hasn't been identified and
+checked for whether it reads `DAT_2003c840` under some condition not yet found, or for a D420/D423 test of
+its own.
+
+**Concrete next steps for a future session**: (1) find the real TX-permission/frequency-validation function
+(what actually runs when the user tunes or presses PTT) and check what buffer *it* reads —
+`DAT_2003c83c`/`DAT_2003c838`, `DAT_2003c840`, or something else entirely; (2) if it turns out to read
+`DAT_2003c83c`/`DAT_2003c838` only, check whether `FUN_2003c0ec`'s build step is ever passed a different
+region_code specifically for D420/D423-populated hardware (i.e. whether `region_code` itself, not just the
+table lookup, could be conditionally altered upstream — not checked this session); (3) as a fallback, live
+JTAG verification (populate D420/D423 on a `region_code=0` test board, watch whether `DAT_2003c83c`/`838`
+or `DAT_2003c840` actually changes, or whether TX genuinely gets blocked on JARL-restricted frequencies).
 
 ## External verification (19th session)
 
