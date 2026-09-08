@@ -375,6 +375,14 @@ class) matching the shape of the radio's own SD directory-reading code.
   pointers (to small precondition helpers), not the list-widget's data pointers as first assumed, and
   the one real consumer found doesn't actually call either callback for these two buttons' requests —
   what genuinely switches the visible screen is still unresolved. See `notes/ui-menu.md`.
+- ✅ **Minimal firmware emulator MVP reached, 2026-09-08**: a Unicorn Engine-based emulator
+  (`emu/`) boots a real firmware release through `base.dat`'s traced boot sequence for real —
+  PC lands exactly on `body.bin`'s entry point, RAM there matches `tools/icom_fw`'s independent
+  LZSS decompressor byte-for-byte, and execution continues cleanly into `body.bin` until the
+  first genuinely unmodeled peripheral access, hit as a clean stop rather than a crash.
+  Architected so every future peripheral (SCIF UART, timer/IRQ, SD card, GPIO/EEPROM) is purely
+  additive. Building it also surfaced and fixed a real `0x2c`-byte address-offset bug in
+  `notes/base-loader.md`'s own offset table. See `emu/README.md`.
 
 ## Layout
 
@@ -390,6 +398,8 @@ class) matching the shape of the radio's own SD directory-reading code.
   only current-state content in the active file.
 - `tools/` — `icom_fw`, a clean rewrite of the firmware unpacker, plus a
   cross-version verification script. See `tools/README.md`.
+- `emu/` — a minimal Unicorn Engine-based firmware emulator, MVP reached 2026-09-08. See
+  `emu/README.md`.
 - `ghidra_project/` (git-ignored) — fresh Ghidra project (`icom1`),
   created and in active use this session: `base.dat` + both A/B slots'
   `chunk1.ttf`/`chunk2.ttf`/`chunk3.dat` imported alongside `body.bin`.
