@@ -828,3 +828,72 @@ pattern on faith. Once wired, retest with the same `gdbrsp.py` poll used here: w
 `*0x2039076c` actually climb past `0x32` and `cold_boot_hw_init` fall through past the
 busy-wait into `FUN_200b5b64`/`FUN_200b5be0`/`FUN_200b5ea4`/`FUN_200b5f38` and beyond. See
 `README.md`'s Status section for the current resume point.
+
+## `src/mtu2.c` built and confirmed load-bearing; boot progresses dramatically further; the
+## very next blocker already identified as DMAC channel 0 (GIC ID 41)
+
+Picking up the previous section's "Next step" directly, checked the exact trigger mode live
+first (this project's own established discipline) rather than assuming a pattern from
+`ostm.c`: booted with `-S`, read `GICD_ICFGR9` (`0xE8201C24`, the register covering IDs
+144-159 at 2 bits/ID — ID 154's bits are 20-21) and got back `0b00` = **level**, not edge.
+Also read MTU2 channel 3's live register state directly at this point to cross-check the
+static decompile rather than trust it blindly: `TCR_3=0x00`, `TIER_3=0x0d` (bit 0/`TGIEA` set,
+the one this device gates on — bits 2/3 also set, unrelated), `TGRA_3=0x1f40` (`8000`, an
+exact match for the decompile), `TSTR=0xc1` (bit 6/`CST3` set — channel 3 genuinely running).
+`TSTR`'s real bit layout also confirmed against the SVD directly (channels 3/4 use bits 6/7,
+not 3/4 — a real, documented MTU2 numbering quirk, not assumed from the channel number).
+
+**Built `src/mtu2.c`** mirroring `ostm.c`'s real-`ptimer`-plus-real-IRQ pattern, scoped to
+channel 3 only (every other register/channel stays a plain byte-array passthrough, matching
+what `add_plain_ram_region()` already did for the whole module) — level IRQ held while
+`TSR_3`'s `TGFA` bit is set and `TIER_3`'s `TGIEA` is enabled, write-0-to-clear semantics on
+`TSR_3` (a naive plain store would let software "set" `TGFA` by writing 1, wedging the level
+line permanently high the first time `TGIEA` is enabled — the real MTU2 protocol is the
+opposite), and the channel's own `TSTR` `CST3` bit gating whether the backing `ptimer` runs at
+all — handling either write ordering (`TSTR` before or after `TCR_3`/`TGRA_3` configuration)
+since the exact order wasn't traced. Wired into `rz_a1h.c` in place of the old
+`add_plain_ram_region()` call, IRQ connected to GIC ID 154 the same
+`qdev_get_gpio_in(gic, id - RZA1H_GIC_NUM_INTERNAL)` way every other device in this file
+already does. Compiled clean on the first attempt.
+
+**Live-tested immediately, same `gdbrsp.py` poll used to find the blocker — confirmed
+load-bearing, not just "builds and doesn't crash":**
+
+```
+t~2s:  PC=0x200051ec
+t~4s:  PC=0x200b5f28
+...
+counter samples across a 20s free-run: 0xd8 -> 0x8e -> 0x63 -> 0x1f (wrapping repeatedly)
+```
+
+The readiness counter, static at `0` on every single prior boot (this session's own earlier
+evidence and the previous session's watchpoint both agree on that), now climbs continuously.
+PC moves through a wide, changing spread of addresses (`0x20005xxx`, `0x200b5xxx`,
+`0x2018xxx`) rather than sitting at one address — real, active execution, confirmed by
+sampling 15 times over 30 real seconds and finding 4 distinct PCs, not 1. This is the biggest
+confirmed forward-progress jump since `itron_act_tsk` itself.
+
+**The very next blocker, already identified via the identical method, not yet built against:**
+of the 15 samples above, 12 land on `0x200b5f28` — inside `FUN_200b5ea4`, the third of the
+four calls `cold_boot_hw_init` makes right after the now-resolved busy-wait
+(`FUN_200b5b64(); FUN_200b5be0(); FUN_200b5ea4(); FUN_200b5f38();`). Its own decompile shows
+a nested busy-wait on two flag bytes (`*(char*)(puVar1-0x12)` then `*(char*)(puVar1-0x13)`,
+`puVar1 = DAT_200b6318 = 0x20390700` in this build — the same general `0x2039xxxx` state-block
+neighborhood as the just-resolved counter, though a different, unrelated field). `references_to`
+on both flag addresses (`0x203906ed`/`0x203906ee`) traces the writer to `FUN_200b5be0` — the
+call immediately *before* `FUN_200b5ea4` — which itself calls
+`register_event_handler(0x29, FUN_200b5b90)` followed by the same generic
+`FUN_200b8308(0x29)` GIC-enable helper already confirmed `GICD_ISENABLERn`-shaped: **GIC ID
+41 (`0x29`)**. Identified via the same "`ICDISRn` register-index×32+bit" SVD formula yet
+again (register index 1, bit 9): **`DMAINT0`, the RZ/A1H's DMA controller channel 0
+completion interrupt** — a peripheral this project has never modeled in any form (not in the
+Confirmed-peripherals table at all, currently whatever generic unimplemented-device
+catch-all its address range happens to fall under).
+
+**Not yet live-confirmed the way MTU2 was** — no GIC register read has been done yet to check
+whether ID 41 is actually armed/pending by the time this new busy-wait is reached, unlike the
+`ISENABLER4`/`ISPENDR4` read that turned the MTU2 lead from a hypothesis into a certainty
+before any code was written. That check is the natural next step, per this session's own
+now-twice-proven discipline (test live before building, the same discipline that retired the
+SLV5 lead earlier in this same session). See `README.md`'s Status section for the current
+resume point.

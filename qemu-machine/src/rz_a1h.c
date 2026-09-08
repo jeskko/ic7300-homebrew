@@ -66,13 +66,14 @@ static const struct RzA1hIoRegion rza1h_io_regions[] = {
     { "io-ffff0000",              0xFFFF0000, 0x00010000 },
 };
 
-/* CPG/MTU2/RIIC (see rz_a1h.h's own comments on each) are, like their
- * emu/peripherals/ Python originals, plain read/write storage with zero
- * side effects modeled -- a bare RAM region is the simplest and most
- * direct C equivalent of "arbitrary read/write, no behavior", not a
- * simplification of anything those Python modules actually did. Needs
- * the `_overlap` variant since each of these ranges sits inside the
- * broader "io-fcfe0000" unimplemented-device catch-all mapped later in
+/* CPG (still, and RIIC before it got upgraded too -- see rz_a1h.h's own
+ * comments) is, like its emu/peripherals/ Python original, plain read/write
+ * storage with zero side effects modeled -- a bare RAM region is the
+ * simplest and most direct C equivalent of "arbitrary read/write, no
+ * behavior", not a simplification of anything that Python module actually
+ * did. MTU2 was the same until 2026-09-09 (see mtu2.c). Needs the
+ * `_overlap` variant since each of these ranges sits inside the broader
+ * "io-fcfe0000" unimplemented-device catch-all mapped later in
  * rza1h_init() -- see spi_boot_status's own comment for why plain
  * memory_region_add_subregion() can't be used for a sub-range of an
  * already-mapped sibling region. */
@@ -108,6 +109,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *gpio;
     DeviceState *l2c;
     DeviceState *mmc;
+    DeviceState *mtu2;
     size_t i;
     int ch;
 
@@ -205,8 +207,10 @@ static void rza1h_init(MachineState *machine)
      * tick source are both confirmed working -- see README.md's Status
      * section. gpio.c/l2c.c carry real behavior (masked set/clear
      * registers, PL310 cache-ID/REG7 semantics) so they're dedicated
-     * devices; cpg/mtu2/riic are plain storage, so add_plain_ram_region()
-     * covers them without a dedicated .c file each (see its own comment). */
+     * devices; cpg/riic were plain storage, covered by
+     * add_plain_ram_region() (see its own comment) -- riic.c was later
+     * upgraded to a real device the same session, and mtu2.c on
+     * 2026-09-09 (channel 3 only, see its own comment). */
     gpio = qdev_new(TYPE_RZA1H_GPIO);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(gpio), 0, RZA1H_GPIO_BASE, 0);
@@ -222,7 +226,17 @@ static void rza1h_init(MachineState *machine)
                          RZA1H_CPG_MAIN_BASE, RZA1H_CPG_MAIN_SIZE);
     add_plain_ram_region(sysmem, "rza1h.cpg-deep-standby",
                          RZA1H_CPG_DEEP_STANDBY_BASE, RZA1H_CPG_DEEP_STANDBY_SIZE);
-    add_plain_ram_region(sysmem, "rza1h.mtu2", RZA1H_MTU2_BASE, RZA1H_MTU2_SIZE);
+
+    /* mtu2.c -- upgraded from a bare RAM region to a real device, 2026-09-09,
+     * once body.bin's own cold-boot task-readiness busy-wait was found
+     * depending on a real periodic interrupt (GIC ID 154, TGI3A) that only
+     * a real MTU2 channel 3 can produce -- see mtu2.c's own comment. */
+    mtu2 = qdev_new(TYPE_RZA1H_MTU2);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(mtu2), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(mtu2), 0, RZA1H_MTU2_BASE, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 0,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_MTU2_TGI3A_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     /* riic.c -- upgraded from a bare RAM region to a real device,
      * 2026-09-08 second pass, once body.bin's own cold-boot RIIC2 read

@@ -85,10 +85,18 @@
 #define RZA1H_CPG_DEEP_STANDBY_BASE 0xFCFF1800
 #define RZA1H_CPG_DEEP_STANDBY_SIZE 0x00000020
 
-/* Matches emu/peripherals/mtu2.py's BASE/SIZE -- also a bare RAM region,
- * see rz_a1h.c. */
+/* Matches emu/peripherals/mtu2.py's BASE/SIZE. Upgraded from a bare RAM
+ * region (2026-09-09) to a real device for channel 3 specifically, once
+ * body.bin's own cold-boot task-readiness busy-wait was found depending on
+ * a real periodic interrupt only MTU2 channel 3 can produce -- see mtu2.c's
+ * own comment and qemu-machine/README.md's Status section. GIC ID 154
+ * (TGI3A, channel 3's compare-match-A interrupt) confirmed via
+ * ~/Downloads/rza1.svd's ICDISR4 register (index*32+bit formula, the same
+ * one that already gave OSTM0 its ID 134). */
 #define RZA1H_MTU2_BASE 0xFCFF0000
 #define RZA1H_MTU2_SIZE 0x00000400
+#define RZA1H_MTU2_TGI3A_IRQ 154
+#define TYPE_RZA1H_MTU2 "rza1h-mtu2"
 
 /* riic.c -- matches emu/peripherals/riic.py's per-instance base addresses
  * (RIIC0-2, stride 0x400). RIIC2 is the diode-matrix EEPROM's controller,
