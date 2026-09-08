@@ -88,18 +88,36 @@ the new task, busy-waits on a task-readiness counter (`*DAT_2002b4ec`'s derefere
 is a genuinely new counter, unrelated to the SCIF3 one above (different address, different
 containing function, found immediately after task activation, not inside the SCIF3 driver at
 all). Confirmed via live polling that it stays at `0` for 20+ continuous real seconds even with
-the task already activated. Two real leads, neither chased yet: (1) find what task
-`itron_act_tsk`'s own argument (`DAT_2002b4e8`, a task descriptor) identifies — `notes/kernel-
-rtos.md`'s existing `itron_act_tsk` call-site table (11 sites, already cross-checked in earlier
-sessions) may already have this one; if the activated task's own entry point is known, trace
-what it does before touching this counter, since that's presumably the real writer; (2) check
-whether the newly-activated task is actually being *scheduled* at all under this emulator's
-context-switch mechanism (`irq_context_switch_id86`/`id0`, already confirmed real and working
-for the existing `sys_monitor_task_entry` task) — a real but so-far-unconfirmed possibility is
-that multi-task scheduling itself has a gap this project hasn't exercised yet, since every
-prior milestone reached was still effectively single-tasked. Two tools worth reusing directly:
-`gdbrsp.py`'s new watchpoint support (fast, conclusive "does anything write here at all" answers
-— faster than manual `references_to` sweeps for a dynamically-allocated RAM target); and a live
+the task already activated.
+
+**The activated task's identity is already known — no re-derivation needed.** `itron_act_tsk`'s
+own argument here (`DAT_2002b4e8`) reads `0x2019889c` in the static image (confirmed directly),
+an exact match for an existing row in `notes/kernel-rtos.md`'s task catalog: caller
+`cold_boot_hw_init`, descriptor `0x2019889c` → **`ui_graphics_lifecycle_task`** (renamed from
+`FUN_2007ef5c`), already ✅ **fully resolved** in that catalog — the master graphics lifecycle
+task, which calls `graphics_stack_startup_egl_openvg`, creates the real 480×272 on-screen EGL
+window surface (the touchscreen's actual resolution) plus a 960×552 off-screen EGL pixmap
+surface, then runs a 2-state init/present-frame loop. Not one of the catalog's two genuinely
+open identities (`kernel_start`'s mystery task, `thunk_FUN_2007ea68`'s dynamic activation).
+
+Given that identity, the most promising lead: the same catalog entry documents that
+`ui_graphics_lifecycle_task`'s own startup is what activates `thunk_FUN_2007ea68`
+(`slv5_periph_connect_disconnect_handler`), which touches an unidentified peripheral at
+`0xE8100000` (RZ/A1H bus-matrix slave SLV5) — currently completely unmodeled in
+`qemu-machine` (no device registered there at all, so it falls through to QEMU's generic
+unimplemented-device stub, which just discards writes and returns 0 on reads with no real
+side effects). A real, concrete hypothesis worth testing directly: the readiness counter is
+waiting on some effect of this SLV5 access that the stub can never produce. Worth checking
+with a GDB breakpoint on `thunk_FUN_2007ea68`/`slv5_periph_connect_disconnect_handler`
+(`0x2007ea84`) before building anything — confirm it's actually reached and what exact
+register access on `0xE8100000` it makes, rather than guessing what a stub device would need
+to fake. If that's a dead end, the fallback leads from earlier still apply: check whether
+this emulator's context-switch mechanism (`irq_context_switch_id86`/`id0`, already confirmed
+real for the existing `sys_monitor_task_entry` task) genuinely handles a *second*
+concurrently-scheduled task correctly — every prior milestone was still effectively
+single-tasked. Two tools worth reusing directly: `gdbrsp.py`'s new watchpoint support (fast,
+conclusive "does anything write here at all" answers — faster than manual `references_to`
+sweeps for a dynamically-allocated RAM target); and a live
 `-d unimp` register trace whenever a fix looks right in isolation but the overall state still
 doesn't budge, per the methodology point above.
 
