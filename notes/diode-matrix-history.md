@@ -1963,4 +1963,97 @@ direct fallback if static analysis keeps coming up empty.
 correction, the `#06`=ESP not KOR fix in two places, new 17th-session section), `notes/diode-matrix-history.md`
 (this entry). Ghidra database: 2 renames + 6 plate/label comments, listed above, all independently
 re-verified this session by direct memory reads and hand-decoded table bytes, not accepted from the tracing
-subagent's report alone. No new ARM/Thumb disassembly gaps queued. No git commit made yet this session.
+subagent's report alone. No new ARM/Thumb disassembly gaps queued. Committed (`81e2eb2`).
+
+## 18th session — new consolidated `notes/band-plans.md`; region_code-to-country mapping finally resolved; region 5/6 identified as TPE/KOR
+
+User asked for a single file gathering every region's band plan/channel list, and whether region 5/6 could
+be identified now that their tables were on the table (so to speak) from the 17th session. Did all the
+remaining hand-decoding directly this session (no subagent delegation needed — this was arithmetic and
+memory reads, not a broad search) and it resolved two of this file's oldest open questions as a side
+effect.
+
+### The region_code mapping bug, found and fixed
+
+`diode_region_code_lookup` (`FUN_2003bca8`) computes a raw 4-bit weighted index
+(`8*D404+4*D407+2*D410+1*D413`) and looks it up in a real table — its own decompile shows
+`*(byte*)(DAT_2003c7fc + index)` plainly. The "derived arithmetic hypothesis" that had sat unresolved in
+this file since an early session was computing that raw index and calling it `region_code` directly,
+**skipping the lookup step entirely** — that's the whole source of the years-old "USA=0 and EXP=9 fall
+outside the valid 1-7 range" mystery (Open Questions 1 and 2). Found the real table this session: read
+`DAT_2003c7fc`'s own stored value directly (it's a pointer variable, not the table itself) — it holds
+`0x20198a40`, sitting right after the already-known TX band-table pointer array. Read that address
+directly: `00 01 02 00 03 04 05 06 00 07 00 00 00 00 00 00` — index→region_code
+`[0,1,2,0,3,4,5,6,0,7,0,0,0,0,0,0]`, exactly matching what this file's own "Living reference: region code"
+section had already documented structurally (just never connected to the country-mapping question).
+
+Redone through the *real* lookup, cross-referencing each of the 8 named variants' own D404/D407/D410/D413
+population tags (already sitting in this file's own parts-list table, no new data needed) against this
+table:
+
+```
+USA(#02): none            -> index 0 -> region_code 0
+JAP(#01): none (no tag)   -> index 0 -> region_code 0  (shares USA's table)
+EUR(#03): D410            -> index 2 -> region_code 2
+ITR(#05): D407            -> index 4 -> region_code 3
+ESP(#06): D407,D413       -> index 5 -> region_code 4
+TPE(#07): D407,D410       -> index 6 -> region_code 5
+KOR(#08): D407,D410,D413  -> index 7 -> region_code 6
+EXP(#12): D404,D413       -> index 9 -> region_code 7
+```
+
+**Every one of the 8 documented variants resolves to a clean, valid, unique region_code 0-7 — the
+mystery evaporates once the lookup step is included.** Each variant's diode-presence tuple is distinct from
+every other's, so this isn't a coincidental fit — it's the only self-consistent assignment. Only
+`region_code` 1 is unclaimed by any of the 8 — genuinely open (an undocumented 9th variant, given gaps in
+Icom's public numbering at `#04`/`#09`/`#10`/`#11`, or simply unused).
+
+This also directly answers the 17th session's leftover "which of {2,3,4} is which of {EUR,ITR,ESP}"
+question: `EUR`=2, `ITR`=3, `ESP`=4 (not yet cross-checked against real national band plans, but no longer
+an open *derivation* question — just an unconfirmed final check).
+
+### Region 5 = TPE, region 6 = KOR, with their band tables fully hand-decoded
+
+Same derivation identifies region 5 (TPE, the only variant with D407+D410 but not D413) and region 6 (KOR,
+the only variant with all of D407/D410/D413). Read both tables directly, byte by byte (the 17th session had
+only structurally spot-checked their shape via the tracing subagent, not fully decoded them):
+
+- **Region 5 (TPE)**, `0x20198cb4`: 160m 1.800-1.900, 80m split into two ~12.5kHz slices
+  (3.500-3.5125 & 3.550-3.5625), 40m 7.000-7.100 (pre-D402-clamp), 30m trimmed to 10.130-10.150 (its top
+  20kHz only), 6m split into two ~12.5kHz slices (50.000-50.0125 & 50.110-50.1225) — the more heavily
+  channelized of the two, restricting almost every band.
+- **Region 6 (KOR)**, `0x20198d20`: 160m trimmed to a 25kHz sliver (1.800-1.825), 80m in two segments
+  (3.500-3.550 & 3.790-3.800), 40m 7.000-7.200 (pre-clamp) — but 30m/20m/17m/15m/12m/10m/6m are all
+  completely unrestricted, a clearly different and less-restrictive shape than region 5's, a solid
+  independent fingerprint distinguishing the two beyond just the diode-presence derivation.
+
+Confidence is high on the derivation (clean, exhaustive, no ambiguity); not yet independently cross-checked
+against real Taiwanese/Korean national band plans, flagged as the natural next step rather than treated as
+fully closed.
+
+### New file: `notes/band-plans.md`
+
+Consolidates: the 8-variant table (version #, country, manual's stated band access); the region_code
+derivation above with full reasoning; a single table with every region's complete band-by-band frequencies
+(all 8 regions, hand-decoded and cross-checked across this session and the 17th); the general-coverage RX
+table; and a summary of the diode overlays that turn the raw tables into as-shipped reality
+(D401/D402/D405/D416/D419/D422), cross-referenced from `notes/diode-matrix.md` rather than re-derived. Also
+notes, from already-known facts newly read together: D419 and D422 are **both present on every real unit**
+(both "all versions, no tag" in the parts list), so neither one's documented "continuous coverage" TX
+override (0.1-74.8 MHz or 1.6-54 MHz) ever fires on stock hardware — very likely the real mechanism behind
+the well-known "open TX" hardware mod (physically removing D422 to leave only D419 present).
+
+### Renames and comments (Ghidra database)
+
+- `DAT_2003c7fc`'s target, `0x20198a40` → `region_code_lookup_table`, with a plate comment giving the full
+  derivation table above.
+- `0x20198ad0` → `tx_band_table_region0_usa_jap`, `0x20198b2c` → `tx_band_table_region1_unclaimed`,
+  `0x20198c50` → `tx_band_table_region4_esp_narrow_70mhz`, `0x20198cb4` →
+  `rxtx_band_table_region5_tpe_channelized`, `0x20198d20` → `rxtx_band_table_region6_kor`, `0x20198d84` →
+  `tx_band_table_region7_exp`.
+
+**Files touched this session**: `notes/band-plans.md` (new), `notes/diode-matrix.md` (Open Questions 1/2
+resolved, new 18th-session section), `notes/diode-matrix-history.md` (this entry). Ghidra database: 6
+renames + 1 plate comment, listed above, all backed by direct memory reads performed this session, not
+taken from any subagent report (no subagent was used this session). No new ARM/Thumb disassembly gaps
+queued. No git commit made yet this session.

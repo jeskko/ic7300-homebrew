@@ -1103,35 +1103,109 @@ labels/comments added by the tracing subagent (`rx_band_table_ptrs_by_region_cod
 `tx_band_table_ptrs_by_region_code` at `0x20198a00`/`0x20198a20`, per-region table labels at
 `0x20198ad0`/`0x20198b88`/`0x20198bec`/`0x20198c50`/`0x20198cb4`/`0x20198d20`, a plate comment on
 `FUN_2003be94`), all independently re-verified this session by direct memory reads and hand-decoding of
-the raw table bytes, not taken on the subagent's word alone. No git commit made yet this session.
+the raw table bytes, not taken on the subagent's word alone. Committed (`81e2eb2`).
 
-## Open questions
-1. Country/market name correlation to internal region codes 1-7 is
-   still not fully pinned: the derived arithmetic mapping (see
-   population-data section above) produces `USA`=0 and `EXP`=9, both
-   outside the confirmed valid range (1-7) — re-confirmed not a
-   parts-list misread, so either the bit-weight formula or the
-   region-code-to-name mapping has an unresolved wrinkle. **17th session:
-   regions 2/3/4's TX/RX tables were pulled** (see the new 17th-session
-   section) — they're exactly the 3 codes with a 70 MHz/4m band row,
-   matching the `EUR`/`ITR`/`ESP` group band-plan-wise, but this
-   *disconfirms* the old derived guess (`EUR`=2/`ITR`=4/`ESP`=5): region
-   5's table is the heavily-restricted/channelized one grouped with
-   region 6, not CEPT-shaped, so `ESP` can't be 5. The real 70MHz set is
-   `{2,3,4}`, matching `{EUR,ITR,ESP}` as a set — but which specific code
-   is which specific country within that trio is still open. Region 4's
-   own table is a genuine distinguishing fingerprint (70.150-70.250 MHz,
-   narrower than 2/3's full 70.000-70.500, plus a tighter 1.81-1.85 MHz
-   160m allocation) — worth checking against each of the 3 countries'
-   real, individually-documented band plans to pin down which one is
-   region 4 specifically.
-2. Icom's public "Version #" numbering goes at least to 12, but the
-   internal 4-bit region code only reaches 7 (9 of 16 diode combinations
-   map to 0/invalid) — not reconciled. Possible explanations: this
-   firmware's table doesn't cover every variant ever made; there's
-   another translation step between the public Version # and the
-   internal `region_code`; or the two numbering schemes are simply
-   unrelated.
+## 18th session — new `notes/band-plans.md` consolidated reference; resolves the region_code-to-country mapping (a years-old open question) and identifies region 5/6 as TPE/KOR
+
+User asked for a single dedicated file gathering every region's band plan/channel list in one place, and
+to see if region 5/6 (the "heavily channelized" tables the 17th session found but didn't fully decode)
+could be identified. Both landed cleanly.
+
+**Found the actual bug behind Open Questions 1/2's years-old "USA=0/EXP=9 out of range" mystery.** The
+region_code formula (`8*D404+4*D407+2*D410+1*D413`) produces a raw 4-bit *index* (0-15), which then has to
+be looked up in a real table to get `region_code` — `diode_region_code_lookup`'s own decompile shows this
+plainly (`*(byte*)(DAT_2003c7fc + index)`). The prior "derived arithmetic hypothesis" in this file was
+computing the raw index and calling *that* `region_code` directly, silently skipping the lookup step. Found
+the real table this session: `DAT_2003c7fc` is itself a pointer variable (confirmed by direct memory read:
+its stored value is `0x20198a40`, immediately after the TX band-table pointer array) — the actual lookup
+table lives at **`0x20198a40`**, renamed `region_code_lookup_table`, confirmed by direct byte read:
+`00 01 02 00 03 04 05 06 00 07 00 00 00 00 00 00`. Redone through the real lookup, cross-referencing each
+of the 8 named service-manual variants' own D404/D407/D410/D413 population tags (already in this file's
+parts-list table), **every variant resolves cleanly, no leftover wrinkle**:
+
+| Variant | D404/D407/D410/D413 present | raw index | **region_code** |
+|---|---|---|---|
+| USA (#02) | none | 0 | **0** |
+| JAP (#01) | none (no tag at all) | 0 | **0** (shares USA's table — Japan's real distinguishing features are D420/D423, not a unique region_code) |
+| EUR (#03) | D410 | 2 | **2** |
+| ITR (#05) | D407 | 4 | **3** |
+| ESP (#06) | D407,D413 | 5 | **4** |
+| TPE (#07) | D407,D410 | 6 | **5** |
+| KOR (#08) | D407,D410,D413 | 7 | **6** |
+| EXP (#12) | D404,D413 | 9 | **7** |
+
+This is a clean, exhaustive, zero-ambiguity derivation (each variant's diode-presence tuple is unique
+against the other 7), not a guess — and it directly resolves the 17th session's remaining "which of
+{2,3,4} is which of {EUR,ITR,ESP}" sub-question too: `EUR`=2, `ITR`=3, `ESP`=4. **Only `region_code` 1 is
+unclaimed** by any of the 8 documented variants — genuinely open (undocumented variant, or unused).
+
+**Region 5 = TPE (Taiwan), region 6 = KOR (Korea) — same derivation, now with their full band tables
+hand-decoded for the first time** (the 17th session had only structurally spot-checked these, via the
+tracing subagent, not fully byte-verified). Read and decoded both directly:
+
+- **Region 5 (TPE)**, table `0x20198cb4` (renamed `rxtx_band_table_region5_tpe_channelized`, same address
+  serves both RX and TX per the 17th session's finding): 160m 1.800-1.900, 80m in two ~12.5kHz slices
+  (3.500-3.5125 & 3.550-3.5625), 60m unchanged (5.255-5.405), 40m 7.000-7.100 (pre-D402-clamp), 30m trimmed
+  to its top 20kHz (10.130-10.150), 20m/17m/15m/12m/10m unchanged, 6m in two ~12.5kHz slices
+  (50.000-50.0125 & 50.110-50.1225), no 70MHz.
+- **Region 6 (KOR)**, table `0x20198d20` (renamed `rxtx_band_table_region6_kor`): 160m trimmed to a 25kHz
+  sliver (1.800-1.825), 80m in two segments (3.500-3.550 & 3.790-3.800), 60m unchanged, 40m 7.000-7.200
+  (pre-clamp), then **30m/20m/17m/15m/12m/10m/6m all fully unchanged/unrestricted** — a meaningfully
+  different, less-restrictive shape than region 5's, a real distinguishing fingerprint between the two.
+
+**Confidence**: high on the diode-presence-intersection derivation itself; **not yet cross-checked**
+against real, independently-documented Taiwanese/Korean national amateur band plans — flagged as the
+natural next step in the new file rather than treated as fully closed.
+
+**New file: `notes/band-plans.md`** — consolidates the 8-variant table, the region_code derivation above,
+a single markdown table with every region's complete band-by-band frequencies (all 8 region tables, hand-
+decoded and cross-checked this session and the 17th), the general-coverage RX table, and a summary of every
+diode overlay that adjusts the raw tables into as-shipped reality (D401/D402/D405/D416/D419/D422's role,
+cross-referenced from this file rather than re-derived). Also works out, from already-known facts, that
+D419+D422 being **simultaneously present on every real unit** (both are "all versions, no tag" in the
+parts list) means neither one's documented "continuous coverage" override ever fires on stock hardware —
+very likely the mechanism behind the well-known "open TX" hardware mod (removing D422 to leave only D419).
+
+**Files touched this session**: `notes/band-plans.md` (new), `notes/diode-matrix.md` (Open Questions 1/2
+resolved, this section), `notes/diode-matrix-history.md` (18th-session entry). Ghidra database: 1 rename +
+1 plate comment (`region_code_lookup_table`, `0x20198a40`) plus 5 more table labels
+(`tx_band_table_region0_usa_jap`/`region1_unclaimed`/`region4_esp_narrow_70mhz`, `rxtx_band_table_
+region5_tpe_channelized`/`region6_kor`, `tx_band_table_region7_exp`), all backed by direct memory reads
+performed in this session, not taken from any subagent report. No new ARM/Thumb fix queued.
+1. ~~Country/market name correlation to internal region codes 1-7~~ —
+   **resolved, 18th session.** The old "derived arithmetic mapping" bug
+   was computing the raw pre-lookup 4-bit index (0-15) and calling it
+   `region_code` directly, skipping `region_code_lookup_table`
+   (`0x20198a40`, confirmed by direct memory read: bytes
+   `00 01 02 00 03 04 05 06 00 07 00 00 00 00 00 00`) — that's why it
+   produced out-of-range values (`USA`=0 valid but `EXP`=9 invalid).
+   Redone correctly (cross-referencing each of the 8 named variants' own
+   D404/D407/D410/D413 population tags through the real lookup table),
+   **every one of the 8 documented variants resolves cleanly to a valid
+   region_code 0-7**: `USA`/`JAP`→0 (they share a table — Japan's real
+   distinguishing features are the separate D420/D423 diodes, not a
+   unique region_code), `EUR`→2, `ITR`→3, `ESP`→4, `TPE`→5, `KOR`→6,
+   `EXP`→7. This also resolves the 17th session's "which of {2,3,4} is
+   which of {EUR,ITR,ESP}" sub-question directionally (`EUR`=2, `ITR`=3,
+   `ESP`=4) via the same clean diode-intersection method, though the
+   17th session's suggested band-plan cross-check against each country's
+   real, independently-documented allocation (especially to confirm
+   `ESP`=4's distinctively narrow 70.150-70.250 MHz slice) hasn't been
+   done yet — worth doing to be fully sure. `region_code` 1 is unclaimed
+   by any of the 8 documented variants (no diode combination among them
+   produces it) — still open, see Open Question 2. Full derivation and
+   every region's complete band table: `notes/band-plans.md` (new
+   consolidated reference file, 18th session).
+2. ~~Icom's public "Version #" numbering goes at least to 12, but the
+   internal 4-bit region code only reaches 7~~ — **mostly resolved, 18th
+   session**, once Open Question 1's lookup-table bug is fixed: it's not
+   that 9 of 16 combinations are "invalid," it's that the lookup table
+   deliberately maps every combination not used by a real named variant
+   to region_code 0 (the same shared default USA/JAP already use) — by
+   design, not a gap. The one genuine remaining gap is `region_code` 1,
+   unclaimed by any of the 8 documented variants — either an undocumented
+   9th variant exists (Icom's numbering has gaps at `#04`/`#09`/`#10`/
+   `#11`) or region_code 1 is simply defined but unused in practice.
 3. ~~What `DAT_2003c85c` (diode 416's second lookup, indexed by
    `DAT_2003c800+2`) actually drives~~ — **resolved, 9th session.**
    `DAT_2003c800+2` is confirmed to be the region_code byte (written by

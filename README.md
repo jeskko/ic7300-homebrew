@@ -64,10 +64,17 @@ class) matching the shape of the radio's own SD directory-reading code.
   that had missed it for 15 prior sessions), plus **official per-diode
   version-population data** from the service manual parts list (which
   diode is populated on which of the 7 named export variants). 6
-  positions remain unresolved (D408/411/414/417 fully unknown, D419/D422
-  have hypotheses but no code consumer found across 4 sessions) — a
-  newly-found likely clone/full-settings-export function is the top lead
-  for finishing these (`notes/diode-matrix.md`).
+  positions remain unresolved (D408/411/414/417 fully unknown — D417
+  specifically ruled out as the 70MHz/4m-band gate a 17th session in,
+  real function still unknown — D419/D422 have hypotheses but no code
+  consumer found across 4 sessions) — a newly-found likely clone/
+  full-settings-export function is the top lead for finishing these
+  (`notes/diode-matrix.md`). An 18th session also resolved the
+  years-open `region_code`-to-country mapping (a lookup-table step had
+  been skipped in the old derivation) and identified region codes 5/6 as
+  Taiwan/Korea by diode-presence intersection, consolidating every
+  region's full band-plan/channel-list table into a new
+  `notes/band-plans.md`.
 - ✅ **Full hardware BOM** for both the IC-7300 (all 5 boards: Main,
   Display, RF, PA, Tuner — `notes/ic7300-hardware.md`) and, as a side
   investigation, the IC-9700 (`notes/ic9700-hardware.md`), plus the
