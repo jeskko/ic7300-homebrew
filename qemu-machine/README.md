@@ -87,10 +87,31 @@ active resume point.
 ## around that mark** — not "what bursts". **Bonus finding, worth its own follow-up**: this same
 ## handler also conditionally pumps SSIF0/SSIF1 audio hardware — a direct, fresh lead for this
 ## project's long-standing RTTY/SSTV audio-source thread (see `icom-custom-code-goal` memory).
-## See README-history.md's newest two sections for the full derivation, including both
-## retracted leads (why each looked plausible and exactly how each was checked and ruled out)
-## and why the breakpoint-based DMAC-race verification attempt tried earlier this session was
-## also discarded as untrustworthy (a real, live example of the project's own documented
+##
+## **Traced the full producer→consumer mechanism precisely, and quantified the real gap — a
+## genuine ~10-second near-total stop, not yet root-caused.** A direct breakpoint on
+## `irq_context_switch_id0`'s own entry turned out to be self-defeating: 728 hits over 60s, a
+## rock-steady ~82ms rhythm the *whole* time, and **no overflow at all** — observing `id0`
+## directly prevents the very stall being investigated (yet another flavor of this project's
+## "observation changes timing" lesson, distinct from the earlier tight-loop case). Falling back
+## to pure memory-read polling (no breakpoint near `id0` at all) settled it cleanly instead: a
+## clean run showed the ring fully caught up at t=30.171s (`write_idx=8, read_idx=8`), then only
+## 3 more drains (`read_idx` 8→11) by the time it overflows at t=41.00s — while the confirmed
+## steady ~82ms producer implies 130+ pushes landed in that same ~10.8s window. `id0` goes from a
+## rock-steady ~12Hz to almost nothing for a real ~10 seconds. Traced exactly how a push reaches
+## `id0` in the first place: `FUN_20186c4c` calls a second function right after every push
+## (renamed `sgi0_request_coalesced`) that fires GIC SGI 0 directly (an exact match for
+## `irq_context_switch_id0`) unless one is already pending, in which case it just marks a
+## "one more requested" flag; the counterpart (renamed `irq_nesting_exit_and_refire`, called at
+## the tail of both `irq_context_switch_id0` and `swi_handler`) clears the pending flag and
+## re-fires once more if that second flag got set. **This coalescing scheme looks architecturally
+## sound on its own** — worst case it costs one missed ~82ms tick, nowhere near ten seconds — so
+## the real cause has to be further upstream (SGI 0 masked or deprioritized for that whole
+## stretch by something else), not a bug in this mechanism itself. See README-history.md's newest
+## three sections for the full derivation, including both retracted leads (why each looked
+## plausible and exactly how each was checked and ruled out) and why the breakpoint-based
+## DMAC-race verification attempt tried earlier this session was also discarded as untrustworthy
+## (a real, live example of the project's own documented
 ## gdbstub-artifact class) before the GDB-free QMP method settled that part.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**

@@ -2629,3 +2629,71 @@ open questions; the other four new tools this session built and later ruled out
 (`trace_file_rpc_burst_source.py`, `trace_signal_calls.py`, `trace_task_own_post.py`, plus the
 earlier `trace_dmac_race.py`/`trace_dmac_flag_writes.py` pair, since deleted) are kept or noted
 for their own reusable techniques and honest derivation trail, not as current leads.
+
+## 2026-09-10 session, continued a fourth time: traced the full producer/coalescer/consumer mechanism; the real gap is a genuine ~10s id0 stall, not yet root-caused
+
+Continued straight from the `mtu2_ch3_periodic_housekeeping_tick` finding, per the concrete next
+step it left: whether the consumer (`irq_context_switch_id0`) really stops keeping pace, and
+why. Two real, distinct pieces of ground gained this pass, plus a fresh one built and
+retracted.
+
+**First, tried the obvious direct check and it was itself misleading -- a real methodology
+finding, not just a repeat of the earlier pattern.** Breakpointed `irq_context_switch_id0`'s own
+entry (`0x20005960`) alongside the overflow trap, new tool `tools/trace_id0_drain_gap.py`.
+Result: 728 hits over a full 60s run, an almost perfectly steady ~82ms rhythm throughout
+(median 82.1ms, max 85.1ms) -- **and no overflow at all**. Re-ran once more (35s) with the same
+result. **The very act of breakpointing id0's entry prevents the stall this whole thread is
+trying to observe** -- a different flavor of the project's already-documented "observing a hot
+path changes its own timing" lesson (this one isn't a tight, no-progress loop like the earlier
+`trace_dmac_race.py` case; id0 fires at a real, moderate, always-different-context rate, yet
+still can't be trusted once directly instrumented). Confirms the right technique here is
+memory-only polling of the ring's own header, never a breakpoint on `id0` itself.
+
+**Re-examined the ring header trace already in hand (no new perturbation) and it settles the
+question cleanly.** A fresh, clean run (`tools/trace_job_ring_overflow.py`, unmodified, its
+existing default coarse 0.25s cadence) showed: fully caught up at t=30.171s
+(`write_idx=8, read_idx=8, pending=0`), then the eventual overflow at t=41.00s
+(`write_idx=11, read_idx=11, pending=16`, `r0=0x2`/`lr=0x20187c29` matching every prior trial).
+`read_idx` only advanced 8->11 (3 drains) across that ~10.8s window, while the producer's
+confirmed steady ~82ms rate implies roughly 130+ pushes landed in the same stretch (repeatedly
+wrapping the 16-slot ring). **This is a real, ~10-second-long, near-total stop in draining, not
+a brief timing hiccup** -- id0 goes from firing at a rock-steady ~12Hz (confirmed continuously
+for the preceding ~30s of this same boot, and for 60+s straight once directly instrumented) to
+firing perhaps 3 times in 10+ seconds.
+
+**Traced the full producer-to-consumer mechanism precisely, to understand what a "gap" would
+even mean here.** `irq_context_switch_id0`'s own decompile shows it calls the ring's real
+consumer, `FUN_20187ae4`, *unconditionally*, as its very first real action (before any of the
+actual context-switch decision logic) -- so every single time id0 runs, the ring gets fully
+drained. The producer side (`FUN_20186c4c`, called by `mtu2_ch3_periodic_housekeeping_tick`'s
+own chain) doesn't just push -- right after the push, it calls a second function (renamed
+`sgi0_request_coalesced`, `0x20187b8c`) that checks a "SGI0 already pending" flag (`0x20390A68`):
+if clear, it sets the flag and fires GIC SGI 0 directly (`GICD_SGIR=0x10000`, `CPUTargetList=CPU0,
+SGIINTID=0`, an exact match for `irq_context_switch_id0`/GIC ID 0); if already set, it just marks
+a second "one more was requested" flag (`0x20390A69`) instead of re-firing. The counterpart,
+renamed `irq_nesting_exit_and_refire` (`0x2018849c`, called at the tail of both
+`irq_context_switch_id0` and `swi_handler`), clears the first flag and, if the second flag got
+set while busy, fires SGI 0 once more before returning. **This is a real, seemingly sound
+"pending + one more" coalescing scheme on its own** -- nothing about reading it statically
+reveals an obvious bug, and a ~10-second near-total stall is far too long to explain by this
+mechanism ever dropping a single redundant request (worst case that costs one ~82ms tick, not
+ten seconds). The real cause has to be further upstream: SGI 0 not actually reaching (or not
+being acted on by) the CPU for that whole stretch -- consistent with something else holding CPU
+IRQs masked, or GIC priority/masking specifically deprioritizing SGI 0, for around ten real
+seconds. Renamed all three functions in Ghidra (`sgi0_request_coalesced`,
+`irq_nesting_exit_and_refire`, and `irq_nesting_enter` for the entry counterpart at
+`0x20188354`, already informally described by an earlier session but never renamed) with
+comments recording this derivation.
+
+**Honest state at the end of this session's ring-overflow thread**: the full mechanism from
+producer tick through SGI coalescing to consumer drain is now completely and precisely mapped,
+for the first time -- but *why* SGI 0 goes unanswered for ~10 real seconds, specifically around
+this point in this specific (post-DMAC-fix) boot profile, is still open. Two wrong leads (SVC
+dispatch, `sdcard_file_rpc_dispatch_task`) and one misleading-instrumentation result (the id0
+breakpoint itself preventing the stall) were all found, checked, and corrected in the same
+session rather than left standing. **Concrete next step for whoever continues this**: since a
+direct id0 breakpoint is now confirmed to mask the stall, the next diagnostic has to stay
+memory-read-only -- e.g., poll the GIC's own `GICD_ISPENDR0`/`GICC` priority-mask state (bit 0)
+alongside the ring header during the stall window (all via QMP or plain `read_memory`, no
+breakpoint anywhere near GIC or id0) to see directly whether SGI 0 sits pending-but-unserviced
+the whole time, or never gets raised at all during that window.
