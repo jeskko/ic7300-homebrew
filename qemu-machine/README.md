@@ -14,10 +14,12 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — the `0x20420120` job-ring overflow is FIXED: real OSTM clock (confirmed
-## off the actual schematic, 32.00MHz) + QEMU `-icount shift=auto` together, confirmed clean
-## across two full-length trials (130s/160s, zero overflows, vs. every prior trial hitting it
-## in the 35-78s range) -- see below for the derivation and what's still open
+## Status, 2026-09-09 — the `0x20420120` job-ring overflow is FIXED (real OSTM clock + `-icount
+## shift=auto`, confirmed across two full 130s/160s trials) — but a longer 300s trial found a
+## further, deeper blocker on the same boot path: DMAC's own completion wait genuinely stalls
+## under `-icount` (a real, diagnosed-but-not-yet-fixed icount/QEMUTimer interaction issue,
+## unrelated to the ring-overflow fix, which still stands). MTU2's own real clock (also 32.00MHz)
+## confirmed too, not yet re-tested given the DMAC blocker. See below for both threads.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -110,13 +112,27 @@ trials (130s, 160s) both completed their full duration with zero overflows, vs. 
 roughly a dozen non-icount trials this session hitting the overflow somewhere in the 35-78s
 range. Confirmed genuine forward progress, not a stall, via an added heartbeat print.
 
-**Not yet done, natural next steps**: wire `-icount shift=auto` into README.md's own "Running
-it" example as the actual recommended way to run this machine (see below); re-validate the
-*other* timer-paced peripherals (`mtu2.c`'s 25MHz, `dmac.c`'s 1000ns completion delay, `scif.c`/
-`riic.c`/`rspi2.c`'s own clock assumptions) under the new icount-based timing model, since each
-was tuned against the old, unthrottled model and could plausibly need its own correction now;
-and continue toward the original SD-card/VFS testing goal now that this specific blocker is
-resolved. See README-history.md's newest sections for the full derivation (including a
+**Follow-up, same session: `-icount` wired in as an actual default, and pushed toward the
+original goal — found a real, further blocker, not a false alarm.** Built `tools/qemu_launch.py`
+(a shared launch helper, `-icount shift=auto` now its own default, replacing every tool
+script's own copy-pasted launch line). MTU2's own real clock was also confirmed the same
+way OSTM's was: channels 3/4's real `TCR` register value (`0x00`, found via direct
+disassembly) decodes to P0φ/1 — the identical real 32,000,000 Hz, not the 25MHz `mtu2.c`
+had been using. `MTU2_FREQ_HZ` updated accordingly. Then, running a longer 300s exploration
+trial (past what the 130s/160s confirming trials covered) found DMAC's own completion wait
+(`FUN_200b5ea4`, the exact busy-wait `dmac.c`'s real channel-0 model was built to unblock)
+genuinely stalling — confirmed via `ps` (91% CPU, truly spinning) and Ghidra, not a
+misreading. Diagnosis: `ostm.c`/`mtu2.c` both use QEMU's `ptimer` API (icount-aware by
+design); `dmac.c` is the only device using a raw `QEMUTimer` directly, a known category of
+icount pitfall. **This does not undo the ring-overflow fix above** — both its confirming
+trials were real — it's a separate, deeper blocker on the same boot path, only reachable
+*because* that fix cleared the way to it.
+
+**Not yet done, natural next steps**: fix `dmac.c`'s icount interaction (most likely: port it
+to `ptimer` like `ostm.c`/`mtu2.c`) before the next long exploration trial; re-validate
+`mtu2.c`'s new 32MHz value once that's possible; re-validate `scif.c`/`riic.c`/`rspi2.c`'s own
+clock assumptions under icount too; and continue toward the original SD-card/VFS testing goal.
+See README-history.md's newest sections for the full derivation (including a
 documented `pkill -f` self-kill footgun any new trace script should avoid).
 
 ## Confirmed peripherals
@@ -246,8 +262,13 @@ spot-check.
    work between OSTM's own wall-clock-paced real GIC IRQ), fixed by pairing OSTM's real,
    schematic-confirmed clock (32.00MHz) with QEMU's `-icount shift=auto`, confirmed clean across
    two full 130s/160s trials — see Status above and README-history.md's newest sections for the
-   full derivation. **No longer a blocker** — always launch with `-icount shift=auto` (see
-   "Running it" above) for any boot test past ~30 seconds. Now that this is clear, the original
-   question — does the SD-card update flow reach MMCIF against a *properly* kernel-created
-   task, and would the whole chain accept and boot custom firmware entirely offline — becomes
-   directly retestable with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.
+   full derivation. Always launch with `-icount shift=auto` (see "Running it" above, now this
+   machine's own default via `tools/qemu_launch.py`) for any boot test past ~30 seconds.
+   **A further, deeper blocker was found on the very next long trial past this one**: DMAC's own
+   completion wait (`FUN_200b5ea4`) genuinely stalls under `-icount` — a real, diagnosed
+   `QEMUTimer`-vs-icount interaction issue in `dmac.c`, unrelated to the ring-overflow fix, which
+   still stands. See Status above and README-history.md's newest section for the diagnosis. The
+   original question — does the SD-card update flow reach MMCIF against a *properly*
+   kernel-created task, and would the whole chain accept and boot custom firmware entirely
+   offline — needs `dmac.c`'s icount issue fixed first before it's directly retestable again with
+   the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.

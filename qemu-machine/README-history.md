@@ -1891,3 +1891,57 @@ other timer-paced peripherals (`mtu2.c`'s 25MHz, `dmac.c`'s arbitrary 1000ns com
 yet either -- each was tuned/chosen against the old, unthrottled timing model, so any of them
 could plausibly need a similar real-value correction now that the machine's overall timing
 philosophy has changed. Not yet done, flagged as the natural next step.
+
+## A real, deeper blocker found on a longer trial: DMAC's own completion wait now genuinely stalls
+## under `-icount` -- the ring-overflow fix itself still stands, this is a separate, further issue
+## (2026-09-09, continuing straight on)
+
+Wired `-icount shift=auto` in as an actual default (`tools/qemu_launch.py`, a new shared launch
+helper replacing every tool script's own copy-pasted launch line) and pushed toward the original
+SD-card/VFS goal with a longer, 300s exploration trial (the 130s/160s trials that confirmed the
+ring-overflow fix didn't run long enough to reach this). **Real finding, not a false alarm**:
+by t=135s the trial had been parked at the exact same `pc=0x200b5f28`/`lr=0x200b5f24` for every
+single 15-second heartbeat since t=14.5s -- confirmed via `ps` that the QEMU process was at 91%
+CPU (genuinely spinning, not idle/blocked), and via Ghidra that this address is *inside*
+`FUN_200b5ea4` -- the exact, already-known `DMAINT0`-gated busy-wait `dmac.c`'s own real channel-0
+model was built specifically to unblock (see `dmac.c`'s own file comment and this file's much
+earlier "DMAC channel 0 built" section). This session's separate `MTU2_FREQ_HZ` fix (below) was
+ruled out as the cause -- it doesn't gate this particular wait at all.
+
+**Diagnosis, not yet fixed**: `ostm.c` and `mtu2.c` both use QEMU's higher-level `ptimer` API
+(built to integrate correctly with `-icount`'s deadline model), while `dmac.c` is the *only*
+device in this machine using a raw `QEMUTimer` (`timer_new_ns(QEMU_CLOCK_VIRTUAL, ...)`/
+`timer_mod`) directly for its one-shot completion delay (`DMAC_COMPLETE_DELAY_NS`, 1000ns). A
+raw `QEMUTimer` not integrated with icount's own deadline-checking mechanism is a well-known
+category of icount pitfall (a tight spin-loop translation block can fail to yield control back
+to QEMU's main loop often enough for such a timer's callback to actually fire) -- a strong,
+plausible, but not yet confirmed-by-fix hypothesis. Not yet tested: switching `dmac.c` to
+`ptimer` the same way `ostm.c`/`mtu2.c` already work, or otherwise making its completion timer
+icount-aware.
+
+**Important, so this doesn't read as a contradiction of the earlier fix**: the original
+`0x20420120` job-ring overflow this whole thread chased is still genuinely fixed -- both
+confirming trials (130s/160s) were real, and nothing here changes that result. This is a
+*further*, *deeper* blocker on the same boot path, only reachable *because* the ring-overflow
+fix cleared the way to it, found by simply running longer once that fix was in place. Active
+resume point for continuing toward the original SD-card/VFS goal: fix `dmac.c`'s icount
+interaction (most likely: port it to `ptimer`) before the next long exploration trial.
+
+## MTU2's own real clock confirmed too (2026-09-09, same session): both channels 3 and 4 run
+## undivided off the same real P0φ, 32.00MHz -- same clean 1ms period as OSTM
+
+A background research agent found the real prescaler firmware configures for MTU2 channels 3
+and 4, closing the gap `mtu2.c`'s own comment had left open (25MHz was chosen empirically, not
+derived). Direct disassembly of the already-known channel-3/4 init functions
+(`FUN_20005c08`/`FUN_20005cac`) shows both write their own `TCR` register as a literal `0x00` --
+decoded against the RZ/A1H manual's Table 10.9 (the channel-3/4-specific `TPSC` encoding,
+distinct from channels 0-2's own table), `TPSC=000` means "count on P0φ/1", i.e. no division at
+all. Combined with P0φ's own real, schematic-confirmed value, both channels' real rate is
+**32,000,000 Hz** -- identical to OSTM0's own real rate, and giving the same clean 1.000ms
+period for the already-modeled fourth/fifth compare events (whose own real requested period,
+`0x7d00`/32000, was already known exactly -- this just corrects what frequency it's honored
+against). `MTU2_FREQ_HZ` changed from 25000000 to 32000000; rebuilt cleanly. Not yet
+live-tested in isolation (the DMAC/icount blocker above was found first, on the very next trial
+after this change went in, but is confirmed unrelated) -- re-test once `dmac.c`'s own icount
+issue is resolved, since a full clean long trial isn't currently reachable to confirm this one
+either way.

@@ -258,32 +258,38 @@ struct RZA1HMtu2State {
  * actually known (both call sites request the same literal 0x7d00/32000
  * -- confirmed via `references_to`, not assumed) -- honored exactly
  * rather than guessed, at this device's own already-established
- * MTU2_FREQ_HZ: 32000 / 25000000 = 1.28ms. */
+ * MTU2_FREQ_HZ: 32000 / 32000000 = 1.000ms. */
 #define MTU2_SWTIMER_B_ONESHOT_NS ((int64_t)32000 * NANOSECONDS_PER_SECOND \
                                   / MTU2_FREQ_HZ)
 
-/* 25 MHz -- deliberately NOT ostm.c's own 500 MHz "fast for testing"
- * constant, and not arbitrary: lowered from an original 500 MHz choice,
- * 2026-09-09, after live testing traced a real, reproducible RTOS
- * job-queue overflow (see README-history.md's "MTU2 channel 4 built; a
- * generic RTOS job-queue overflow" section) to this device's own tick
- * rate outrunning a small, fixed-capacity software-timer-expiry queue
- * elsewhere in the firmware -- confirmed via a breakpoint-based hit trace
- * showing a single, steady, always-identical producer (never a genuine
- * multi-source burst), and confirmed further that pausing execution on
- * every one of that producer's calls (a breakpoint's own overhead) was
- * enough to avoid the overflow entirely, pointing at a rate mismatch, not
- * a scheduling bug. This project's own initial hypothesis after finding
- * the overflow -- that it exposed a genuine emulator context-switch/
- * multi-tasking defect -- was wrong; live testing corrected it before any
- * code changed to "fix" a nonexistent scheduler bug. 25 MHz was chosen
- * empirically (confirmed via 6 independent trials, up to 90s each, zero
- * recurrences) as slow enough to avoid the overflow while still much
- * faster than the SoC's real clock, matching this project's standing
- * "not real-clock-accurate, just fast enough for practical testing"
- * philosophy (same rationale as ostm.c's own constant) -- not a claim
- * that 25 MHz is RZ/A1H's real Pφ. */
-#define MTU2_FREQ_HZ 25000000
+/* EXPERIMENT, 2026-09-09 -- was 25MHz, chosen empirically (see git history/
+ * README-history.md's "MTU2 channel 4 built; a generic RTOS job-queue
+ * overflow" section for the full derivation of that number, and why an
+ * initial "genuine emulator scheduler bug" hypothesis was wrong) to dodge a
+ * real RTOS job-queue overflow while still much faster than the SoC's real
+ * clock -- explicitly NOT a claim that 25MHz is RZ/A1H's real Pφ.
+ *
+ * Now the real, derived value, found the same way OSTM's own real
+ * OSTM_FREQ_HZ was (see ostm.c's own comment): channels 3 and 4's real TCR
+ * register (confirmed via direct disassembly of this device's own already-
+ * identified init functions, FUN_20005c08/FUN_20005cac) is written as a
+ * literal 0x00 for both channels -- decoded against the RZ/A1H manual's
+ * Table 10.9 (channel-3/4-specific TPSC encoding, distinct from channels
+ * 0-2's own table), TPSC=000 means "count on P0φ/1", i.e. no division at
+ * all. Combined with P0φ's own real, schematic-confirmed value (32.00MHz,
+ * see ostm.c's file comment for the X301/USB_X1 derivation), both
+ * channels' real rate is exactly 32,000,000 Hz -- the identical clean
+ * 1.000ms-period base OSTM0 itself already uses, not a coincidence: both
+ * peripherals sit on the same real P0φ domain.
+ *
+ * Testing live whether restoring this real value (now that ostm.c pairs
+ * its own real clock with QEMU -icount, fixing the job-ring overflow this
+ * constant was originally detuned to dodge) still holds up -- the original
+ * queue-overflow class of bug this constant was created to avoid could in
+ * principle resurface at a different rate; not yet confirmed either way.
+ * See README-history.md for the result once tested -- revert to 25000000
+ * if this doesn't hold up. */
+#define MTU2_FREQ_HZ 32000000
 
 /* TGI4A's fixed one-shot period (in MTU2_FREQ_HZ counts) -- see file
  * comment's Simplifications paragraph for why this doesn't compute the
