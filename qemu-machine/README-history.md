@@ -2697,3 +2697,53 @@ memory-read-only -- e.g., poll the GIC's own `GICD_ISPENDR0`/`GICC` priority-mas
 alongside the ring header during the stall window (all via QMP or plain `read_memory`, no
 breakpoint anywhere near GIC or id0) to see directly whether SGI 0 sits pending-but-unserviced
 the whole time, or never gets raised at all during that window.
+
+## 2026-09-10 session, continued a fifth time: found the direct cause -- IRQs genuinely masked at the CPU while SGI0 sits correctly latched pending
+
+Followed the exact concrete next step the previous pass left: poll the GIC's own live state
+(not a breakpoint anywhere near it or `id0`) alongside the ring header through the stall.
+
+**First cut used too many extra reads and suppressed the overflow entirely** (55s, zero
+overflows, with `GICD_ISPENDR0`/`GICD_ISACTIVER0`/`GICC_PMR`/`GICC_RPR` all polled every 0.25s)
+-- confirms the effect is sensitive even to *non-breakpoint* added memory-read overhead, not
+just breakpoints. Trimmed down to the minimum (just `GICD_ISPENDR0` plus the `CPSR` already
+free from the existing register read) and the overflow reproduced again.
+
+**Caught the real moment directly**: one trial showed, right as the ring's `pending` count
+jumped from 0 to 6 in a single poll interval, **`GICD_ISPENDR0` bit 0 (SGI 0) reading genuinely
+1** -- the GIC distributor has SGI 0 correctly latched pending, not lost -- **at the exact same
+instant `CPSR.I` (the CPU's own IRQ mask bit) reads 1**. This is the first time in any of these
+traces that `SGI0_pend` showed anything but 0; every other sample across multiple full-length
+runs, including the many single-sample `CPSR.I=1` blips caught mid-known-exception-handler
+(`irq_exception_dispatch` entry, `irq_nesting_exit_and_refire`'s own body -- both routine,
+expected, and each recovers to `pending=0` on the very next sample), showed `SGI0_pend=0`.
+
+**What this settles**: this was never a "GIC drops the interrupt" or "coalescing logic has a
+bug" story -- the GIC does exactly what it's supposed to (latches SGI 0, correctly, waiting to
+be serviced). The CPU simply has its own IRQ mask (`CPSR.I`) set for long enough, at this
+specific point in this specific boot profile, that a properly-pending SGI 0 can't be taken --
+long enough for the steady ~82ms producer to build a real backlog before the mask lifts. Every
+other observed `CPSR.I=1` sample this session was a brief, single-poll blip inside a *known*,
+already-understood handler (recovering immediately); this one coincided with a real, multi-item
+backlog forming, which is the qualitative difference that matters.
+
+**Also reconfirmed, the hard way, exactly how easily this whole investigation continues to get
+suppressed by observation**: reproducing this required cutting the polled register set down to
+one extra 4-byte read beyond the pre-existing baseline; two extra reads (`ISPENDR0`+`ISACTIVER0`)
+still let it reproduce, four (`+PMR+RPR`) did not, in a 55s trial. The margin between "still
+reproduces" and "silently suppressed" is this narrow -- a durable, generalizable lesson for
+whoever continues this: add the absolute minimum instrumentation each pass, and always sanity-
+check that the phenomenon under study still actually occurs before trusting a "clean" run's
+absence of it as informative.
+
+**Honest state at the end of this session's whole ring-overflow thread**: the full causal chain
+is now traced end to end for the first time -- steady MTU2-driven producer, a sound SGI-
+coalescing scheme, a GIC that correctly latches the resulting SGI 0, and a CPU that has its own
+IRQ mask held for an unusually long stretch right at this point in boot, long enough to overflow
+a 16-slot queue before the mask lifts. **What's still open, and is now a well-defined, narrower
+question for a future session**: what specifically holds `CPSR.I=1` for that long at this point.
+Given how sensitive this whole chain is to any added observation, the natural next technique
+is *not* more live polling -- it's static: read `cold_boot_hw_init`'s (or whatever code runs at
+this boot depth) own `disableIRQinterrupts()`/`cpsid i` call sites directly in Ghidra and look
+for one whose matching re-enable is conditional, looped, or otherwise not guaranteed to run
+promptly, rather than trying to catch the CPU in the act live again.

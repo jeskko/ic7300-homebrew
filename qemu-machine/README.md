@@ -106,13 +106,30 @@ active resume point.
 ## the tail of both `irq_context_switch_id0` and `swi_handler`) clears the pending flag and
 ## re-fires once more if that second flag got set. **This coalescing scheme looks architecturally
 ## sound on its own** — worst case it costs one missed ~82ms tick, nowhere near ten seconds — so
-## the real cause has to be further upstream (SGI 0 masked or deprioritized for that whole
-## stretch by something else), not a bug in this mechanism itself. See README-history.md's newest
-## three sections for the full derivation, including both retracted leads (why each looked
-## plausible and exactly how each was checked and ruled out) and why the breakpoint-based
-## DMAC-race verification attempt tried earlier this session was also discarded as untrustworthy
-## (a real, live example of the project's own documented
-## gdbstub-artifact class) before the GDB-free QMP method settled that part.
+## the real cause has to be further upstream.
+##
+## **Found it: SGI 0 genuinely sits latched pending at the GIC while the CPU's own IRQ mask is
+## set — not a GIC or coalescing bug at all.** Polled the GIC's own live state (`GICD_ISPENDR0`
+## bit 0, plus `CPSR.I`) alongside the ring header, memory-reads only, no breakpoint anywhere
+## near the GIC or `id0` (confirmed *that* alone still suppresses the effect — even 4 extra
+## polled words did, 2 didn't; the margin is this narrow). Caught the real moment directly: as
+## `pending` jumped 0→6 in one poll interval, `GICD_ISPENDR0` read genuinely `1` for SGI 0 (the
+## *only* time across every trial it read anything but 0) at the exact same instant `CPSR.I`
+## read `1` — meaning the GIC did its job correctly and latched the interrupt; the CPU simply
+## had interrupts globally masked long enough for the steady producer to build a real backlog
+## before the mask lifted. Every other `CPSR.I=1` sample this session was a brief, single-poll
+## blip inside an already-understood handler, recovering immediately — this one coincided with a
+## real, multi-item backlog, which is the qualitative difference that matters. **What's left
+## open, narrower than where this thread started**: what specifically holds `CPSR.I=1` for that
+## long at this point in boot — a static-analysis question now (find a `disableIRQinterrupts()`
+## call site whose matching re-enable isn't guaranteed to run promptly), not a live-tracing one,
+## since live tracing has now been shown to suppress the very thing being studied at multiple
+## levels of instrumentation. See README-history.md's newest four sections for the complete
+## derivation, including both retracted leads (why each looked plausible and exactly how each was
+## checked and ruled out) and why the breakpoint-based DMAC-race verification attempt tried
+## earlier this session was also discarded as untrustworthy (a real, live example of the
+## project's own documented gdbstub-artifact class) before the GDB-free QMP method settled that
+## part.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
