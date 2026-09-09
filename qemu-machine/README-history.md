@@ -2262,3 +2262,55 @@ next step for whoever picks this up next**: `force_call_fup.py`'s "force a direc
 now-correctly-understood boot state) is the right next move, not a longer or differently-scoped
 free run -- the passive-observation avenue is now closed out with a real, well-supported answer,
 not abandoned for lack of one.
+
+## `force_call_fup.py` retested -- same session, immediately following. A real methodology bug
+## found and fixed along the way, then a decisive (if disappointing) result: the SD-card path's
+## real blocker is the *already-diagnosed* 2026-09-08 gate, not anything from today's DMAC thread
+
+**First retest attempt found a genuine bug in the retest itself, not a firmware issue.** Ran
+`force_call_fup.py` exactly as written against a freshly-`-S`-launched instance (no prior free
+run) -- got a real Prefetch Abort (`PC` pinned at the ARM exception vector `0x0000000C`,
+`CPSR` mode bits reading Abort mode). Traced why before concluding anything about the firmware:
+`force_call_fup.py` hijacks directly from **cold reset** (`SP=00000000` in the "before" trace --
+no real startup code has ever run, so no stack has ever been set up), whereas the original
+2026-09-08 investigation's own wording ("the idle task's registers overwritten via GDB") implies
+it hijacked an *already-running* context with a real stack. Confirmed this is exactly the
+difference: a small wrapper that frees the CPU to run naturally for 15s first (same live GDB
+connection throughout -- dropping and reconnecting mid-`continue` under `-icount` was found,
+separately, to corrupt the gdbstub's state for the next client, a second real gotcha this
+session) before doing the identical hijack sequence, using the real stack pointer already in
+place, produces no crash at all.
+
+**With that fixed, and with a real FAT16 SD-card image attached** (`tools/build_sdcard.py`,
+matching the documented `\IC-7300\<filename>` convention this project's manual research already
+established) **, the retest reproduces the exact qualitative behavior the original 2026-09-08
+session described, almost word for word**: the CPU keeps legitimately executing, cycling through
+varied real code addresses across genuine context switches (not stuck in one tight loop), but
+never reaches any MMCIF register access (confirmed independently via `RZA1H_DEBUG=mmc,dmac,riic,
+scif,rspi2` -- zero new activity in the log after the hijack, in a 15s trial) and
+`firmware_update_main` never returns. A direct memory read of `sdcard_file_rpc_dispatch_task`'s
+own control struct (`0x203907f0+0x20`/`+0x28`, the exact fields the 2026-09-08 session already
+identified as the task-creation tell) confirms this isn't just a `force_call_fup.py`-specific
+symptom: **both fields are still zero even after 120 real seconds of genuinely untouched, natural
+free-running boot** -- ruling out "just needs more real time" (today's whole session's other
+running theme) before accepting this conclusion.
+
+**Conclusion, stated precisely rather than left at the more optimistic framing the session's own
+wrap-up used earlier**: the passive-idle-loop finding above (`mtu2.c` ticking continuously, no
+new `dmac`/`riic`/`scif`/`rspi2` activity for 900s) is still accurate as an *observation*, but the
+*explanation* needs correcting -- it is not simply "the firmware finished everything it can do and
+is waiting for an external trigger". It is specifically that `cold_boot_mode_dispatch`'s own
+~80-call feature-task-creation pass (which creates `sdcard_file_rpc_dispatch_task` and
+essentially every other feature task in `notes/kernel-rtos.md`'s catalog) still never runs at
+all, for the exact reason the 2026-09-08 session already traced in full: `FUN_2002b29c`'s branch
+decision depends on real EEPROM-signature/GPIO-power-good state that routes execution to
+`FUN_20029ca4`'s power-state main loop instead. **Today's entire DMAC/MTU2/ring-overflow/
+GDB-stub thread is a genuinely separate, already-resolved concern from this one** -- fixing it
+was real, necessary progress (it unblocked reaching this much further and cleanly-idling state at
+all), but it does not touch the `FUN_2002b29c` gate, which is a distinct, already-diagnosed
+open item from a full session earlier. **Concrete next step for whoever picks this up next**:
+revisit `FUN_2002b29c`'s own branch decision directly (not the DMAC/icount thread) -- either find
+what real EEPROM/GPIO state would route it toward `cold_boot_mode_dispatch` instead, or find a
+different, more targeted injection point past that specific gate (e.g. forcing entry into
+`cold_boot_mode_dispatch` itself, or directly into `system_mode_request_dispatch`, rather than
+`firmware_update_main`) -- this is a return to a known, well-scoped thread, not a new mystery.

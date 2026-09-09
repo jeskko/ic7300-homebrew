@@ -23,6 +23,21 @@ pointed at a scratch RAM word this script writes a `b .` (branch-to-self,
 0xEAFFFFFE) into first -- so "did firmware_update_main return" becomes
 "is PC sitting at that exact address", unambiguous and pollable the same
 way this session's idle-loop-escape checks already are.
+
+FIXED, 2026-09-09 (a real methodology bug, found retesting this after the
+DMAC/icount thread): hijacking directly from a fresh `-S` reset (this
+script's own original default -- connect and hijack immediately, no
+`cont()` first) writes SP=0 into the call, since no real startup code has
+ever run to set up a stack -- a real Prefetch Abort results the moment
+anything pushes to it. The original 2026-08/09 investigation's own wording
+("the idle task's registers overwritten via GDB") hijacked an
+*already-running* context instead, reusing its real stack. `FREE_RUN_S`
+below (a free-run period over the *same* GDB connection before hijacking,
+not a fresh reconnect -- dropping a connection mid-`continue` under
+`-icount` was separately found to corrupt the gdbstub's state for the next
+client) now defaults to that safer, historically-accurate behavior; pass
+`0` explicitly to restore the old fresh-reset behavior if that's ever
+actually wanted.
 """
 
 from __future__ import annotations
@@ -38,14 +53,28 @@ from gdbrsp import GdbRsp
 FUP_MAIN = 0x20025ae4
 PATH_BUF = 0x203d86c4  # DAT_200264a0's target, see module comment
 TRAMPOLINE = 0x209F0000  # arbitrary, well past the static image, unused RAM
+FREE_RUN_S = 15.0  # see the FIXED note above -- 0 restores the old, crash-prone behavior
 
 
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else "UPDATE.DAT"
+    free_run_s = float(sys.argv[2]) if len(sys.argv) > 2 else FREE_RUN_S
     g = GdbRsp(port=1234)
 
     regs = g.read_registers()
-    print(f"before: PC={regs['r15']:08x} CPSR={regs['cpsr']:08x} SP={regs['r13']:08x}")
+    print(f"before free-run: PC={regs['r15']:08x} CPSR={regs['cpsr']:08x} SP={regs['r13']:08x}")
+
+    if free_run_s > 0:
+        was_at_reset = regs["r15"] == 0x18000000
+        g.cont()
+        print(f"free-running for {free_run_s}s before hijacking "
+              f"(was at reset: {was_at_reset})...")
+        time.sleep(free_run_s)
+        g.interrupt()
+        g.wait_stop(timeout=5.0)
+        regs = g.read_registers()
+
+    print(f"before hijack: PC={regs['r15']:08x} CPSR={regs['cpsr']:08x} SP={regs['r13']:08x}")
 
     path_bytes = path.encode("ascii") + b"\x00"
     g.write_memory(PATH_BUF, path_bytes)

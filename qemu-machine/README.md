@@ -15,24 +15,26 @@ evidence trail behind everything below — this file carries only the current st
 active resume point.
 
 ## Status, 2026-09-09 (new session) — the "DMAC/icount stall" is RESOLVED (never a real DMA or
-## `-icount` bug — a QEMU GDB-remote-stub reliability artifact), AND a genuinely GDB-free long
-## free run shows boot reaches a real, stable RTOS idle loop — not stuck, just waiting for an
-## external trigger a passive free run will never supply. Host-side-only instrumentation
-## (independent of GDB entirely) proved the real arm→ptimer→IRQ→guest-ISR chain completes in
-## under 1ms of real time, every trial, with or without GDB attached — what's actually unreliable
-## is QEMU's own GDB breakpoint/interrupt reporting for this specific address pattern under
-## `-icount shift=auto`. New permanent tool, `src/rza1h_debug.h` (`RZA1H_DEBUG=<names>|all` env
-## var), gives cheap, GDB-free visibility into every real device's own boundary events — and
-## immediately proved its worth: a 900s GDB-free run showed `mtu2.c`'s scheduler tick (ch3/ch4)
-## firing continuously at a steady ~964Hz the whole time, while `dmac`/`riic`/`scif`/`rspi2` show
-## zero new activity past the first ~8 real seconds — a genuine, alive, stable idle state, not a
-## new stall. The original `0x20420120` ring-overflow fix (real OSTM clock + `-icount
-## shift=auto`) is unaffected and still stands. **Concrete next step**: retest
-## `force_call_fup.py` against this now-correctly-understood boot state — the passive-observation
-## question is closed out with a real answer, not still open. See below and README-history.md's
-## newest two sections for the full derivation — this reframes several of the last few sessions'
-## "not yet root-caused" entries, so read those before trusting the older "stall" framing further
-## down in this file's own history.
+## `-icount` bug — a QEMU GDB-remote-stub reliability artifact under `-icount shift=auto`).
+## Host-side-only instrumentation (independent of GDB entirely) proved the real arm→ptimer→IRQ→
+## guest-ISR chain completes in under 1ms of real time, every trial, with or without GDB attached
+## — what's actually unreliable is QEMU's own GDB breakpoint/interrupt reporting for this specific
+## address pattern. New permanent tool, `src/rza1h_debug.h` (`RZA1H_DEBUG=<names>|all` env var),
+## gives cheap, GDB-free visibility into every real device's own boundary events. **But the
+## retested `force_call_fup.py` next step found this DMAC thread was never the SD-card path's
+## real blocker at all**: boot does reach a genuine, alive idle state (`mtu2.c` ticking
+## continuously at ~964Hz for 900s, confirmed GDB-free), but `sdcard_file_rpc_dispatch_task`'s own
+## creation struct is still zero even after 120 real seconds — the *already-diagnosed*
+## 2026-09-08-session gate (`FUN_2002b29c`'s branch decision routing away from
+## `cold_boot_mode_dispatch`, so its whole ~80-call feature-task-creation pass never runs) is
+## still standing, completely unaffected by today's fixes. The original `0x20420120`
+## ring-overflow fix (real OSTM clock + `-icount shift=auto`) is unaffected and still stands too.
+## **Concrete next step**: revisit `FUN_2002b29c`'s own branch decision directly (real
+## EEPROM/GPIO state, or a different injection point past that gate) — a return to a known,
+## well-scoped thread, not a new mystery. See below and README-history.md's newest three sections
+## for the full derivation — this reframes several of the last few sessions' "not yet
+## root-caused" entries, so read those before trusting the older "stall" framing further down in
+## this file's own history.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -259,7 +261,12 @@ that this false blocker is out of the way.
   (any `-f` full-command-line pattern that appears as literal text in its own invocation is at
   risk, not just `pkill`) — `pgrep -x qemu-system-arm`/`pkill -x qemu-system-arm` (exact
   `comm` name match, not a command-line substring) is the safe alternative when checking for or
-  killing a stray instance.
+  killing a stray instance. **A third, unrelated gdbstub gotcha found the same day**: dropping a
+  `gdbrsp.py` connection (letting the Python process exit) while the target is mid-`continue`
+  under `-icount` leaves the gdbstub in a state where the *next* client's first packet gets no
+  ack (`GdbRspError: no ack for packet 'g', got '$'`) — always let a script run to a clean
+  `g.close()`/exit via `wait_stop()` first, or just restart QEMU, rather than reconnecting to a
+  live instance a previous script abandoned mid-flight.
 - **`tools/trace_irq_mask_window.py`** (new, 2026-09-09) — breakpoints the `cpsid i`/`cpsie i`
   pair bracketing `FUN_2005ff1c`'s shared caller body plus the ring-overflow trap (all rare,
   low-overhead), and can reactively arm a fourth breakpoint on `irq_context_switch_id0`'s own
@@ -382,14 +389,25 @@ spot-check.
    real `-icount` bug" framing should be read with real skepticism now. The original question —
    does the SD-card update flow reach MMCIF against a *properly* kernel-created task, and would
    the whole chain accept and boot custom firmware entirely offline — is open again, no longer
-   gated on a `dmac.c` fix. **Answered the passive half directly, same session**: two genuinely
+   gated on a `dmac.c` fix. **Passive-observation half checked, same session**: two genuinely
    GDB-free 900s (15-minute) free runs (one with `-d unimp,guest_errors`, one with the new
    `RZA1H_DEBUG=dmac,riic,scif,rspi2`, see `src/rza1h_debug.h` in Directory layout below) found
-   boot reaches a real, stable RTOS idle loop — `mtu2.c`'s scheduler tick fires continuously
+   boot reaches a real, alive, stable idle state — `mtu2.c`'s scheduler tick fires continuously
    (~964Hz) the whole time, while every other traced peripheral shows zero new activity past the
-   first ~8 real seconds. Not a new blocker: the firmware has legitimately finished everything it
-   can do without an external trigger (a button, an SD-card insert, a menu action) that passive
-   free-running boot will never generate on its own. **Concrete next step**: retest
-   `force_call_fup.py`/`test_fup_scheduling.py` against this now-correctly-understood boot state
-   to force that trigger directly — this is the right next move, not a longer or
-   differently-scoped free run.
+   first ~8 real seconds. **`force_call_fup.py` retested against this state, same session,
+   immediately after — this is where the real, if less exciting, answer actually came from.**
+   After fixing a genuine bug in the retest itself (hijacking from cold reset with no stack ever
+   set up causes a real Prefetch Abort — free-running naturally first, then hijacking the
+   already-running context's real stack, is required, matching the original 2026-09-08
+   session's own technique), the retest reproduces that same session's exact behavior:
+   legitimate context-switching, never reaching MMCIF, `firmware_update_main` never returning. A
+   direct read of `sdcard_file_rpc_dispatch_task`'s own creation struct confirms why, ruling out
+   "just needs more time" first (still zero after 120 real seconds of untouched free-running
+   boot): **the SD-card path's real blocker is the already-diagnosed 2026-09-08 gate**
+   (`FUN_2002b29c`'s branch decision never routing to `cold_boot_mode_dispatch`, so its whole
+   ~80-call feature-task-creation pass — including this task — never runs), unaffected by
+   everything fixed in today's DMAC/MTU2/ring-overflow/GDB-stub thread. **Concrete next step**:
+   revisit `FUN_2002b29c`'s own branch decision directly (real EEPROM/GPIO state, or a different
+   injection point past that gate, e.g. into `cold_boot_mode_dispatch`/`system_mode_request_
+   dispatch` directly rather than `firmware_update_main`) — a return to a known, well-scoped
+   thread from a full session earlier, not a new mystery.
