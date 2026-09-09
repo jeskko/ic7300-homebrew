@@ -1787,3 +1787,44 @@ counting logic in particular) is directly reusable for testing whichever new hyp
 next -- arm the id0-entry watch and correlate its hit-count/spacing against the ring's own
 `pending` byte read at the same moments, rather than assuming a specific fixed code location is
 the trigger.
+
+## Two more angles opened in parallel, same session: a datasheet-grounded clock-realism finding,
+## and a reactive producer-capture tracer (2026-09-09, continuing straight on)
+
+**Real OSTM clock frequency finally tracked down (was previously undocumented anywhere in this
+project) -- worth acting on, but not a quick fix.** `ostm.c`'s `OSTM_FREQ_HZ` (500MHz) has
+always been an explicitly-flagged "fast for testing" placeholder, same as `mtu2.c`'s original
+value before that got tuned. The real RZ/A1H hardware manual (`REN_r01uh0403ej0600_rz_a1h_MAT_
+20210129-2931443.pdf`, Section 11.3.2 + Table 6.3) documents OSTM's real count clock as `P0φ`,
+25.00-33.33MHz depending on clock mode -- a real, citable number, not a guess, and confirms
+`mtu2.c`'s own already-tuned 25MHz sits in the *same* real clock domain (MTU2's count clock is
+also `P0φ`, just via a divider), though `mtu2.c`'s own comment is honest that 25MHz was chosen
+empirically to fix a bug, not derived from this manual section.
+**Important nuance, reasoned through before acting on this (not yet tested live)**: naively
+lowering `OSTM_FREQ_HZ` to 33.33MHz alone could plausibly make bursts like this session's *worse*,
+not better. QEMU's `ptimer`-backed devices (all of this project's timers) are paced against real
+*wall-clock* time by default (`QEMU_CLOCK_VIRTUAL` without `-icount` advances 1:1 with real host
+time) -- so a *slower*, more realistic `OSTM_FREQ_HZ` makes the real, wall-clock-measured gap
+between ticks *longer*, not shorter, while TCG keeps executing guest code as fast as the host
+possibly can in between. Unthrottled TCG on a modern host almost certainly executes far more
+guest instructions per real millisecond than the real ~400MHz-class silicon this firmware
+targets -- so a longer, more realistic inter-tick gap could let the guest CPU burst through
+*more* real work (and therefore more queue pushes) before the next tick, not less. The
+architecturally-correct fix for this whole class of mismatch is QEMU's `-icount` (instruction-
+count-paced virtual time, throttling guest execution to a chosen real-hardware-equivalent rate)
+used *together with* realistic clock constants -- not a realistic clock constant alone. This is a
+bigger, more invasive change (affects every timer-paced device in the machine, and would need
+the same kind of live re-validation `mtu2.c`'s own 25MHz tuning already needed once) than
+anything tried so far on this thread, not attempted yet.
+
+**`tools/trace_job_ring_producer.py`** (new): the natural extension of `trace_irq_mask_window.py`'s
+own reactive-arming trick, applied to the *producer* side instead of the consumer -- cheap
+wall-clock polling of `pending` detects a run-up, and only then arms a breakpoint on
+`FUN_20186c4c` (the broadcast dispatcher, chosen over `FUN_20187bb4` one level down because the
+latter has exactly one static caller so its own LR can't distinguish sources) to capture caller
+LR + payload + channel number for each push during the actual burst, without perturbing the
+whole boot. First two trials (100s, 130s) didn't reproduce an overflow at all -- confirms the
+burst is genuinely rare/probabilistic on this specific timescale, consistent with everything
+found so far (normal small pending=1 blips drain cleanly within ~0.25s every 10-30s throughout
+both runs; nothing pathological seen outside of an actual overflow). More trials needed to
+actually catch a live burst with the producer watch armed.
