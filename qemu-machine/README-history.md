@@ -1144,3 +1144,289 @@ scheduling or concurrency defect is worth checking against this cheaply first (d
 down a recently-added fast peripheral clock change the symptom?) before escalating into a
 much larger scheduler-correctness investigation. See `README.md`'s Status section for the
 current resume point.
+
+## Status as of the SCIF5 DSP-comms session, 2026-09-09 (superseded by README.md's current
+## Status -- kept here verbatim for the narrative trail)
+
+## Status, 2026-09-09 — the RTOS job-queue overflow is resolved, and the previous resume
+## point's own hypothesis (a genuine scheduler/context-switch bug) turned out to be wrong:
+## live testing traced it to this project's own MTU2 tick rate being too fast, fixed by
+## slowing it down; boot now reaches a real synchronous DSP command/reply exchange
+
+**Confirmed, solid, foundational (from prior sessions, still true):**
+- A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
+  vendored checkout under `qemu-src/`, gitignored — `setup.sh` recreates it) and boots real,
+  unmodified v1.42 firmware: `base.dat`'s traced sequence runs, the body decompresses, real GIC
+  IRQ delivery works (OSTM0 is `body.bin`'s real tick source — GIC ID 134, `CMP`=32000).
+- **With `tools/build_riic_eeprom_image.py`'s output supplied as RIIC2's backing image** (see
+  "Running it" below), `FUN_2002b29c`'s entire cold-boot-vs-power-state branch decision clears —
+  every EEPROM signature check and the real GPIO power-good gate all resolve correctly.
+- **SCIF3's TXI (transmit-complete) IRQ is real and verified end-to-end** (found and fixed the
+  same day the two bullets below did their work: not wired at all; a level-vs-edge/redundant-
+  raise-is-a-no-op bug matching a class `riic.c` had already hit; and an emulator-only lost-edge
+  artifact). Full three-bug derivation in README-history.md's "SCIF3 TXI made real" section —
+  this Status section only tracks the current, much-further-along state from here on.
+
+**Confirmed, solid, this session (newest first) — the SCIF3 front-panel handshake now
+completes for real, and boot reaches genuine ITRON task activation for the first time ever:**
+- **`cold_boot_hw_init` progresses all the way to `itron_act_tsk` — a real RTOS task
+  activation** (`0x2002b038`-area, confirmed live via a decompile + direct listing match), the
+  single biggest milestone this whole `qemu-machine/` thread exists to reach. Getting there
+  needed a real, working virtual front-panel responder (`scif.c`'s `rza1h_scif3_frontpanel_ack`)
+  — the SCIF3 RX side, previously entirely unmodeled.
+- **RXI (receive-data-full) wired for the first time**, alongside TXI, gated to channel 3
+  (the confirmed front-panel link) — GIC ID 235, from the same SVD-derived formula as TXI3's
+  236, already enabled by firmware alongside it (confirmed live, no extra arming needed).
+- **The responder itself went through two real designs before landing on one that works**,
+  full derivation (three separate real bugs, each confirmed via live tracing, not guessed) in
+  `scif.c`'s own file comment and README-history.md's newest section — short version: naive
+  byte-by-byte delivery through the real FRDR/RXI path (mirroring a real chardev byte) could not
+  be made reliable against `scif3_frame_rx_statemachine`'s own drain loop no matter which QEMU
+  deferral primitive backed it (synchronous, `QEMUBH`, and even a real `QEMUTimer` all let the
+  guest's drain loop consume multiple queued bytes in one pass, confirmed via single-step
+  traces each time); the design that actually works precomputes the *end state* a real
+  byte-at-a-time exchange would have reached (frame buffer, byte count, status flags — all
+  written directly via `address_space_write()`, using live-read real firmware pointer *values*,
+  never hardcoded addresses) and delivers only the one genuinely necessary terminator byte
+  through the real path. **A second, independent real bug** then surfaced once the identify
+  ACK worked: it sets status bits that include the exact bit `scif3_driver_pump_tick` reads as
+  "send a keepalive ping", and ACKing that resulting ping the same way re-armed it right back —
+  a genuine, unbounded fe/f1/fd loop (confirmed: tens of thousands of frames in the first dozen
+  real seconds) — fixed by simply never ACKing that specific frame type.
+- **A second layer needing the same treatment was found and fixed the same session**: the
+  handshake's own *second* wait loop (right after the first) blocks on a different signal
+  (status bit 0x04, set only by an ordinary type-0x00-0x1F frame's own successful dispatch) —
+  confirmed live via a real, previously-never-transmitted 33-byte status/data frame. The
+  responder now ACKs any outbound type 0x00-0x1F the same general way (a 1-byte dummy-payload
+  echo), which resolved this layer too, cleanly (no further loops observed).
+- **The RTOS-tick/delay-counter investigation from the previous Status entry turned out to be a
+  red herring, not the real blocker** — confirmed via a live hardware watchpoint (`gdbrsp.py`
+  gained `set_watchpoint`/`remove_watchpoint`, `Z2`/`z2`, this session) showing the polled
+  counter genuinely never gets a single write across 120 continuous real seconds, even post-fix.
+  The real blocker the whole time was the missing front-panel RX responder above; once that
+  existed, the handshake resolved via its *primary* exit path (a real reply, clearing its busy
+  flag directly) well before its fallback timeout counter would ever have mattered. Chasing that
+  counter further would have been wasted effort — worth remembering generally: a counter that
+  never advances is evidence of "something upstream never runs", not necessarily evidence that
+  the counter itself is what needs fixing.
+- **A methodology point worth real emphasis**: getting the responder right needed cycling
+  through several plausible-looking "fixed" states that live testing then disproved — GDB
+  single-stepping alone gave a *misleadingly reassuring* picture more than once this session
+  (showed one invocation succeeding in isolation, hid what happened immediately after); a real
+  `-d unimp -D <logfile>` register-write trace, read in full sequence, is what actually
+  resolved each case. Don't trust an isolated single-step trace's "it worked" over a full
+  real-time trace's "and then what" when the two disagree.
+
+**The activated task's identity is already known — no re-derivation needed.** `itron_act_tsk`'s
+own argument here (`DAT_2002b4e8`) reads `0x2019889c` in the static image (confirmed directly),
+an exact match for an existing row in `notes/kernel-rtos.md`'s task catalog: caller
+`cold_boot_hw_init`, descriptor `0x2019889c` → **`ui_graphics_lifecycle_task`** (renamed from
+`FUN_2007ef5c`), already ✅ **fully resolved** in that catalog — the master graphics lifecycle
+task, which calls `graphics_stack_startup_egl_openvg`, creates the real 480×272 on-screen EGL
+window surface (the touchscreen's actual resolution) plus a 960×552 off-screen EGL pixmap
+surface, then runs a 2-state init/present-frame loop. Not one of the catalog's two genuinely
+open identities (`kernel_start`'s mystery task, `thunk_FUN_2007ea68`'s dynamic activation).
+
+**The SLV5 (`0xE8100000`) hypothesis from the previous resume point is now retired, checked
+live before any build effort went into it**: a full 22-second `-d unimp,guest_errors` boot
+trace shows zero accesses anywhere in the `0xE8100000`-area regions — `thunk_FUN_2007ea68`/
+`slv5_periph_connect_disconnect_handler` is simply never reached this early, so it cannot be
+today's blocker. See README-history.md's newest section for the trace.
+
+**Active resume point — the concrete next step, now a fully traced, live-confirmed root
+cause rather than a hypothesis:** `cold_boot_hw_init`'s task-readiness busy-wait
+(`*0x2039076c` — a fixed literal-pool address in this build, confirmed unchanged this session,
+bounded at `0x32`/50) is incremented by a generic multi-rate system-tick handler
+(`FUN_200b7910`) that only ever runs as the registered ISR for **GIC ID 154** — cross-derived
+two independent ways (the same "`ICDISRn` register-index×32+bit" SVD formula already
+confirmed for OSTM0=134 and SCIF3 TXI/RXI=236/235, plus the literal `0x9a` argument to the
+same `GICD_ISENABLERn`-shaped helper SCIF3's TXI fix already confirmed) as **MTU2 (Multi-
+Function Timer Pulse Unit 2) channel 3's `TGI3A`** compare-match-A interrupt. Live-confirmed
+directly, not guessed: with the CPU genuinely parked at the busy-wait (`PC=0x2002b04c`) after
+20 real seconds, `GICD_ISENABLER4` (`0xE8201110`) reads back bit 26 **set** — the guest has
+already armed this exact interrupt — while `GICD_ISPENDR4` (`0xE8201210`) reads bit 26
+**clear** the whole time: MTU2 has never once asserted it, because `rz_a1h.c` currently maps
+the whole MTU2 region via `add_plain_ram_region()` (plain storage, no behavior at all — see
+the Confirmed-peripherals table). The guest's own real configuration for this channel is also
+already traced (via `references_to` on the SVD's real per-channel register offsets, not the
+peripheral's bare base address): `TCR_3=0` (prescaler Pφ/1, undivided), `TCNT_3` reset to 0,
+**`TGRA_3=8000`** (the real compare-match period, don't hardcode — confirm live each build),
+`TIER_3`'s enable bit set.
+
+**`src/mtu2.c` is now built, wired, and confirmed load-bearing against a real boot** — a real
+channel-3 timer (level IRQ, write-0-to-clear `TSR_3` semantics, everything derived above),
+mirroring `ostm.c`'s proven pattern. Live-tested immediately after building it (same
+`gdbrsp.py` poll used to find the blocker): the readiness counter, static at `0` for 20+
+seconds on every prior boot, now climbs continuously (`0xd8` → `0x8e` → `0x63` → `0x1f`,
+wrapping past its 1-byte width many times over) and **PC moves dramatically past the former
+busy-wait**, visiting a wide, changing spread of addresses across `0x20005xxx`/`0x200b5xxx`/
+`0x2018xxx` — real, active multi-region execution, not a single new parked address. This is
+confirmed, not inferred: the fix genuinely unblocks `cold_boot_hw_init` and boot progresses
+further than any previous session reached.
+
+**`src/dmac.c` is now also built, wired, and confirmed load-bearing.** Live-checked GIC ID 41
+first (per this session's own now-established discipline): armed by the guest
+(`GICD_ISENABLER1` bit 9 = 1), never pending (`GICD_ISPENDR1` bit 9 = 0) — the same
+armed-but-never-fired shape MTU2 had — and confirmed **edge**-triggered (`GICD_ICFGR2` bits
+18-19), unlike MTU2's level `TGI3A`. Traced the exact register sequence live too (`N0SA_0`/
+`N0DA_0`/`N0TB_0` — DMAC channel 0's source/dest/count — written in that order, source a RAM
+buffer, dest a GPIO-region address) via `references_to` on the SVD's real per-offset
+addresses, the same method used for MTU2's `TGRA_3`. Built `dmac.c` for channel 0 only
+(real transfer via `address_space_read()`/`address_space_write()`, edge IRQ on completion —
+full derivation in README-history.md's newest section) and retested with multiple free-running
+trials (not just one snapshot — this project's own established discipline, since real
+interrupt-driven scheduling makes a single boot non-representative): **the DMAINT0 busy-wait
+now resolves in every trial**, run-to-run timing varying only in *when* it clears, never
+whether. Boot then reaches **`dsp_boot_handshake`** (already-identified/named from an earlier
+session) — a whole further stage, part of the SCIF5 DSP-link bring-up
+(`scif5_dsp_link_driver_init()` → `scif5_wait_hsk1_ready()` → `dsp_boot_handshake()`), never
+reached before this session.
+
+**GIC ID 0x9f (159) identified and built: `mtu2.c` extended to cover MTU2 channel 4 too.**
+Same SVD formula, register index 4 bit 31: **TGI4A**, channel 4's own compare-match-A event
+— not RSPI as the register-access shape briefly suggested; `scif5_bitrev_transmit_word`'s
+`iVar4`-relative writes turned out to be an unrelated GPIO-area side effect (base
+`0xFCFE3400`), while the actual timing mechanism is genuinely MTU2. `scif5_dsp_link_driver_
+init`'s own pre-existing file comment (written 2026-08-29, before this session) already
+documented the wider mechanism: a ring buffer drained via channel 4's compare-match-**C**
+event too (GIC ID 161, **TGI4C**) — both now built.
+
+**A real bug found and fixed before either was confirmed working**: TGI4A's first version
+auto-armed on `TSTR`'s `CST4` bit going high (mirroring channel 3's own correct pattern) —
+but live testing showed `CST4` goes high early in boot, well before `TGRA_4` is ever
+meaningfully written, so this fired the IRQ far too early with a stale register value. Fixed
+by making TGI4A arm only on an explicit `TGRA_4`/`TCR_4` write while already running (the real
+trigger point), never on the `TSTR` transition itself — `TGI4C` keeps the transition-based
+arming (its own real trigger, confirmed live: `TGRC_4` never gets written before `TSTR`
+starts channel 4, only afterward).
+
+**Confirmed via multiple trials**: `dsp_boot_handshake`'s own busy-wait (`*0x203906ba`)
+now resolves reliably once TGI4A works correctly. Boot progresses into `dsp_cmd_table_init` →
+`dsp_param_sync_tick()` (both already-named/known from an earlier session) — pushing ~23
+parameter words onto a ring buffer meant to be drained by TGI4C.
+
+**The previous resume point's own hypothesis was wrong — corrected by further live testing,
+not assumed.** The generic ring-push overflow (`FUN_20187bb4`/`FUN_200b93fc`) looked, from a
+first pass, like it pointed at a genuine emulator scheduling defect (the "wake the consumer"
+call writes a plain RAM flag, not a peripheral register — see README-history.md's previous
+section). Testing that directly instead of accepting it: breakpointed the ring-push call
+itself and captured **every single hit's caller** across a full run, not just the final
+overflow. Result: one single, always-identical producer (same `LR`, same arguments) firing at
+a steady real-world rate — never a multi-source burst, never a different caller. More
+tellingly, **adding the breakpoint itself (which briefly pauses the guest on every hit) made
+the overflow stop happening entirely** across a full 90-second run. A real scheduling defect
+would not care about that kind of pause; a **rate mismatch between one specific producer and
+a small fixed-capacity queue** would disappear exactly like this once something slows the
+producer down.
+
+That pointed straight at this session's own `mtu2.c`: its `MTU2_FREQ_HZ` (500 MHz, the same
+"fast for testing" constant `ostm.c` uses, chosen for wall-clock testing convenience, not
+correctness) was very likely driving the underlying software-timer-expiry scan that feeds
+this exact producer faster than a real chip's own MTU2 clock ever would, filling the queue
+faster than its real-hardware-paced consumer could keep up. **Confirmed by direct experiment,
+not just plausible reasoning**: lowered `MTU2_FREQ_HZ` to 25 MHz and reran — 6 independent
+trials (four 40s runs, two 90s runs, 340 real seconds of boot time total) with **zero
+recurrences** of the overflow, where every prior run (with the 500 MHz constant) reliably hit
+it within 10-26 real seconds. Boot now progresses further than ever, reaching
+`scif5_send_and_wait_reply`'s own busy-wait — a genuine, already-named (from an earlier
+session) synchronous DSP command/reply round-trip, several real stages past the overflow
+point.
+
+**Worth carrying forward as its own methodology lesson**: this project's own first read of
+the overflow (previous resume point) reached for "this must be the long-standing open
+scheduler question" — a real, legitimate hypothesis given the project's history, but wrong
+here, and only correctable by testing it directly (the breakpoint-hit-tracing above) rather
+than building on it. The actual, much more mundane cause was this session's own earlier
+choice of an unrealistically fast peripheral clock having a real downstream effect on
+unrelated firmware code that happened to share the same virtual clock. Every device this
+project adds with a "fast for testing, not real-clock-accurate" frequency constant
+(`ostm.c`'s `OSTM_FREQ_HZ`, now `mtu2.c`'s `MTU2_FREQ_HZ`) is a candidate for this same class
+of issue if a future blocker looks scheduling-shaped -- worth checking before escalating to a
+"is the scheduler broken" investigation.
+
+**Active resume point:** `scif5_send_and_wait_reply` (already named/known from an earlier
+session — the DSP's real synchronous command/reply API, 14 call sites project-wide) busy-waits
+on a "reply-ready" flag (`*(DAT_200b1c84+3)`) after arming a retry timer
+(`scif5_arm_retry_timer`). Not yet traced this session — the natural next step is the same
+playbook used throughout today: find what's supposed to clear that flag (a real SCIF5 RX
+event, per this function's own already-written comment) and confirm it live before building
+anything.
+
+## SCIF5 reply-ready deadlock resolved: a virtual DSP responder, and a real ordering-race bug
+## found and fixed getting there (2026-09-09, continuing straight on from the resume point above)
+
+Picked up the resume point directly: traced `scif5_send_and_wait_reply`'s busy-wait
+(`*(DAT_200b1c84+3)`, called the "reply-ready flag" below) live before building anything, per
+this session's own established discipline.
+
+**Live-traced the real clearer, and caught a real decompiler artifact doing it.**
+`scif5_arm_retry_timer`'s own decompile-derived comment already named `scif5_rx_isr` as the
+clearer, but that function's own decompile (from an earlier session, 2026-08-29) doesn't show
+any write to offset `+3` at all -- comparing it line-by-line against the raw disassembly
+listing found why: a genuine dead-store-elision artifact silently dropped `strb r0,[r4,#0x3]`
+(the actual clear) from the pseudocode entirely, because the decompiler's own points-to
+analysis didn't realize `r4` (`DAT_200b2b34 - 0x13`) and `DAT_200b1c84`'s own value
+(`0x203906b8`) are the *same* struct, just accessed via two different base+offset
+combinations 0x13 apart (confirmed: `DAT_200b2b34`'s static value is exactly
+`struct_base + 0x13`). With that resolved, the real struct layout is: `+0x2`/`+0x3` two
+separate busy flags, `+0xc` the RX byte count, `+0x13` the 4-byte raw RX buffer, `+0x18` the
+decoded reply word. `scif5_rx_isr` clears `+0x3` only after collecting 4 real bytes over
+SCIF5's RX path and `rbit`-reversing them into `+0x18` -- with no virtual DSP ever replying,
+this can never happen. Live-confirmed the deadlock directly too: a 90-second free-run poll
+(GIC state, both busy flags, and the `+3` flag itself, all read every 5 seconds) showed the
+flag going to `1` around 35 seconds in and then never once clearing again -- genuinely,
+permanently stuck, not slow.
+
+**First design (TX-triggered) worked once, then failed the very next trial -- a real ordering
+race, not a fluke.** Mirroring the channel-3 front-panel responder's own proven shape: track
+outbound `FTDR` writes on channel 5 (no framing needed, every SCIF5 command is a bare 4-byte
+`rbit`-reversed word), and once 4 bytes have gone out, synthesize a reply using the same
+precompute-3-bytes-then-deliver-1-real-byte-through-FRDR/RXI technique the channel-3
+responder established (worked out the exact bytes by hand: raw word `0x00000004`, `rbit`'d by
+`scif5_rx_isr`'s own real code into `0x20000000` -- top nibble 2, `scif5_classify_reply`'s
+"trivial ack" class, chosen as a universal reply since some callers separately check for a
+more specific class and this only affects their own retry/error handling, never this
+busy-wait). First live trial: the flag never stuck once in 90 seconds -- looked solved.
+**Second, independent trial: stuck again, in the exact same place, within 35 seconds** --
+this project's own established multi-trial discipline catching a real bug a single success
+would have missed. Root cause, found by reading the raw instruction order rather than
+re-guessing: the reply-ready flag isn't actually set busy (`=1`) until `scif5_arm_retry_timer`
+runs -- *after* the caller's own TX already returned -- so a synchronous TX-triggered ack can
+land *before* that `=1` write and get silently overwritten by it, with nothing left to clear
+it again for that exchange. This project has hit this exact class of problem before (the
+channel-3 responder's own file comment) and already knows a delay-based fix doesn't reliably
+work in this single-threaded TCG build (a `QEMUTimer` runs "far more eagerly than the guest's
+own next few instructions guarantees").
+
+**Real fix: hook a write that's provably sequenced after the busy-flag set, by real
+instruction order, not by timing.** `scif5_arm_retry_timer`'s very next steps after setting
+the flag are a real 5-write arm sequence to a genuine, previously-unmodeled hardware register
+at `0xFCFE3120` -- reached two independent ways in the firmware (`DAT_200b1c98+0x120` and,
+from the *TX helper's own separate* arm sequence, `DAT_200b1c8c-0x2e0` -- same physical
+address, a real confirmation this is one genuine register). Its last write is always one of
+two large sentinel constants (`0x10000000`/`0x40000000`), cleanly distinct from every other
+write that lands there (the small `<=0x10000` values every sequence's earlier writes use, and
+the TX helper's own differently-sentineled `0xa0000000` completion). Implemented as a second,
+small MMIO region (4 bytes, exactly at `0xFCFE3120`) mapped only on the channel-5 SCIF
+instance -- `sysbus_init_mmio` called a second time in `rza1h_scif_init` (channel isn't known
+that early, so all 8 instances get the region created; `rz_a1h.c` only maps it for `i==5`) --
+whose write handler fires the same ack helper only on those two sentinel values. Since this
+write is the literal next instruction after the busy-flag set, in the same function, this is
+race-free by construction: no scheduling assumption needed, just real, confirmed instruction
+order.
+
+**Confirmed load-bearing across 2 independent 90-second free-run trials with the fixed
+design**: the reply-ready flag never stuck once in either trial (every prior design, TX-
+triggered included, stuck permanently within 35 seconds on its failing runs). Both trials
+progressed to the *same* new frontier, not a random spread of addresses -- a strong signal
+this is a real, reproducible stage boundary rather than noise: `scif5_cmd_transmit_now`'s own
+busy-wait (traced via `LR`, since PC alone kept landing inside a tiny, ubiquitous
+load-mask-shift register-field-read helper called from many places) on the shared ring-active
+flag (`DAT_200b1cac`) -- the same flag `scif5_send_and_wait_reply` itself also waits on at its
+own entry, and the one `shared_job_ring_dispatch`'s case-1 resolution clears only once the
+background ring (case 1/2/3/4 job queue, the same one `dsp_param_sync_tick`'s ~23-word
+parameter stream and the earlier-diagnosed job-queue-overflow both involve) reaches genuinely
+empty (write pointer == read pointer). Not yet traced this session whether/why that ring
+isn't reaching empty -- the natural next step, same playbook as always: confirm live (is the
+ring's write pointer still advancing faster than its read pointer, and if so from what
+producer) before building anything.

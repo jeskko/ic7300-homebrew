@@ -133,7 +133,64 @@
  * to find yet; not ACKing it sidesteps needing to model that pacing at
  * all, since pump_tick clears the ping-request bit itself before sending
  * and nothing else sets it again.
- */
+ *
+ * 2026-09-09 (sixth pass, continuing the DSP-comms thread): a second
+ * virtual responder, gated to channel 5 (the confirmed DSP link, see the
+ * roles list above). scif5_send_and_wait_reply's busy-wait -- the DSP's
+ * real synchronous command/reply API, 14 call sites project-wide -- was
+ * confirmed live to be genuinely, permanently stuck (a 90-second free-run
+ * poll never once saw its reply-ready flag clear). Live-traced the real
+ * clearer directly rather than guessing from the decompile alone (which
+ * silently dropped the actual clearing instruction -- a real dead-store-
+ * elision artifact, caught by comparing the raw disassembly listing
+ * against the decompiled pseudocode line by line): scif5_rx_isr, SCIF5's
+ * real RX-side ISR, clears it only after collecting 4 real bytes and
+ * `rbit`-reversing them into a reply word -- with no virtual DSP ever
+ * transmitting a reply, this can never happen.
+ *
+ * First design tried was the obvious one: recognize a complete outbound
+ * 4-byte word on the TX side (REG_FTDR, no framing to track since every
+ * SCIF5 command is a bare word) and synthesize the reply right there.
+ * Worked in one live trial, then got stuck again in the very next one --
+ * a real ordering race, not a fluke: the reply-ready flag isn't actually
+ * set busy (=1) until *after* the caller's TX returns, inside
+ * scif5_arm_retry_timer (called by scif5_send_and_wait_reply, never by
+ * the TX helper itself). Acking synchronously during TX can land *before*
+ * that -1 write, so arm_retry_timer's own unconditional "=1" silently
+ * overwrites an already-delivered ack, and nothing else ever clears it
+ * again for that exchange. This project has hit this exact class of
+ * problem before (see the channel-3 responder's own comment) -- a
+ * QEMUTimer/QEMUBH delay doesn't reliably fix it either (documented there
+ * as running "far more eagerly than the guest's own next few instructions
+ * guarantees" in this single-threaded TCG build), so timing the fix by
+ * delay isn't an option here either.
+ *
+ * Real fix: don't trigger off TX at all. scif5_arm_retry_timer's own
+ * final step, right after setting the busy flag, is a real 5-write arm
+ * sequence to a genuine, previously-unmodeled hardware register at
+ * 0xFCFE3120 (reached two independent ways in the firmware -- from a
+ * literal `DAT_200b1c98+0x120` base and, in the TX helper's own *separate*
+ * arm sequence, from `DAT_200b1c8c-0x2e0` -- same physical address, a real
+ * confirmation this is one genuine register, not two). Its last write is
+ * always one of two large sentinel constants (0x10000000/0x40000000,
+ * selected by scif5_arm_retry_timer's own param) -- cleanly distinct from
+ * every other write that lands here (the small <=0x10000 values every
+ * write in the sequence but the last uses, and the TX helper's own
+ * differently-sentineled 0xa0000000 completion). Since this write is the
+ * literal next instruction after the busy-flag set, in the same function,
+ * hooking it is race-free by construction -- no scheduling assumption
+ * needed, just real instruction order, confirmed from the raw listing.
+ * `rza1h_scif5_dsp_retry_arm_write` below (a second, small MMIO region on
+ * the channel-5 SCIF instance only -- see rza1h_scif_init) is that hook;
+ * rza1h_scif5_dsp_ack itself is unchanged from the first design (still the
+ * same precompute-3-then-deliver-1-real-byte technique the channel-3
+ * responder established), only *when* it's called changed. **Confirmed
+ * load-bearing across 2 independent 90-second free-run trials**: the
+ * reply-ready flag never once stuck (every prior trial, TX-triggered
+ * design included, stuck permanently within 35 seconds) -- boot now
+ * progresses to scif5_cmd_transmit_now's own busy-wait on the shared
+ * ring-active flag (DAT_200b1cac) instead, a further, genuinely different
+ * stage. See README.md's Status section for the current resume point. */
 
 #include "qemu/osdep.h"
 #include "chardev/char-fe.h"
@@ -153,6 +210,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(RZA1HScifState, RZA1H_SCIF)
 struct RZA1HScifState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    MemoryRegion iomem_dsp_retry; /* channel 5 only -- see this file's own
+                                    * comment and rza1h_scif_init */
     CharFrontend chr;
     qemu_irq irq_tx; /* TXI (transmit-complete) */
     qemu_irq irq_rx; /* RXI (receive-data-full) -- channel 3 (front-panel
@@ -219,6 +278,20 @@ struct RZA1HScifState {
 #define SCIF3_STATUS_PTR_ADDR    0x20037588 /* -> shared driver status
                                               * flags; bit 0 is the RX
                                               * "frame in progress" flag */
+
+/* SCIF5's own shared TX/RX descriptor pointer (channel 5's virtual DSP
+ * responder below). Unlike SCIF3_FRAME_BUF_PTR_ADDR and friends, this one
+ * is a genuine fixed compile-time literal, not a per-boot dynamically-
+ * placed value -- confirmed both statically (body.bin's own image already
+ * holds 0x203906b8 here) and live (an identical GDB read against a running
+ * boot) -- but it's still read live rather than hardcoded, matching this
+ * file's own established discipline for every other struct-pointer-shaped
+ * constant. See this file's own comment (2026-09-09, sixth pass) for the
+ * struct layout this responder depends on: +0x3 the reply-ready busy flag,
+ * +0xc the RX byte count scif5_rx_isr's own collection loop maintains,
+ * +0x13 the 4-byte raw RX buffer, +0x18 the decoded (post-rbit) reply
+ * word scif5_classify_reply reads. */
+#define SCIF5_STRUCT_PTR_ADDR    0x200b1c84
 
 static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -326,6 +399,113 @@ static void rza1h_scif3_frontpanel_ack(uint8_t type)
                       * 0xFE byte's own processing */
     address_space_write(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
 }
+
+/* Virtual DSP-link responder (channel 5 only) -- see this file's own
+ * comment (2026-09-09, sixth pass) for the full live-traced derivation of
+ * why this is needed and why it's triggered from
+ * rza1h_scif5_dsp_retry_arm_write below rather than from TX: scif5_send_
+ * and_wait_reply's busy-wait (*(SCIF5_STRUCT_PTR_ADDR value)+3) is cleared
+ * only by scif5_rx_isr, once it has collected 4 real bytes over SCIF5's RX
+ * path and bit-reverses them (a real ARM `rbit` on the assembled 32-bit
+ * word) into the reply-word field at +0x18 -- with no virtual DSP ever
+ * replying, every one of the 14 call sites (and the background command-ack
+ * ring shared_job_ring_dispatch's case 1 drains) wedges forever.
+ * shared_job_ring_dispatch's own case 1, dsp_cmd_table_init/dsp_param_
+ * sync_tick's ring traffic, and scif5_arm_retry_timer/scif5_classify_reply
+ * are otherwise untouched -- this only ever supplies the one missing
+ * input (a real SCIF5 RX event) they all depend on.
+ *
+ * Same "precompute the end state, deliver only the genuinely necessary
+ * last byte through the real path" technique rza1h_scif3_frontpanel_ack
+ * uses, applied here for a different reason: our own FDR/FRDR model can
+ * only ever present one byte at a time anyway (no real multi-byte
+ * drain-loop race is possible the way SCIF3 hit), but reusing the same
+ * shape keeps both responders consistent and needs no new machinery.
+ * Precomputes the first 3 of the 4 raw bytes scif5_rx_isr's own collection
+ * loop would gather directly in guest RAM, then delivers the 4th through
+ * the normal FRDR/RXI path -- scif5_rx_isr's own real code then does the
+ * rest (clears the reply-ready flag, computes the real `rbit` reply word,
+ * tail-calls shared_job_ring_dispatch(1), which is what actually advances
+ * the shared ring's read pointer -- letting real guest code run this
+ * instead of hand-replicating its effect is deliberate, matching this
+ * function's own "run the real code" philosophy elsewhere in this file).
+ *
+ * Sends a universal class-2 ("trivial ack, no payload processing" --
+ * scif5_classify_reply's own top-nibble dispatch) reply regardless of
+ * which command was sent: matches this project's established permissive-
+ * peripheral philosophy (mmc.c's virtual SD card, riic.c's virtual
+ * EEPROM, rza1h_scif3_frontpanel_ack above) -- a plausible canned ACK is
+ * enough to unblock boot, not real DSP protocol fidelity. Some callers
+ * (the `0xe0000000`/`0xe0000001` command class, per notes/multi-cpu-
+ * images-history.md's "SCIF5 command API" section) separately compare the
+ * reply's top nibble against 9 or 0xE and will treat a class-2 reply as a
+ * soft failure of their own -- that's a real, known simplification, not a
+ * bug: it only affects those specific commands' own retry/error handling,
+ * never this busy-wait itself (any resolved reply clears it).
+ *
+ * The 3 precomputed bytes (0x04, 0x00, 0x00) plus the 4th delivered byte
+ * (0x00) assemble to raw_word_LE = 0x00000004; scif5_rx_isr's own `rbit`
+ * turns that into 0x20000000 -- top byte 0x20, high nibble 2. Worked out
+ * by hand (rbit is self-inverse: rbit32(0x20000000) = 0x00000004) rather
+ * than guessed. */
+static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
+{
+    AddressSpace *as = &address_space_memory;
+    uint32_t struct_base;
+    uint8_t raw012[3] = { 0x04, 0x00, 0x00 };
+    uint8_t count = 3;
+
+    address_space_read(as, SCIF5_STRUCT_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
+                       &struct_base, 4);
+    if (struct_base == 0) {
+        return; /* not yet initialized this boot */
+    }
+
+    address_space_write(as, struct_base + 0x13, MEMTXATTRS_UNSPECIFIED,
+                        raw012, 3);
+    address_space_write(as, struct_base + 0xc, MEMTXATTRS_UNSPECIFIED,
+                        &count, 1);
+
+    qemu_log_mask(LOG_UNIMP,
+                 "rza1h-scif5: DSP-link responder: canned class-2 ack\n");
+    s->frdr = 0x00; /* the one byte actually delivered through the normal
+                      * RXI path -- see this function's own comment */
+    s->rx_pending = true;
+    qemu_irq_lower(s->irq_rx);
+    qemu_irq_raise(s->irq_rx);
+}
+
+/* MMIO handlers for the second, small region rza1h_scif_init maps at
+ * 0xFCFE3120 on the channel-5 SCIF instance only -- see this file's own
+ * comment (2026-09-09, sixth pass) for why this specific address and why
+ * only these two sentinel values matter. Every other write that lands
+ * here (the small <=0x10000 values every arm sequence but its last write
+ * uses, and the TX helper's own differently-sentineled 0xa0000000
+ * completion) is deliberately ignored -- this models only the one bit of
+ * real register behavior this project currently needs from it. */
+static uint64_t rza1h_scif5_dsp_retry_arm_read(void *opaque, hwaddr offset,
+                                               unsigned size)
+{
+    return 0;
+}
+
+static void rza1h_scif5_dsp_retry_arm_write(void *opaque, hwaddr offset,
+                                            uint64_t value, unsigned size)
+{
+    RZA1HScifState *s = RZA1H_SCIF(opaque);
+
+    if (value == 0x10000000 || value == 0x40000000) {
+        rza1h_scif5_dsp_ack(s);
+    }
+}
+
+static const MemoryRegionOps rza1h_scif5_dsp_retry_arm_ops = {
+    .read = rza1h_scif5_dsp_retry_arm_read,
+    .write = rza1h_scif5_dsp_retry_arm_write,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
 
 static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
@@ -532,6 +712,18 @@ static void rza1h_scif_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq_tx);
     sysbus_init_irq(sbd, &s->irq_rx);
+
+    /* Second MMIO region, mapped only for the channel-5 instance (see
+     * rz_a1h.c) -- the "channel" property isn't known yet this early
+     * (qdev_prop_set_uint32 runs after qdev_new, before realize), so this
+     * is created unconditionally for all 8 instances like the primary
+     * region above; leaving it unmapped for channels other than 5 is a
+     * normal, inert QEMU idiom (see rza1h_scif5_dsp_retry_arm_ops's own
+     * comment for what it's for). */
+    memory_region_init_io(&s->iomem_dsp_retry, obj,
+                          &rza1h_scif5_dsp_retry_arm_ops, s,
+                          TYPE_RZA1H_SCIF ".dsp-retry-arm", 4);
+    sysbus_init_mmio(sbd, &s->iomem_dsp_retry);
 }
 
 static const Property rza1h_scif_properties[] = {

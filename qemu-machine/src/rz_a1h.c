@@ -291,6 +291,15 @@ static void rza1h_init(MachineState *machine)
                            qdev_get_gpio_in(gic,
                                RZA1H_SCIF_RXI_BASE0 + i * RZA1H_SCIF_RXI_STRIDE
                                    - RZA1H_GIC_NUM_INTERNAL));
+        /* Channel 5's second MMIO region (see scif.c's own comment and
+         * rz_a1h.h's RZA1H_SCIF5_DSP_RETRY_ARM_BASE) -- every other
+         * channel leaves it created but unmapped, a normal, inert QEMU
+         * idiom (rza1h_scif_init's own comment explains why it can't be
+         * skipped at creation time instead). */
+        if (i == 5) {
+            sysbus_mmio_map_overlap(SYS_BUS_DEVICE(scif), 1,
+                                    RZA1H_SCIF5_DSP_RETRY_ARM_BASE, 0);
+        }
     }
 
     /* Extension-roadmap item 5: real MMCIF command/response/data protocol,

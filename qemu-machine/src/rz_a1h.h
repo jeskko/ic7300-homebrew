@@ -126,6 +126,15 @@
 #define RZA1H_SCIF0_BASE 0xE8007000
 #define RZA1H_SCIF_STRIDE 0x800
 #define RZA1H_SCIF_COUNT 8
+
+/* Channel 5's own virtual DSP-link responder (scif.c, 2026-09-09, sixth
+ * pass) -- a genuine, previously-unmodeled hardware register
+ * scif5_arm_retry_timer/scif5_bitrev_transmit_word both reprogram, reached
+ * two independent ways in the firmware (DAT_200b1c98+0x120 and
+ * DAT_200b1c8c-0x2e0 -- same physical address, confirmed live). Mapped
+ * only on the channel-5 SCIF instance (see rz_a1h.c); see scif.c's own
+ * comment for the full derivation. */
+#define RZA1H_SCIF5_DSP_RETRY_ARM_BASE 0xFCFE3120
 #define TYPE_RZA1H_SCIF "rza1h-scif"
 
 /* scif.c's real TXI (transmit-complete) interrupt IDs -- found needing this
