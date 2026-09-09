@@ -1945,3 +1945,48 @@ live-tested in isolation (the DMAC/icount blocker above was found first, on the 
 after this change went in, but is confirmed unrelated) -- re-test once `dmac.c`'s own icount
 issue is resolved, since a full clean long trial isn't currently reachable to confirm this one
 either way.
+
+## The DMAC/icount fix doesn't generalize: a fixed `-icount shift=1` clears DMAC's own stall but
+## a *different* busy-wait then stalls in its place -- looks like a broader icount-cooperation
+## issue with this machine's busy-wait-heavy boot style, not a single device's bug (2026-09-09)
+
+Ported `dmac.c` to `ptimer` (matching `ostm.c`/`mtu2.c`) as diagnosed above. **Tested, and it
+alone did not fix the stall**: rebuilt, reran under the same `-icount shift=auto` default --
+still parked at the identical `FUN_200b5ea4` busy-wait for multiple consecutive 15s heartbeats,
+91% CPU, same as before the port. The `ptimer`-vs-raw-`QEMUTimer` diagnosis was wrong, or at
+least insufficient on its own.
+
+**Tried a fixed, small `-icount shift=1` instead of `auto`** (the auto-tuner's own dynamic
+slice-sizing was the next suspect -- a tight, no-I/O spin loop might look "compute-bound" to it
+and get an abnormally large slice size, meaning abnormally infrequent real exits back to QEMU's
+main loop where timers actually get serviced). **This did clear the DMAC stall** -- a fresh
+trial reached a different, later PC (`0x200b48f8`) within 15s where the previous config was
+still stuck at `0x200b5f28` after 90+ seconds. Ran a full 160s confirming trial to be sure.
+
+**But that trial found the exact same *shape* of problem recur, just relocated**: parked at
+`0x200b48f8` for 10 consecutive 15s heartbeats (135 real seconds), 91% CPU, genuinely stuck --
+confirmed via Ghidra to be inside `scif5_wait_hsk1_ready` (`0x200b48e4`), an entirely different,
+already-known function (the DSP-link handshake wait right before `dsp_boot_handshake()` in
+`cold_boot_hw_init`'s own sequence) -- not DMAC-related at all, and not something either the
+`ptimer` port or the shift change touches.
+
+**This changes the read on the whole DMAC finding**: it's very likely not a DMAC-specific bug,
+or even specifically a raw-`QEMUTimer`-vs-`ptimer` issue -- both fixes tried so far have each
+"solved" one specific stall only to have a *different* busy-wait somewhere later in the same
+boot sequence get stuck in its place, under either `-icount` configuration tried. This looks
+like a broader, more general icount-cooperation problem with this machine's own boot code style
+(many sequential busy-wait loops, none of which stalled at all under the *old*, un-throttled
+timing model -- confirmed earlier this session that boot reaches well past both of these exact
+points, into the ring-overflow region, in under 44-78s with real clocks and no icount at all).
+**Not yet root-caused.** The original `0x20420120` ring-overflow fix itself is unaffected by any
+of this (its own confirming trials happened to not run long enough to reach either of these
+later stalls) and still stands as confirmed.
+
+**Active resume point, reframed**: `-icount`, as currently configured (with either `shift=auto`
+or a small fixed shift), is not yet a reliable way to reach deep boot milestones reliably --
+each configuration tried relocates rather than eliminates a stalling busy-wait somewhere in
+`cold_boot_hw_init`'s own long, sequential call chain. This needs either genuine QEMU icount
+internals research (why does a slice boundary / timer check seemingly never happen for *some*
+tight busy-wait loops under either shift setting tried), or a different overall strategy for
+long-running boot tests than blanket `-icount`. Not resolved this session -- flagged honestly
+rather than claimed fixed.

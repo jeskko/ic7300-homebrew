@@ -15,11 +15,13 @@ evidence trail behind everything below — this file carries only the current st
 active resume point.
 
 ## Status, 2026-09-09 — the `0x20420120` job-ring overflow is FIXED (real OSTM clock + `-icount
-## shift=auto`, confirmed across two full 130s/160s trials) — but a longer 300s trial found a
-## further, deeper blocker on the same boot path: DMAC's own completion wait genuinely stalls
-## under `-icount` (a real, diagnosed-but-not-yet-fixed icount/QEMUTimer interaction issue,
-## unrelated to the ring-overflow fix, which still stands). MTU2's own real clock (also 32.00MHz)
-## confirmed too, not yet re-tested given the DMAC blocker. See below for both threads.
+## shift=auto`, confirmed across two full 130s/160s trials) — but longer trials reveal `-icount`
+## itself isn't yet a fully reliable way to reach deep boot milestones: DMAC's own completion
+## wait can stall under it (ported to `ptimer`, a real improvement but not sufficient alone), and
+## a *different* fixed-shift setting that avoids that stall just relocates the same class of
+## problem to a different busy-wait (`scif5_wait_hsk1_ready`) instead of eliminating it. Not yet
+## root-caused; the original ring-overflow fix is unaffected and still stands. MTU2's own real
+## clock (also 32.00MHz) confirmed too, not yet re-tested given this open issue. See below.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -128,11 +130,28 @@ icount pitfall. **This does not undo the ring-overflow fix above** — both its 
 trials were real — it's a separate, deeper blocker on the same boot path, only reachable
 *because* that fix cleared the way to it.
 
-**Not yet done, natural next steps**: fix `dmac.c`'s icount interaction (most likely: port it
-to `ptimer` like `ostm.c`/`mtu2.c`) before the next long exploration trial; re-validate
-`mtu2.c`'s new 32MHz value once that's possible; re-validate `scif.c`/`riic.c`/`rspi2.c`'s own
-clock assumptions under icount too; and continue toward the original SD-card/VFS testing goal.
-See README-history.md's newest sections for the full derivation (including a
+**Follow-up: ported `dmac.c` to `ptimer` — real improvement, but the underlying problem is
+broader than one device.** Confirmed live: the `ptimer` port alone, under the default `-icount
+shift=auto`, did *not* fix the stall (identical behavior to before the port). A fixed
+`-icount shift=1` *did* clear it — but a full confirming trial then found a completely
+different, already-known busy-wait (`scif5_wait_hsk1_ready`, the DSP-link handshake wait) stall
+just as hard under that setting, 135 real seconds straight, 91% CPU. This looks like a general
+icount-cooperation issue with this machine's own busy-wait-heavy boot style (many sequential
+polling loops in `cold_boot_hw_init`), not a single device's bug — changing the icount
+configuration relocates which wait stalls rather than eliminating the class of problem. Kept the
+`ptimer` port (a real architectural improvement, consistent with `ostm.c`/`mtu2.c`, and it does
+help under some configurations) but **the default stays `-icount shift=auto`**, since it's the
+one setting empirically confirmed clean across the two original 130s/160s trials — `shift=1`
+demonstrably fails faster and harder on a different wait. SCIF/RIIC/RSPI2 were also checked
+(background research) and confirmed to have no timing-sensitive constants at all currently —
+nothing to correct there regardless of how this resolves.
+
+**Not yet done, natural next steps**: root-cause the general icount-cooperation issue (why a
+slice boundary/timer check seemingly never happens for *some* tight busy-wait loops under
+either shift setting tried) — likely needs genuine QEMU icount internals research, not another
+device-level fix; re-validate `mtu2.c`'s new 32MHz value once a reliable long-boot
+configuration exists; and continue toward the original SD-card/VFS testing goal once that's
+resolved. See README-history.md's newest sections for the full derivation (including a
 documented `pkill -f` self-kill footgun any new trace script should avoid).
 
 ## Confirmed peripherals

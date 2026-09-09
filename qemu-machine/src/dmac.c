@@ -44,7 +44,7 @@
  * responder already established) as soon as `N0TB_0` -- the last of the
  * three "arm" registers this firmware always writes, confirmed via the
  * live disassembly order -- is written, with the completion IRQ fired
- * from a short one-shot `QEMUTimer` rather than instantly: real DMA is
+ * from a short one-shot delay rather than instantly: real DMA is
  * asynchronous, and nothing traced needs the transfer to take any
  * particular real time, just to not complete synchronously from inside
  * the triggering write itself. `CHCTRL_0`/`CHCFG_0`/`CHITVL_0`/`CHEXT_0`/
@@ -54,10 +54,35 @@
  * `CHSTAT_0`'s real transfer-end/error bits are not modeled -- the ISR
  * this project traced, `FUN_200b5b90`, doesn't consult them either, only
  * this project's own busy-wait flag).
- */
+ *
+ * FIXED, 2026-09-09 -- a real `-icount` bug, not a value tuning issue: this
+ * device originally used a raw `QEMUTimer` (`timer_new_ns`/`timer_mod`
+ * against `QEMU_CLOCK_VIRTUAL`) for the completion delay below, unlike
+ * `ostm.c`/`mtu2.c`'s `ptimer`-based devices. Confirmed live (a longer
+ * boot trial once the job-ring-overflow fix was in, see qemu-machine/
+ * README-history.md's newest sections) that this specific busy-wait
+ * (`FUN_200b5ea4`, this device's own real completion IRQ target) genuinely
+ * stalls forever under `-icount shift=auto` -- the guest CPU spinning at
+ * ~91% real host CPU the whole time (confirmed via `ps`, not idle/WFE),
+ * meaning the raw `QEMUTimer`'s callback never fired even though the guest
+ * kept executing plenty of real instructions in its own busy-wait. `ostm.c`/
+ * `mtu2.c`'s `ptimer`-based devices don't have this problem (confirmed --
+ * OSTM's own real GIC IRQ is what the whole ring-overflow fix depends on
+ * and demonstrably keeps working under icount). Ported to `ptimer` the same
+ * way, as a one-shot delay line (a fixed 1GHz internal tick rate so the
+ * limit value is directly the delay in nanoseconds -- `ptimer_run(timer,
+ * 1)`'s own `oneshot` argument handles "fire once per arm", not a policy
+ * flag). Manual research this session confirmed there's no cleanly
+ * derivable *value* to replace the delay with either (DMAC's real clock
+ * domain is Bφ, 128.00MHz at this SoC's confirmed clock mode, but the
+ * manual gives no single "cycles per byte" figure to build a real transfer-
+ * time constant from -- so this stays the same arbitrary-but-short
+ * placeholder value it always was, just delivered through an icount-aware
+ * mechanism now). */
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
 #include "qapi/error.h"
@@ -74,7 +99,7 @@ struct RZA1HDmacState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     qemu_irq irq0;              /* channel 0's DMAINT0, GIC ID 41 */
-    QEMUTimer *complete_timer;
+    ptimer_state *complete_timer;
 
     uint8_t regs[RZA1H_DMAC_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case */
@@ -88,8 +113,12 @@ struct RZA1HDmacState {
  * ostm.c/mtu2.c's own frequency constants: not real-clock-accurate, just
  * enough that this doesn't look like a synchronous same-instruction
  * completion, and short enough that a boot-time busy-wait resolves in a
- * reasonable wall-clock testing time. */
+ * reasonable wall-clock testing time. See the FIXED note above for why
+ * this is now delivered via `ptimer` at a fixed 1GHz tick rate (1 tick =
+ * 1ns) rather than a raw `QEMUTimer` -- the delay value itself is
+ * unchanged. */
 #define DMAC_COMPLETE_DELAY_NS 1000
+#define DMAC_TIMER_FREQ_HZ 1000000000
 
 static uint64_t rza1h_dmac_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -130,8 +159,10 @@ static void rza1h_dmac_write(void *opaque, hwaddr offset, uint64_t value,
 
     memcpy(&s->regs[offset], &value, size);
     if (offset == DMAC_N0TB_0) {
-        timer_mod(s->complete_timer,
-                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + DMAC_COMPLETE_DELAY_NS);
+        ptimer_transaction_begin(s->complete_timer);
+        ptimer_set_count(s->complete_timer, DMAC_COMPLETE_DELAY_NS);
+        ptimer_run(s->complete_timer, 1); /* oneshot */
+        ptimer_transaction_commit(s->complete_timer);
     }
 }
 
@@ -148,7 +179,9 @@ static void rza1h_dmac_reset(DeviceState *dev)
     RZA1HDmacState *s = RZA1H_DMAC(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
-    timer_del(s->complete_timer);
+    ptimer_transaction_begin(s->complete_timer);
+    ptimer_stop(s->complete_timer);
+    ptimer_transaction_commit(s->complete_timer);
 }
 
 static void rza1h_dmac_init(Object *obj)
@@ -166,8 +199,12 @@ static void rza1h_dmac_realize(DeviceState *dev, Error **errp)
 {
     RZA1HDmacState *s = RZA1H_DMAC(dev);
 
-    s->complete_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                     rza1h_dmac_ch0_complete, s);
+    s->complete_timer = ptimer_init(rza1h_dmac_ch0_complete, s,
+                                    PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                    PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->complete_timer);
+    ptimer_set_freq(s->complete_timer, DMAC_TIMER_FREQ_HZ);
+    ptimer_transaction_commit(s->complete_timer);
 }
 
 static void rza1h_dmac_class_init(ObjectClass *oc, const void *data)
