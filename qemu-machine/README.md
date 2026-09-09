@@ -14,9 +14,11 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — a real DMAC channel 0 built and confirmed load-bearing too: boot now
-## reaches `dsp_boot_handshake` (SCIF5 DSP link bring-up), a whole further stage than ever
-## before; the next blocker is a different subsystem entirely (GIC ID 0x9f, not yet identified)
+## Status, 2026-09-09 — MTU2 channel 4 (both TGI4A and TGI4C) built and confirmed load-bearing:
+## `dsp_boot_handshake` now resolves for real; boot reaches a genuinely new class of blocker --
+## a generic RTOS job-queue overflow whose trigger is a pure in-RAM flag, not a missing
+## peripheral, pointing at this project's long-standing open question about concurrent
+## task scheduling
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -147,16 +149,46 @@ session) — a whole further stage, part of the SCIF5 DSP-link bring-up
 (`scif5_dsp_link_driver_init()` → `scif5_wait_hsk1_ready()` → `dsp_boot_handshake()`), never
 reached before this session.
 
-**Active resume point — the next blocker, a different subsystem, only lightly traced so
-far:** `dsp_boot_handshake` calls `scif5_bitrev_transmit_word()` (a bit-reversed serial word
-transmit — despite the name, its own register accesses look like RSPI, not plain SCIF; not
-yet reconciled) and then busy-waits on a status byte (`*0x203906ba` in this build) that only
-that transmit function's own tail can plausibly clear. `scif5_bitrev_transmit_word` ends by
-enabling **GIC ID 0x9f (159)** via the same `FUN_200b8308` helper — not yet identified against
-the SVD, not yet live-checked. This is a new, separate subsystem from DMAC/MTU2 (real DSP-link
-handshake protocol, likely needing a virtual responder analogous to SCIF3's already-solved
-front-panel one, per this project's own signal-chain notes) — worth its own dedicated
-investigation rather than a quick continuation.
+**GIC ID 0x9f (159) identified and built: `mtu2.c` extended to cover MTU2 channel 4 too.**
+Same SVD formula, register index 4 bit 31: **TGI4A**, channel 4's own compare-match-A event
+— not RSPI as the register-access shape briefly suggested; `scif5_bitrev_transmit_word`'s
+`iVar4`-relative writes turned out to be an unrelated GPIO-area side effect (base
+`0xFCFE3400`), while the actual timing mechanism is genuinely MTU2. `scif5_dsp_link_driver_
+init`'s own pre-existing file comment (written 2026-08-29, before this session) already
+documented the wider mechanism: a ring buffer drained via channel 4's compare-match-**C**
+event too (GIC ID 161, **TGI4C**) — both now built.
+
+**A real bug found and fixed before either was confirmed working**: TGI4A's first version
+auto-armed on `TSTR`'s `CST4` bit going high (mirroring channel 3's own correct pattern) —
+but live testing showed `CST4` goes high early in boot, well before `TGRA_4` is ever
+meaningfully written, so this fired the IRQ far too early with a stale register value. Fixed
+by making TGI4A arm only on an explicit `TGRA_4`/`TCR_4` write while already running (the real
+trigger point), never on the `TSTR` transition itself — `TGI4C` keeps the transition-based
+arming (its own real trigger, confirmed live: `TGRC_4` never gets written before `TSTR`
+starts channel 4, only afterward).
+
+**Confirmed via multiple trials**: `dsp_boot_handshake`'s own busy-wait (`*0x203906ba`)
+now resolves reliably once TGI4A works correctly. Boot progresses into `dsp_cmd_table_init` →
+`dsp_param_sync_tick()` (both already-named/known from an earlier session) — pushing ~23
+parameter words onto a ring buffer meant to be drained by TGI4C.
+
+**Active resume point — TGI4C alone did not fully resolve the next stall, and the real cause
+turned out to be a different, deeper class of problem.** A generic fixed-capacity ring-push
+helper (`FUN_20187bb4`, reused far beyond the DSP link — its 4 call sites sit inside what
+looks like a generic software-timer-expiry dispatch table) hits its own overflow protection
+(`FUN_200b93fc`, an unconditional infinite loop) — confirmed live via register capture at the
+exact halt (`r0=2`, matching this specific overflow site, not the sibling `FUN_201877e4`
+one). Traced the "wake the consumer" call the pusher makes (`FUN_20187b8c`) all the way down:
+it writes to a **plain RAM address** (`0x20336f24`, not any peripheral register) — meaning
+whatever is supposed to notice this flag and drain the ring is a **pure software/RTOS
+construct**, not something waiting on any interrupt this project could model. This points
+directly at this project's own long-standing open fallback hypothesis (first raised
+2026-09-09 morning, before any of today's MTU2/DMAC work): whether this emulator's
+context-switch mechanism genuinely handles multiple concurrently-scheduled tasks correctly —
+today's peripheral work has, for the first time, unlocked enough real concurrent activity to
+actually reach and expose this question directly, rather than it staying purely theoretical.
+Judged worth its own dedicated investigation (tracing which task is supposed to drain this
+queue and whether it's ever actually dispatched) rather than a quick continuation.
 
 ## Confirmed peripherals
 
@@ -168,7 +200,7 @@ investigation rather than a quick continuation.
 | GPIO/port registers | `gpio.c` | Real (masked set/clear, `PNOT` toggle, live `PPR` pin levels) — `P1_6`/`PDV` (power-fail detector) defaults high, see Status above |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
-| MTU2 | `mtu2.c` | Real channel 3 only (level `TGI3A`/GIC ID 154, real timer, write-0-to-clear `TSR_3`) — **confirmed load-bearing 2026-09-09**, unblocks `cold_boot_hw_init`'s task-readiness wait, see Status above. Every other channel/register still plain storage (`regs[]` passthrough) |
+| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154) and channel 4's `TGI4A`/`TGI4C` (GIC 159/161) — **all three confirmed load-bearing 2026-09-09** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI on channel 3 too, backing a virtual front-panel responder (SCIF3 only) — see Status above |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
@@ -234,10 +266,10 @@ spot-check.
 2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/`CMP`=32000, now
    annotated in Ghidra (`ostm0_tick_arm_and_get_irq_id` at `0x200b93b0`).
 3. ~~Port the remaining Unicorn-side peripherals to real C devices~~ — done: `gpio.c`/`l2c.c`
-   (real behavior), `riic.c` (real), `mtu2.c` channel 3 and `dmac.c` channel 0 (real,
-   2026-09-09 — both confirmed load-bearing, see Status above); `add_plain_ram_region()`
-   still covers CPG (plain storage, nothing traced needs more) and everything in MTU2/DMAC
-   outside their one real channel each.
+   (real behavior), `riic.c` (real), `mtu2.c` channel 3 + channel 4 (both `TGI4A`/`TGI4C`) and
+   `dmac.c` channel 0 (real, 2026-09-09 — all confirmed load-bearing, see Status above);
+   `add_plain_ram_region()` still covers CPG (plain storage, nothing traced needs more) and
+   everything in MTU2/DMAC outside their modeled channels/events.
 4. ~~SCIF UART output~~ — done: TX plus real per-channel TXI, real RXI + a virtual front-panel
    responder on channel 3 (2026-09-09). The SCIF3 front-panel handshake now fully resolves for
    the first time ever, and boot reaches real ITRON task activation as a direct result.
@@ -245,13 +277,13 @@ spot-check.
    built and validated standalone; `riic.c` built and validated end-to-end against a real
    natural boot; `FUN_2002b29c`'s entire cold-boot branch gate now clears; the SCIF3
    front-panel handshake now genuinely completes; boot reaches real `itron_act_tsk` task
-   activation; **`mtu2.c` and `dmac.c` together clear cold_boot_hw_init's whole
-   task-readiness-wait cluster, and boot now reaches `dsp_boot_handshake` (SCIF5 DSP-link
-   bring-up) — the furthest any session has reached**. **Currently blocked on**: a new busy-
-   wait inside the DSP handshake itself, gated on GIC ID 0x9f (159, not yet identified) — see
-   "Active resume point" above. This looks like it may need its own virtual responder (like
-   SCIF3's), not just another timer/DMA device — worth a dedicated investigation. Once past
-   it, the original question — does the
+   activation; **`mtu2.c` (channels 3 and 4) and `dmac.c` together clear cold_boot_hw_init's
+   whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait, reaching
+   `dsp_cmd_table_init`/`dsp_param_sync_tick` — the furthest any session has reached**.
+   **Currently blocked on**: a generic RTOS job-queue overflow whose drain mechanism is a
+   pure in-RAM flag, not a peripheral — see "Active resume point" above. This is a genuinely
+   different class of problem (probable task-scheduling gap, not a missing device) and is
+   judged worth its own dedicated investigation. Once past it, the original question — does the
    SD-card update flow reach MMCIF against a *properly* kernel-created task, and would the
    whole chain accept and boot custom firmware entirely offline — becomes directly retestable
    with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.

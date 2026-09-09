@@ -231,13 +231,21 @@ static void rza1h_init(MachineState *machine)
     /* mtu2.c -- upgraded from a bare RAM region to a real device, 2026-09-09,
      * once body.bin's own cold-boot task-readiness busy-wait was found
      * depending on a real periodic interrupt (GIC ID 154, TGI3A) that only
-     * a real MTU2 channel 3 can produce -- see mtu2.c's own comment. */
+     * a real MTU2 channel 3 can produce -- see mtu2.c's own comment.
+     * Channel 4's TGI4A (GIC ID 159) added the same session, once the
+     * DSP-link handshake right after was found needing it too. */
     mtu2 = qdev_new(TYPE_RZA1H_MTU2);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(mtu2), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(mtu2), 0, RZA1H_MTU2_BASE, 0);
     sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 0,
                        qdev_get_gpio_in(gic,
                            RZA1H_MTU2_TGI3A_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 1,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_MTU2_TGI4A_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 2,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_MTU2_TGI4C_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     /* riic.c -- upgraded from a bare RAM region to a real device,
      * 2026-09-08 second pass, once body.bin's own cold-boot RIIC2 read

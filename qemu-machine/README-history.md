@@ -991,3 +991,90 @@ precedent (`scif.c`'s `rza1h_scif3_frontpanel_ack`), may need a genuine virtual 
 rather than just a timer-backed device -- judged worth its own dedicated investigation rather
 than a quick continuation of this one. See `README.md`'s Status section for the current
 resume point.
+
+## MTU2 channel 4 (`TGI4A` and `TGI4C`) built; a real early-fire bug found and fixed; the next
+## stall turns out to be a different, deeper class of problem -- a generic RTOS job-queue
+## overflow, not a missing peripheral
+
+Picked up the previous section's GIC 0x9f lead directly. Identified it the same way as every
+other interrupt in this project: `0x9f` = 159 = register index 4, bit 31 in the "`ICDISRn`
+register-index*32+bit" SVD formula -- **`TGI4A`**, MTU2 channel 4's own compare-match-A event.
+`scif5_bitrev_transmit_word`'s own `iVar4`-relative writes (the ones that looked RSPI-shaped)
+turned out to be an unrelated GPIO-area side effect (base `0xFCFE3400`, confirmed via its own
+literal) -- the real timing mechanism this function arms is genuinely MTU2:
+`*(short*)(TCR_3_base+0x1c) = *(short*)(TCR_3_base+0x12) + 0x200` resolves (once the byte math
+is done carefully, the same "don't trust decompile pointer arithmetic over raw byte offsets"
+discipline from earlier this session) to `TGRA_4 = TCNT_4 + 0x200` -- a one-shot relative-delay
+arm, not a periodic tick.
+
+**`scif5_dsp_link_driver_init`'s own pre-existing file comment** (written 2026-08-29, a prior
+session, well before any of today's work) already documented the wider mechanism this taps
+into, and it was right: a ring buffer drained via channel 4's compare-match-**C** event too
+(GIC ID 161, confirmed via the same formula: register index 5, bit 1 -- `TGI4C`,
+`scif5_ring_pop_and_send`), with compare-match-A (159) as `scif5_ring_underrun_handler`'s own
+"ring now empty" signal. Extended `mtu2.c` to cover channel 4's TGI4A, generalizing the
+existing channel-3 event-tracking code into a small per-event struct (register offsets, which
+TIER/TSR bit, whether it arms on the `TSTR` transition or only on an explicit compare-register
+write) rather than hardcoding channel-shaped logic a second time.
+
+**A real bug, found and fixed before declaring this working -- not caught by static reasoning,
+only by live testing**: the first TGI4A implementation mirrored channel 3's arming policy
+exactly (auto-rearm whenever `TSTR`'s matching `CSTn` bit transitions 0->1, using whatever the
+compare register already holds). Multiple free-running trials showed inconsistent results
+(sometimes `dsp_boot_handshake`'s busy-wait cleared quickly, sometimes it stayed stuck for the
+whole trial) -- read live GIC state at one such stuck point and found something that shouldn't
+be possible if the fix were simply "not yet reached": `GICD_ISPENDR4` bit 31 (TGI4A) was
+already **set** while the CPU was still parked at the much-earlier DMAINT0 busy-wait, and
+`TSR_4`/`TIER_4` already showed real MTU2 activity. The only explanation: `CST4` (channel 4's
+own `TSTR` start bit) goes high very early in boot -- alongside `CST3`, in the same write --
+long before `scif5_bitrev_transmit_word` ever runs to give `TGRA_4` a real value. Auto-arming
+on that early transition fired TGI4A with whatever stale (zero) `TGRA_4` the reset state held,
+asserting the level line and leaving `TSR_4` spuriously set far too early -- a genuine,
+confirmed-live bug, not a hypothesis. **Fixed by making TGI4A arm only on an explicit
+`TGRA_4`/`TCR_4` write while already running**, never on the `TSTR` transition -- matching
+what the real trigger (`scif5_bitrev_transmit_word`/`scif5_ring_underrun_handler`, both issue
+exactly such a write) actually is. Kept `TGI4C` on the transition-based arming policy, since
+live testing confirmed the opposite for it: `TGRC_4` stays at its reset value (`0x0000`)
+through the entire traced path -- nothing ever writes it before `TSTR` starts the channel, so
+a real periodic drain tick can only be coming from the free-running-wraparound case, the same
+one channel 3's own `TGI3A` already relies on.
+
+**Retested with multiple trials after the fix -- `dsp_boot_handshake` resolves reliably now,
+no more of the early-fire inconsistency.** Boot progresses into `dsp_cmd_table_init` (already
+named/known from an earlier, 2026-08-29 session) and its own call to `dsp_param_sync_tick()`,
+which pushes roughly 23 parameter words onto the SCIF5 ring meant to be drained by TGI4C.
+
+**Built TGI4C too** (channel 4's compare-match-C event, same file, same generalized per-event
+struct, periodic/transition-arming like channel 3) -- compiled clean, wired to GIC 161.
+**This alone did not fully resolve the next stall.** Multiple post-fix trials still reached a
+stable, reproducible parked PC (`0x200b93fc`, an unconditional `do {} while(true)` -- a real
+overflow-protection halt, not a hardware wait) within 10-25 real seconds, exactly as before
+TGI4C existed.
+
+**Traced the real cause precisely instead of guessing further** -- captured the exact register
+state at the halt (polling until `PC == 0x200b93fc`, then reading `r0`/`LR` immediately, no
+separate breakpoint needed since a `Z0` breakpoint's own overhead shifted timing enough to
+miss the window across several attempts -- a real, minor addition to this session's
+timing-sensitivity lessons): `r0 == 2`, `LR` matching the call site inside `FUN_20187bb4`, a
+generic fixed-capacity ring-push helper used by (per its 4 call sites, all inside a tight
+`0x20186c**` address range that also contains the confirmed-real ITRON wait primitive
+`FUN_20186de4` from an earlier session's `test_fup_scheduling.py`) what looks like a **generic
+software-timer-expiry dispatch table**, not anything DSP-specific. Traced the ring's own base
+address (`0x20420120`) and its "wake the consumer" call (`FUN_20187b8c`) all the way down:
+it writes `0x10000` to `*(some_base + 0xf00)`, where `some_base` (`DAT_20187bac`) resolves to
+**a plain RAM address** (`0x20336024`), not any peripheral register -- confirmed via direct
+listing, not assumed. Whatever is supposed to notice this flag and drain the ring is a pure
+software/RTOS construct, not something waiting on any interrupt this project could model.
+
+**This is a genuinely different class of problem than everything else this session fixed**,
+and is judged worth its own dedicated investigation rather than a further quick continuation:
+it points directly at this project's own long-standing open fallback hypothesis (first raised
+earlier the same day, before any of today's MTU2/DMAC peripheral work) -- whether this
+emulator's context-switch mechanism genuinely handles multiple concurrently-scheduled tasks
+correctly. Every milestone before today was still effectively single-tasked; today's real
+peripheral work is what finally unlocked enough concurrent activity (DSP link, parameter sync,
+whatever else posts to this same generic dispatch table) to actually reach and expose this
+question directly, rather than it staying purely theoretical. The natural next step: trace
+which task is meant to drain this specific queue and directly test (the same way this
+project already tested `sys_monitor_task_entry`'s own context-switch path) whether it's ever
+actually dispatched. See `README.md`'s Status section for the current resume point.
