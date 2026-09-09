@@ -184,10 +184,46 @@ confirmed" section — summary:
   "shared `TDAT`/`TCLK`/`TOE`, individually latched by `TSTB1`-`4`" with no bit numbers): `TSTB1`=`P7_1`,
   `TSTB2`=`P7_2`, `TSTB3`=`P7_5`, `TSTB4`=`P7_6`, `TCLK`=`P7_3`, `TDAT`=`P7_4`; also on the same port,
   `TOE`=`P7_7`, and both `PHASEI`/`IMPI` read as `P7_8` (unconfirmed whether that's a genuine shared/
-  muxed pin or a transcription slip — don't treat as settled either way). This turns the standing
-  "some other, not-yet-found indirection" search into a concrete, targeted one: find whatever code
-  touches these specific bit positions of `0xFCFE301C` (or whatever register/indirection actually
-  carries them, given the direct one has only the generic boot-init reference) — not yet done.
+  muxed pin or a transcription slip — don't treat as settled either way).
+
+  **Found, same day, using those exact bit numbers as a targeted search** — the standing "some other,
+  not-yet-found indirection" is resolved. `TCLK`/`TDAT` are **not** bit-banged GPIO at all —
+  `FUN_200b3a30` (0x200b3a30) configures `PFC7`/`PFCE7`/`PFCAE7`/`PMC7` to put `P7_3`/`P7_4` into real
+  peripheral (alt-function) mode, routing them to a small on-chip serial-shift peripheral at
+  `0xE800A800`-`0xE800A814` (register shape matches the confirmed RSPI2 poll-status-then-write-data
+  pattern, but at different addresses — **not yet identified against the RZ/A1H manual**, a real open
+  item if the exact shift-clock timing ever matters). This fully explains why no `TCLK`/`TDAT` bit-bang
+  loop on raw `P7` was ever found — it was never going to be GPIO.
+
+  `TSTB1`-`4`, however, genuinely **are** GPIO, driven by `FUN_200b391c` (0x200b391c, registered as
+  event `0xa0` off the same generic per-tick dispatcher already confirmed servicing RSPI2/SSIF/
+  front-panel) via masked writes to `PSR7` (`0xFCFE311C`, not the plain `P7` data register — this is
+  why the earlier `0xFCFE301C`-only search came back empty, the exact same "check the *actual* register
+  used, not just the data register" lesson this project has hit before). Picks one of 4 pending "dirty"
+  bits (one per relay-driver chip) and pulses it via a 2-phase write pair (`table_hi[i]` then, after a
+  ~35-iteration software delay, `table_lo[i]`) from a 4-entry table at `0x20335F98`/`0x20335FA8` — **the
+  touched bit for index 0/1/2/3 is bit 1/2/5/6, an exact, independent match to the schematic's
+  `TSTB1`/`TSTB2`/`TSTB3`/`TSTB4` = `P7_1`/`P7_2`/`P7_5`/`P7_6`**, real code confirming the real pin
+  reading with zero ambiguity in the bit selection itself (the two 16-bit halves' precise set-vs-clear
+  polarity within `PSR7` carries the same "structurally motivated, not independently confirmed"
+  caveat `gpio.c`'s own docstring already flags for this register family generally).
+
+  Surrounding cluster, also found: `FUN_200b3c5c` (cold-boot driver init, called from the same
+  init-sequence block as the front-panel/SD-card driver inits) calls `FUN_200b3a30`, sets all 4 chips'
+  target state to `0x555`, asserts `TOE` active-low via `PSR7`, waits 10ms, then calls
+  `FUN_200b3bf4` (default/all-off relay pattern). `FUN_200b3d34` (the periodic per-tick state machine,
+  serviced by the same generic dispatcher as `FUN_200b391c`) builds a 2-bit-per-output pattern from two
+  24-byte target arrays — sizes matching `notes/ic7300-hardware.md`'s own `RL20xx`/`RL21xx` relay table
+  almost exactly (4 chips × 6 outputs × 2 bits) — and hands it to `FUN_200b3718`/`FUN_200b37dc`, which
+  marks the per-chip dirty bits `FUN_200b391c` consumes.
+
+  **Not yet proven, medium confidence**: the concrete end-to-end link from `tuner_engage_gpio_toggle`/
+  `civ_cmd_1c01_tuner_handler`/CI-V `0x2A` down to this specific cluster — plausible (same general RAM
+  region, same idle-tick-dispatcher servicing pattern already confirmed for other tuner-adjacent code)
+  but no direct pointer/call chain traced yet connecting them. `PHASEI`/`IMPI` (`P7_8`) ambiguity also
+  still open — `port_bulk_gpio_init_pass1` does configure that bit as *input*, at least consistent with
+  either/both being a CPU-read sense signal rather than an output, but no specific `PPR7` bit-8 read
+  found yet to confirm which.
 - **First real hardware-pin-level confirmation, same day**: following up the user's `EKEY`/`PHASEI`/
   `IMPI`/`SWRL`/`TPWRL` hint found **`tuner_jack_poll_and_autotrigger`** (renamed `FUN_2006672c`, runs
   every idle-loop tick) and **`tuner_jack_signal_precheck`** (renamed `FUN_20066154`) — both read the
