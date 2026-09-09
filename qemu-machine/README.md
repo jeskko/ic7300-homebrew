@@ -14,27 +14,28 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 (new session) — the "DMAC/icount stall" is RESOLVED (never a real DMA or
-## `-icount` bug — a QEMU GDB-remote-stub reliability artifact under `-icount shift=auto`).
-## Host-side-only instrumentation (independent of GDB entirely) proved the real arm→ptimer→IRQ→
-## guest-ISR chain completes in under 1ms of real time, every trial, with or without GDB attached
-## — what's actually unreliable is QEMU's own GDB breakpoint/interrupt reporting for this specific
-## address pattern. New permanent tool, `src/rza1h_debug.h` (`RZA1H_DEBUG=<names>|all` env var),
-## gives cheap, GDB-free visibility into every real device's own boundary events. **But the
-## retested `force_call_fup.py` next step found this DMAC thread was never the SD-card path's
-## real blocker at all**: boot does reach a genuine, alive idle state (`mtu2.c` ticking
-## continuously at ~964Hz for 900s, confirmed GDB-free), but `sdcard_file_rpc_dispatch_task`'s own
-## creation struct is still zero even after 120 real seconds — the *already-diagnosed*
-## 2026-09-08-session gate (`FUN_2002b29c`'s branch decision routing away from
-## `cold_boot_mode_dispatch`, so its whole ~80-call feature-task-creation pass never runs) is
-## still standing, completely unaffected by today's fixes. The original `0x20420120`
-## ring-overflow fix (real OSTM clock + `-icount shift=auto`) is unaffected and still stands too.
-## **Concrete next step**: revisit `FUN_2002b29c`'s own branch decision directly (real
-## EEPROM/GPIO state, or a different injection point past that gate) — a return to a known,
-## well-scoped thread, not a new mystery. See below and README-history.md's newest three sections
-## for the full derivation — this reframes several of the last few sessions' "not yet
-## root-caused" entries, so read those before trusting the older "stall" framing further down in
-## this file's own history.
+## Status, 2026-09-09/10 — the "DMAC/icount stall" is RESOLVED (a QEMU GDB-remote-stub
+## reliability artifact under `-icount shift=auto`, not a real DMA/timing bug — host-side-only
+## instrumentation proved the real arm→ptimer→IRQ→guest-ISR chain completes in under 1ms every
+## trial). New permanent tool, `src/rza1h_debug.h` (`RZA1H_DEBUG=<names>|all` env var), gives
+## cheap, GDB-free visibility into every real device's own boundary events. **The SD-card path's
+## real blocker turned out to be neither of the two things this session initially suspected**:
+## not the DMAC/icount thread (resolved above), and — a real correction made same session, not
+## left standing — not `FUN_2002b29c`'s branch gate either (`cold_boot_mode_dispatch`'s own
+## decompile shows it calls `cold_boot_hw_init()` directly, which demonstrably runs, so that gate
+## is already passed). **Precisely localized instead, ready for a fresh session to pick up**:
+## `FUN_200b5f38` — `cold_boot_hw_init`'s very next call after the already-resolved DMAC function,
+## sharing its *literal identical* control-struct address (`0x203906EC`) — never reaches its own
+## transfer-arm step at all (confirmed via a completely GDB-free `RZA1H_DEBUG=dmac` run: only one
+## arm+complete event total, matching only the earlier function's). It's stuck in its own loop 1
+## (the shared-slot-idle check), and since this finding is GDB-free, it's likely a real, different
+## bug, not a repeat of the GDB-stub artifact. `tools/trace_fun200b5f38_wait.py` is built and
+## ready — brackets the exact loop-1-exit/return addresses, **not yet run to a conclusion**, per
+## explicit request to prepare this for a fresh session rather than solve it now. The original
+## `0x20420120` ring-overflow fix is unaffected and still stands. See README-history.md's newest
+## four sections for the full derivation (including two real corrections made honestly rather
+## than left standing) — read those before trusting any older "stall"/gate framing further down
+## in this file's own history.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -299,8 +300,21 @@ that this false blocker is out of the way.
   cycling alone" and "a fully hands-off `ps`-only check" as the DMAC stall's cause. Both came back
   clean/inconclusive on their own; the real resolution needed host-side device-model logging
   instead (see `src/rza1h_debug.h`) — kept for their own reusable isolating-trial patterns.
-  See README-history.md's newest two sections for the full derivation of why each of these tools
+  See README-history.md's newest sections for the full derivation of why each of these tools
   exists and what each one actually settled.
+- **`tools/trace_cold_boot_hw_init_tail.py`** (new, 2026-09-09/10) — waypoint-breakpoint sweep
+  across `cold_boot_hw_init`'s own remaining call sequence, the same technique the 2026-09-08
+  session used to localize `FUN_2001dd58` inside `riic2_driver_init`. Superseded as the *first*
+  step by `trace_fun200b5f38_wait.py` below once smoke tests showed zero hits even at the very
+  first waypoint — its own module comment explains why and points to the more targeted tool.
+  Still useful if/once `FUN_200b5f38` itself is resolved and the blocker moves further downstream.
+- **`tools/trace_fun200b5f38_wait.py`** (new, 2026-09-09/10) — **the actual current resume
+  point, prepared but deliberately not run to a conclusion.** Brackets `FUN_200b5f38`'s own
+  loop-1-exit (`0x200b5fbc`) and real return (`0x200b5fd8`) with exactly two breakpoints, mirroring
+  the exact technique that resolved `FUN_200b5ea4` — see its own module comment for the full
+  derivation and concrete follow-up questions (does `FUN_200b5ea4`'s ISR definitely finish first;
+  read `0x203906EE`/`0x203906ED` directly once stuck; check `references_to` on `0x203906ED`
+  specifically, not yet done this session).
 - **`patches/hw-arm-build.patch`** — the small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in the vendored QEMU checkout.
 - **`setup.sh`** — idempotent: clones QEMU `v11.1.1` (shallow) if missing, applies the patch,
@@ -403,11 +417,17 @@ spot-check.
    legitimate context-switching, never reaching MMCIF, `firmware_update_main` never returning. A
    direct read of `sdcard_file_rpc_dispatch_task`'s own creation struct confirms why, ruling out
    "just needs more time" first (still zero after 120 real seconds of untouched free-running
-   boot): **the SD-card path's real blocker is the already-diagnosed 2026-09-08 gate**
-   (`FUN_2002b29c`'s branch decision never routing to `cold_boot_mode_dispatch`, so its whole
-   ~80-call feature-task-creation pass — including this task — never runs), unaffected by
-   everything fixed in today's DMAC/MTU2/ring-overflow/GDB-stub thread. **Concrete next step**:
-   revisit `FUN_2002b29c`'s own branch decision directly (real EEPROM/GPIO state, or a different
-   injection point past that gate, e.g. into `cold_boot_mode_dispatch`/`system_mode_request_
-   dispatch` directly rather than `firmware_update_main`) — a return to a known, well-scoped
-   thread from a full session earlier, not a new mystery.
+   boot). **First attributed this to the already-diagnosed 2026-09-08 `FUN_2002b29c` gate —
+   corrected same session, not left standing**: `cold_boot_mode_dispatch`'s own decompile shows
+   it calls `cold_boot_hw_init()` directly (which demonstrably runs), so that gate is already
+   passed; `system_mode_request_dispatch()` is only reached once `cold_boot_hw_init()` itself
+   returns, and something inside *that* function's own remaining body is the real blocker.
+   **Precisely localized it before handing off**: a completely GDB-free `RZA1H_DEBUG=dmac` run
+   shows only one DMAC arm+complete event total, meaning `FUN_200b5f38` (`cold_boot_hw_init`'s
+   very next call after the already-resolved DMAC function, sharing its *literal identical*
+   control struct at `0x203906EC`) never arms its own transfer — stuck in its own loop 1, and
+   since this came from a GDB-free run, likely a real, different bug, not the GDB-stub artifact
+   recurring. `tools/trace_fun200b5f38_wait.py` is built and ready (brackets the exact loop-1-exit/
+   return addresses) but **deliberately not run to a conclusion** — prepared for a fresh session
+   per explicit request. See README-history.md's newest section for the full derivation and the
+   concrete follow-up questions once it narrows further.

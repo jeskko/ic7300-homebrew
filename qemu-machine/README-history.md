@@ -2295,22 +2295,58 @@ symptom: **both fields are still zero even after 120 real seconds of genuinely u
 free-running boot** -- ruling out "just needs more real time" (today's whole session's other
 running theme) before accepting this conclusion.
 
-**Conclusion, stated precisely rather than left at the more optimistic framing the session's own
-wrap-up used earlier**: the passive-idle-loop finding above (`mtu2.c` ticking continuously, no
-new `dmac`/`riic`/`scif`/`rspi2` activity for 900s) is still accurate as an *observation*, but the
-*explanation* needs correcting -- it is not simply "the firmware finished everything it can do and
-is waiting for an external trigger". It is specifically that `cold_boot_mode_dispatch`'s own
-~80-call feature-task-creation pass (which creates `sdcard_file_rpc_dispatch_task` and
-essentially every other feature task in `notes/kernel-rtos.md`'s catalog) still never runs at
-all, for the exact reason the 2026-09-08 session already traced in full: `FUN_2002b29c`'s branch
-decision depends on real EEPROM-signature/GPIO-power-good state that routes execution to
-`FUN_20029ca4`'s power-state main loop instead. **Today's entire DMAC/MTU2/ring-overflow/
-GDB-stub thread is a genuinely separate, already-resolved concern from this one** -- fixing it
-was real, necessary progress (it unblocked reaching this much further and cleanly-idling state at
-all), but it does not touch the `FUN_2002b29c` gate, which is a distinct, already-diagnosed
-open item from a full session earlier. **Concrete next step for whoever picks this up next**:
-revisit `FUN_2002b29c`'s own branch decision directly (not the DMAC/icount thread) -- either find
-what real EEPROM/GPIO state would route it toward `cold_boot_mode_dispatch` instead, or find a
-different, more targeted injection point past that specific gate (e.g. forcing entry into
-`cold_boot_mode_dispatch` itself, or directly into `system_mode_request_dispatch`, rather than
-`firmware_update_main`) -- this is a return to a known, well-scoped thread, not a new mystery.
+**First conclusion (immediately superseded, kept here rather than deleted -- a real, honest
+correction, not a clean derivation)**: attributed this to `FUN_2002b29c`'s branch decision (the
+2026-09-08 session's own diagnosis) never routing to `cold_boot_mode_dispatch`. **Wrong** --
+`cold_boot_mode_dispatch`'s own decompile (`0x2002b1c8`) shows `cold_boot_hw_init()` called as
+its very first, plain synchronous statement, and `cold_boot_hw_init` demonstrably DOES run (all
+of today's DMAC/MTU2/RIIC/SCIF/RSPI2 findings happen inside it, confirmed via `references_to`
+on its real entry point `0x2002afc0` -- the caller is `0x2002b1d8`, squarely inside
+`cold_boot_mode_dispatch`'s own address range). So `cold_boot_mode_dispatch`, and therefore
+`FUN_2002b29c`'s gate, has already been entered and passed. `system_mode_request_dispatch()`
+(which creates `sdcard_file_rpc_dispatch_task`) is only reached AFTER `cold_boot_hw_init()`
+returns -- and something inside `cold_boot_hw_init`'s own remaining body, not `FUN_2002b29c`, is
+the real blocker.
+
+**Precisely localized it, same session, before handing off.** Built
+`tools/trace_cold_boot_hw_init_tail.py`, a waypoint-breakpoint sweep across `cold_boot_hw_init`'s
+own remaining call sequence (the same technique the 2026-09-08 session used successfully to find
+`FUN_2001dd58` inside `riic2_driver_init`) -- two smoke tests (15s, 60s) got zero hits at all,
+including the very first waypoint. Rather than trust that at face value (this session's whole
+point is that GDB observation can itself be unreliable under `-icount`), cross-checked with a
+completely GDB-free `RZA1H_DEBUG=dmac,riic,scif,rspi2` run: **only one DMAC arm+complete event
+total**, matching exactly `FUN_200b5ea4`'s own already-confirmed transfer -- meaning
+`FUN_200b5f38` (`cold_boot_hw_init`'s very next call after `FUN_200b5ea4`, at `0x2002b064`) never
+reaches its own `N0TB_0` write at all. Decompiling `FUN_200b5f38` confirms why this is plausible:
+it's structurally identical to `FUN_200b5ea4` (same two-loop arm/wait shape) and, confirmed via
+listing (not assumed), uses the **literal identical struct base** `0x203906EC` -- the exact same
+shared "channel busy" flag (`0x203906EE`/`0x203906ED`) `FUN_200b5ea4` already uses. Since the
+debug log shows no second arm event, `FUN_200b5f38` is stuck in *its own* loop 1 (the
+shared-slot-idle check, `0x200b5fa4`-`0x200b5fac`) -- the flag `FUN_200b5ea4`'s own ISR already
+clears is somehow still non-zero by the time this sibling checks it.
+
+**This is likely a real, different bug -- not simply a repeat of the GDB-stub artifact**, since
+the finding came from a completely GDB-free run. Built `tools/trace_fun200b5f38_wait.py`,
+bracketing `FUN_200b5f38`'s own loop-1-exit (`0x200b5fbc`) and real return (`0x200b5fd8`) with
+exactly two breakpoints -- the same near-zero-perturbation technique that worked cleanly on
+`FUN_200b5ea4` -- ready to run, **not yet run to a conclusion**, per explicit instruction to
+prepare this for a fresh session rather than solve it now. See that script's own module comment
+for the concrete follow-up questions once it narrows further (whether `FUN_200b5ea4`'s ISR
+genuinely completes before `FUN_200b5f38` starts checking, direct reads of the two flag bytes
+rather than a breakpoint-dependent snapshot, and whether `0x203906ED` -- the second flag, less
+carefully traced than `0x203906EE` this session -- is the actual culprit).
+
+**Net effect on the "passive idle loop" finding above**: still accurate as an *observation*
+(`mtu2.c` ticking continuously, no new `dmac`/`riic`/`scif`/`rspi2` activity for 900s), but the
+*explanation* is now precise rather than vague -- not "the firmware finished everything and is
+waiting for an external trigger", and not `FUN_2002b29c`'s gate either, but specifically
+`FUN_200b5f38`'s own stuck loop 1, three call frames deep inside `cold_boot_hw_init`. **Today's
+entire DMAC/MTU2/ring-overflow/GDB-stub thread remains a genuinely separate, already-resolved
+concern** -- fixing it was real, necessary progress (it's what let boot reach far enough to find
+this next, deeper blocker at all) -- but this specific bug is new territory, not that thread
+recurring. **Concrete next step for whoever picks this up next**: run
+`tools/trace_fun200b5f38_wait.py` first (cheapest, most direct); if `LOOP1_EXIT` never fires,
+read `0x203906EE`/`0x203906ED` directly to see the actual stuck value(s), then trace who else (if
+anyone) touches those two addresses between `FUN_200b5ea4`'s ISR clearing them and
+`FUN_200b5f38`'s own check -- a `references_to` sweep on `0x203906ED` specifically hasn't been
+done yet this session and is a natural place to start.
