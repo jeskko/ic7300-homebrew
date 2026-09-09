@@ -14,9 +14,10 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — a fifth MTU2 compare event found and fixed (same shared status byte
-## as the fourth, a different bit); boot now hits a real, pre-existing generic ring-overflow
-## trap in genuinely new territory, root cause not yet found
+## Status, 2026-09-09 — the `0x20420120` job-ring's own struct, producer, and consumer fully
+## derived; its overflow reproduced twice with exact numbers via a new low-perturbation tracing
+## technique; the DMAC-cascade hypothesis it pointed at tested live and ruled out (a real,
+## useful negative result) -- the actual burst producer is still open, two concrete leads left
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -58,10 +59,36 @@ work above (full narrative in README-history.md's last two sections):**
   samples, not a steady climb — a different shape than the earlier-diagnosed rate-mismatch
   overflow, not yet root-caused.
 
-**Active resume point:** the `0x20420120` ring's own overflow, root cause not yet found — the
-broad producer-trace already tried caught the wrong ring's traffic; needs a more targeted trace
-(breakpoint filtered to this specific ring pointer, or tighter polling around the observed
-~40-second mark) before building anything.
+**Confirmed, solid, this session's follow-up — continuing straight on (full narrative in
+README-history.md's newest section):**
+- The `0x20420120` ring's struct, producer (`FUN_20187bb4`, called only from `FUN_20186c4c`),
+  and consumer (`FUN_20187ae4`, drained only inside `irq_context_switch_id0`, GIC ID 0's real
+  context-switch handler) are all now fully derived from the actual code, not just polled bytes.
+  **Corrects the prior session's own read of its breakpoint trace**: the LR it caught
+  (`0x20186c67`) was already the right producer all along — its belief that producer was
+  "feeding a different ring" was a misread of an opaque data value as a ring pointer.
+- **New tracing technique, built because both breakpoint- and watchpoint-based approaches were
+  already shown to mask this exact bug**: `tools/trace_job_ring_overflow.py` free-runs the whole
+  boot and only pauses on a fixed wall-clock cadence (not tied to any specific guest code path),
+  which stalls producer and consumer proportionally instead of desynchronizing them.
+- **Overflow reproduced live, twice, with real numbers**: both trials show the queue sitting
+  near-empty for tens of seconds, then going from ~1 pending to fully overflowing (16) within
+  well under half a second — a genuine sudden burst, not a steady leak.
+- **Tested the leading hypothesis (a DMAC completion cascade from the newly-reached
+  "three chained transfers" graphics-DMA-setup code) live — ruled out**: temporary host-side
+  `dmac.c` instrumentation showed channel 0 firing only once in a 60-second run (the
+  already-known early-boot transfer, not this region). Reading `FUN_2005ff1c` itself directly
+  also retracts the prior session's own "DMAC channel kicks" characterization — it only touches
+  a software descriptor table, never real DMAC MMIO.
+
+**Active resume point:** the real burst producer is still unidentified. Two concrete next
+leads (neither tried yet): (1) trace what actually consumes `FUN_2005ff1c`'s three
+"descriptor ready" bit-sets — the real downstream trigger is now the leading suspect; (2) use
+`trace_job_ring_overflow.py`'s coarse/fine two-phase polling to bracket a fresh overflow with
+~10ms polls and see whether the recurring `pc=0x20005258` vectored-IRQ-dispatch stub is one GIC
+ID retriggering or several firing in a cluster. See README-history.md's newest section for the
+full derivation, including a documented `pkill -f` self-kill footgun any new trace script should
+avoid.
 
 ## Confirmed peripherals
 
@@ -103,6 +130,15 @@ broad producer-trace already tried caught the wrong ring's traffic; needs a more
 - **`tools/build_riic_eeprom_image.py`** — builds the real, ROM-sourced virtual RIIC2 EEPROM
   image needed to clear `FUN_2002b29c`'s cold-boot branch gate (see Status above) — run this
   before any boot test where reaching real `cold_boot_hw_init`-era code matters.
+- **`tools/trace_job_ring_overflow.py`** (new, 2026-09-09) — targeted, low-perturbation tracer
+  for the `0x20420120` job-ring overflow (see Status above): free-runs the boot and samples the
+  ring's header on a fixed wall-clock cadence rather than breakpointing/watchpointing the hot
+  push/drain path itself (both already shown to mask this specific bug by desynchronizing
+  producer and consumer). Supports an optional coarse→fine two-phase polling cadence
+  (`[seconds] [poll_interval] [fine_start] [fine_interval]`) to narrow in once a run's
+  approximate overflow time is known. **Don't `pkill -f qemu-system-arm` before launching it**
+  (or any new script like it) — that pattern matches the invoking shell's own command line and
+  self-kills; see README-history.md's newest section.
 - **`patches/hw-arm-build.patch`** — the small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in the vendored QEMU checkout.
 - **`setup.sh`** — idempotent: clones QEMU `v11.1.1` (shallow) if missing, applies the patch,
@@ -162,7 +198,10 @@ spot-check.
    fifth compare event (2026-09-09, same shared status byte as the fourth, a different bit)
    cleared a DMA-descriptor-setup routine's own busy-wait** — see Status above for the full
    derivation of each. Boot now reaches a real, pre-existing generic ring-overflow trap in
-   genuinely new territory, root cause not yet found. **Currently blocked on**: that overflow
+   genuinely new territory; **the ring's own struct/producer/consumer are now fully derived and
+   its overflow reproduced live with exact numbers, but the real burst producer is still open**
+   (2026-09-09 follow-up — a DMAC-completion-cascade hypothesis was live-tested and ruled out).
+   **Currently blocked on**: that overflow
    — see "Active resume point" above. Once past enough of this new territory, the original
    question — does the SD-card update flow reach MMCIF against a *properly* kernel-created
    task, and would the whole chain accept and boot custom firmware entirely offline — becomes

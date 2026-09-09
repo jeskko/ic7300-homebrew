@@ -1588,3 +1588,135 @@ same playbook as always, but this one needs a more targeted trace (breakpoint fi
 specific ring pointer, or a tighter polling interval around the observed ~40-second mark) rather
 than the broad producer-trace already tried, which caught the wrong ring's traffic. See
 README.md's Status section for the concrete next step.
+
+## The `0x20420120` ring's own struct/producer/consumer fully derived; overflow reproduced twice
+## via a new low-perturbation tracing technique with exact numbers; the DMAC-cascade hypothesis
+## it pointed at tested live and came back negative (2026-09-09, a fresh session picking up the
+## resume point above)
+
+Picked up the resume point directly: static re-derivation first (Ghidra), live confirmation
+before building anything, per this thread's own established discipline throughout.
+
+**Full struct derivation, this time from the actual producer/consumer code rather than just
+polled bytes.** `0x20420120` is a single global work-queue struct: byte 0 = write index
+(producer-owned), byte 1 = read index (consumer-owned, written back only once per drain call,
+not per entry), byte 2 = pending count (LDREX/STREX-atomic, incremented by the producer /
+decremented by the consumer once per drained entry), byte 3 = capacity (16, matching the prior
+session's own live-polled observation exactly), then 16 * 8-byte entries (4-byte job-object
+pointer + 4-byte payload word) starting at offset 4 -- total struct size `0x84`, which lines up
+exactly with a second, sibling table (a per-channel job-object pointer array) sitting
+immediately adjacent at `0x204201a4`, a real structural confirmation, not a coincidence.
+- **Producer**: `FUN_20187bb4`, called from exactly one site, `FUN_20186c4c`
+  (`0x20186c62`, return address `0x20186c66`/LR `0x20186c67`) -- **this is the *exact* LR the
+  prior session's own push-helper breakpoint already caught.** That session's own conclusion
+  ("feeding a *different* ring, `0x20415c60`") was a misread, corrected this session: the value
+  it captured is r0/param_1, an opaque per-channel job-object pointer *stored as data* in the
+  queue entry, not a destination ring pointer -- `FUN_20187bb4` has no ring-pointer parameter at
+  all, it always targets this one hardcoded queue. So the earlier session's breakpointed producer
+  was *already* the right one; the "wrong ring" belief, not the breakpoint's own target, was the
+  error.
+- **Consumer**: `FUN_20187ae4`, drains while pending != 0, called from **`irq_context_switch_id0`**
+  (`0x20005960`) -- an already-existing, already-named, already-resolved (2026-08-30,
+  `notes/kernel-rtos.md`) real GIC-ID-0 (an SGI, architecturally always software-generated, never
+  a hardware peripheral line) context-switch handler, structurally identical to `swi_handler`'s
+  own scheduler logic. So the queue drains *only* on this specific context-switch event, not on
+  a dedicated per-push doorbell or a fixed periodic tick of its own.
+- **Overflow trap**: `FUN_200b93fc` (the pre-existing, already-documented unconditional infinite
+  loop), called directly from inside `FUN_20187bb4` with `r0=2` when the pending-count check
+  fails -- confirmed live, see below.
+- A separate, unrelated per-object ring shape (`FUN_201877e4`, called via a completely different
+  path, `FUN_20187ae4`'s own type-1 dispatch case) was found and fully read while tracing this,
+  then ruled out as unrelated to `0x20420120` -- noted here only so a future session doesn't
+  re-investigate it as a lead; it uses `r0=3`, not the `2` the overflow trap actually reported.
+
+**Root-caused a real self-inflicted tooling bug before any of the above could be tested live**:
+the very first attempt at a new trace script used `pkill -f qemu-system-arm` to clean up a
+previous QEMU instance before launching a fresh one -- and it killed its own parent shell
+instead, immediately and silently (`pkill -f` matches full command lines by default, and the
+shell invoking that exact command line contains the string `qemu-system-arm` as a substring of
+*itself*, from the pattern argument). Every symptom matched a hard, early kill with no output at
+all, across several failed attempts, before the actual cause was traced (rather than guessed) by
+noticing the one successful run was the one invocation that happened to omit the `pkill` prefix.
+This is the *exact* footgun `tools/trial_irq.py`'s own file comment already named and worked
+around (`subprocess.Popen` process management instead of shell backgrounding) -- worth a harder
+flag for any *new* script written against this project: never `pkill -f` a pattern that appears
+in the invoking command line itself, and prefer targeted PID-based cleanup (or none, since a
+fresh QEMU listens on a fresh `-gdb tcp::1234` and a stale one just fails to bind) over a broad
+`pkill -f`.
+
+**New technique, built to avoid the exact masking this thread already hit twice**: a live
+per-call breakpoint (on the push helper, or a data watchpoint on the ring's own header bytes)
+fires at the same frequency as the thing under investigation and reliably prevented the overflow
+from manifesting at all in the prior session's own 90-second, 1092-hit trial. `tools/
+trace_job_ring_overflow.py` (new) instead free-runs the whole boot and only pauses on a fixed
+**wall-clock** cadence (`interrupt()`/read/`cont()`, every 0.25s), independent of any specific
+guest code path -- a uniform stall that (unlike a targeted breakpoint) slows the producer and
+consumer by the same proportion rather than desynchronizing them. A single breakpoint on the
+overflow trap itself is included too, since it only ever fires once, at the moment of genuine
+interest, and stops everything anyway.
+
+**Confirmed live, twice, with real numbers -- this reproduces under gentle wall-clock polling,
+unlike every breakpoint-based attempt before it:**
+- Trial 1 (100s run): `t=51.47s` pending=1 (write_idx=15, read_idx=14, nearly caught up) →
+  `t=51.84s` **OVERFLOW** (`r0=0x2`, `lr=0x20187c29` -- confirmed to be the return address
+  right after `FUN_20187bb4`'s own internal call to `FUN_200b93fc(2)`, exactly matching the
+  static derivation above), header at the moment of the trap: write_idx=11, read_idx=11,
+  pending=16 -- a structurally *consistent* full-buffer state (write index having wrapped
+  exactly back around to equal read index with every slot occupied), not obviously corrupted
+  index arithmetic.
+- Trial 2 (60s run, coarse-then-fine polling: 0.5s until 47s, then 0.02s -- the fine window
+  never actually got exercised, because the real event happened earlier): `t=42.940s`
+  pending=14 (write_idx=4, read_idx=6, already wrapped) → `t=43.56s` **OVERFLOW**, same `r0=0x2`,
+  same `lr=0x20187c29`.
+- **Both trials show the identical shape**: the queue sits at 0 (or very close to it) for tens
+  of seconds of real boot time, then goes from near-empty to completely full and overflowing
+  within well under half a second -- a genuine sudden **burst**, not a slow steady leak like the
+  earlier MTU2-clock-rate overflow this same session already fixed. This confirms and sharpens
+  the prior session's own "burst-then-drain, not steady" read of the coarse 5-second polling
+  data into hard numbers.
+- Both trials also independently caught the CPU at the identical `pc=0x20005258 lr=0x20005248`
+  right in this critical window -- a genuine, never-function-bounded code region (the classic
+  "empty function list doesn't mean no code" gap this project has hit several times before) that
+  reads structurally like a generic vectored-IRQ dispatch stub (an indirect `blx r2` through a
+  per-ID handler-pointer table, in the same unbounded gap between `reset_handler` and
+  `kernel_start` that also houses the other low-level exception trampolines) -- i.e., an
+  interrupt was actively being dispatched at both polled moments, though not yet pinned to a
+  specific ID.
+
+**Tested the most concrete hypothesis this pointed at, live -- came back negative, a real,
+useful result, not just an unswept gap.** The newly-reached DMA-descriptor-setup region
+(`FUN_2005ff1c`, the "three chained 0x240-byte transfers" a prior session had characterized as
+"very plausibly graphics/display DMA, DMAC channel kicks") was the obvious first suspect: if
+each of those three transfers completes near-instantly and each fan-out-notifies several waiter
+tasks via the kernel's own event-flag mechanism (traced below), that alone could plausibly
+produce a same-instant burst in the teens. Added temporary `fprintf`-based host-side
+instrumentation to `dmac.c`'s own completion path (`git checkout`-reverted immediately after,
+zero trace left in the tracked source) and reran: **DMAC channel 0 fired exactly once in a full
+60-second run** -- and it was the *already-known*, already-documented early-boot transfer
+(`dst=0xfcfe3108`, matching `dmac.c`'s own file comment's "a real RAM buffer -> a GPIO-region
+destination address" verbatim), not the graphics-region one at all.
+**Followed up by actually reading `FUN_2005ff1c` itself properly** (the prior session's own
+"DMAC channel kicks" characterization was never independently re-derived until now): it doesn't
+touch real DMAC MMIO (`0xE8200000`-range) anywhere. It only populates a *software* descriptor
+table (three 0x240-byte source/dest/size records) and calls `FUN_20360b0c` -- decompiled and
+confirmed to be a **generic single-bit bitfield setter** (`*addr = (*addr & ~mask) | (value <<
+shift)`), not a DMA-kick function at all. **This retracts the prior session's own "DMAC channel
+kicks" characterization** -- whatever real hardware mechanism (if any) eventually acts on these
+three software descriptors is still unidentified, and it demonstrably isn't `dmac.c`'s modeled
+channel 0. The DMAC-cascade hypothesis is closed as tested and ruled out, not abandoned
+unswept.
+
+**Active resume point:** the real producer of the burst is still unidentified. Two concrete
+leads, neither yet tried: (1) trace what actually *consumes* `FUN_2005ff1c`'s three
+"descriptor ready" bit-sets -- that downstream consumer, not DMAC hardware, is now the leading
+suspect for triggering a chain of kernel event-flag signals (`FUN_2007e3cc`, confirmed this
+session to be ITRON's own `iset_flg`-shaped primitive -- set/clear up to 4 waiter tasks per call,
+reached only indirectly via a syscall dispatch table, so a fan-out search from here needs the
+*runtime* waiter list, not a static one); (2) pin down which GIC ID the recurring
+`pc=0x20005258` vectored-dispatch stub was actually servicing at the two captured moments -- a
+few back-to-back ultra-fine (`~10ms`) wall-clock polls bracketing a fresh overflow, comparing
+successive LR/PC pairs, would show directly whether it's one ID retriggering rapidly or several
+different ones firing in a tight cluster, without needing a risky direct GIC IAR read from
+outside the CPU's own execution. `tools/trace_job_ring_overflow.py`'s coarse/fine two-phase
+polling (`[seconds] [poll_interval] [fine_start] [fine_interval]`) already supports narrowing in
+once a fresh trial's own approximate overflow time is known from a first coarse pass.
