@@ -159,4 +159,17 @@
 #define RZA1H_MMC_SIZE 0x00000080
 #define TYPE_RZA1H_MMC "rza1h-mmc"
 
+/* dmac.c -- matches ~/Downloads/rza1.svd's DMAC peripheral base. Real
+ * device for channel 0 only, added 2026-09-09 once body.bin's own
+ * cold-boot init chain (right after MTU2 channel 3, see mtu2.c) was found
+ * depending on a real DMA-transfer-completion interrupt (GIC ID 41,
+ * DMAINT0) -- see dmac.c's own comment. Size covers channel 0's own
+ * register block (through CRLA_0 at +0x3c) plus the shared DCTRL_0_7 at
+ * +0x300, with headroom, matching this project's existing sizing habit
+ * (see mtu2.c's own RZA1H_MTU2_SIZE). */
+#define RZA1H_DMAC_BASE 0xE8200000
+#define RZA1H_DMAC_SIZE 0x00000400
+#define RZA1H_DMAC_CH0_IRQ 41 /* DMAINT0 */
+#define TYPE_RZA1H_DMAC "rza1h-dmac"
+
 #endif

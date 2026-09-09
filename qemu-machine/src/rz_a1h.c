@@ -110,6 +110,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *l2c;
     DeviceState *mmc;
     DeviceState *mtu2;
+    DeviceState *dmac;
     size_t i;
     int ch;
 
@@ -289,6 +290,18 @@ static void rza1h_init(MachineState *machine)
     mmc = qdev_new(TYPE_RZA1H_MMC);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(mmc), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(mmc), 0, RZA1H_MMC_BASE, 0);
+
+    /* dmac.c -- channel 0 only, added 2026-09-09 once cold_boot_hw_init's
+     * init chain was found depending on a real DMA-completion interrupt
+     * right after MTU2 channel 3 (see mtu2.c and dmac.c's own comments).
+     * Overlap-mapped: sits inside the broader "io-e8200000"
+     * unimplemented-device catch-all above. */
+    dmac = qdev_new(TYPE_RZA1H_DMAC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(dmac), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(dmac), 0, RZA1H_DMAC_BASE, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(dmac), 0,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_DMAC_CH0_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }

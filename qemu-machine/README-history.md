@@ -897,3 +897,97 @@ before any code was written. That check is the natural next step, per this sessi
 now-twice-proven discipline (test live before building, the same discipline that retired the
 SLV5 lead earlier in this same session). See `README.md`'s Status section for the current
 resume point.
+
+## `src/dmac.c` built and confirmed load-bearing too; boot reaches `dsp_boot_handshake` --
+## a whole further stage (SCIF5 DSP-link bring-up), the furthest ever
+
+Picked up the previous section's "not yet live-confirmed" directly. Booted with `-S`, let it
+run to the same parked state, and read the GIC registers for ID 41 the same way MTU2's ID 154
+were read: `GICD_ISENABLER1` (`0xE8201104`) bit 9 = **1** (armed by the guest), `GICD_ISPENDR1`
+(`0xE8201204`) bit 9 = **0** (never fired) — the identical armed-but-never-fired shape MTU2
+had, confirming this is a real, live blocker and not a dead end. `GICD_ICFGR2` (`0xE8201C08`,
+covering IDs 32-47, 2 bits/ID — ID 41's bits are 18-19) reads `0b10` = **edge**, not level —
+the opposite of MTU2's `TGI3A`, so this device gets `ostm.c`'s simpler `qemu_irq_pulse()`
+pattern instead of `mtu2.c`'s raise-and-hold one.
+
+**Traced the exact call reaching this point, disassembly-first (not decompile-first, after
+`references_to` on the two flag bytes led there) to get real byte-offset math right**:
+`cold_boot_hw_init` calls `FUN_200b5b64(); FUN_200b5be0(); FUN_200b5ea4(); FUN_200b5f38();` in
+that order (function *addresses* aren't in call order — `FUN_200b5be0` sits at a lower address
+than parts of `FUN_200b5ea4`'s own helper chain, which briefly looked like it might belong to
+`FUN_200b5be0` until the real function boundaries were checked directly against a fresh
+disassembly listing, the same "watch out for Ghidra's decompile-by-address landing outside
+the queried range" caution from earlier in this file). `FUN_200b5be0` configures DMAC channel
+0's `CHCFG_0` (`0x00222160`)/`CHITVL_0`/`CHEXT_0`/`DCTRL_0_7`, sets `CHCTRL_0 |= 0x62`
+(channel enable), registers `FUN_200b5b90` as GIC ID 41's ISR, then clears both flag bytes
+(`0x203906ed`/`0x203906ee`) to 0 right before a tail-branch out.
+
+`FUN_200b5ea4` (the busy-wait's own containing function) actually has **two** separate
+busy-waits on the same flag (`0x203906ee`), not one — the first (nested with the second flag,
+`0x203906ed`) is already satisfied immediately (both cleared to 0 by `FUN_200b5be0` moments
+earlier), so it falls straight through to `FUN_200b5cdc()` (builds what looks like a
+scatter-gather descriptor list — a loop over up to 12 entries, each an appended
+`(flag-derived-word, size)` pair, via a shared "append one descriptor" helper,
+`FUN_200b5c60`) and then `FUN_200b5dc0()`, which is the real DMA-arming function: a
+cache-clean loop (`mcr p15,0,r0,cr7,cr10,1` + `dmb sy` over a buffer range — real cache
+maintenance ahead of a DMA transfer, consistent with L2C already being modeled for real in
+this project) followed by the actual `N0SA_0`/`N0DA_0`/`N0TB_0` writes (source = a RAM buffer
+address read from a fixed literal, `0x20415340` in this build; dest = a GPIO-region address,
+`0xFCFE3108`, inside `RZA1H_GPIO_BASE`'s own claimed range — a real DMA-out-through-a-GPIO-port
+pattern, plausible for driving a parallel bus like the front-panel LCD without per-byte CPU
+involvement, though not confirmed further this session) and finally sets `0x203906ee = 1`,
+arming the **second** busy-wait — the one this session's live GIC read above was actually
+parked at.
+
+**The ISR itself, `FUN_200b5b90`, was also fully disassembled**: touches MTU2 *channel 0*'s
+`TSTR`/`TSR` bits (an unrelated cross-subsystem side effect, real per the disassembly, not
+interpreted further), re-applies the same `CHCTRL_0 |= 0x62` `FUN_200b5be0` used, then clears
+`0x203906ee` back to 0 and tail-branches to a shared ISR epilogue (`0x200b0f68`) — confirming
+this ISR is the one and only thing that can ever resolve the busy-wait, exactly the same shape
+as MTU2's tick handler.
+
+**Built `src/dmac.c`** for DMAC channel 0 only (every other channel/register stays a plain
+byte-array passthrough, same scoping choice as `mtu2.c`): performs the real transfer via
+`address_space_read()`/`address_space_write()` (the same real-pointer-values approach
+`scif.c`'s virtual front-panel responder already established) as soon as `N0TB_0` — the last
+of the three "arm" registers, confirmed via the live disassembly order above — is written,
+firing the edge IRQ from a short one-shot `QEMUTimer` rather than synchronously (real DMA is
+asynchronous). Wired into `rz_a1h.c` the same overlap-mapped way every other device inside the
+`io-e8200000` unimplemented-device catch-all already is. Compiled clean on the first attempt,
+same as `mtu2.c`.
+
+**Retested with multiple free-running trials, not just one** — this project's own established
+discipline (`tools/trial_irq.py`'s whole reason for existing: "a single boot snapshot isn't a
+reliable regression test once real interrupt-driven scheduling is involved," per this file's
+very first section). A first single 30-second sample showed the DMAINT0 busy-wait's own PC
+(`0x200b5f28`) no longer dominant — but three more independent 20-second trials right after
+showed real run-to-run variance (one trial's PC samples were still mostly `0x200b5f28`,
+another had zero occurrences of it at all) that could have looked alarming taken in isolation.
+A longer, single 50-second trial with every sample printed (not just a `Counter` summary)
+settled it: `0x200b5f28` never appeared even once in that run, and PC spent the whole window
+oscillating between `dsp_boot_handshake` (see below) and the periodic MTU2/DMAC/OSTM ISR
+cluster (`0x20005xxx`) — the variance across trials is genuinely just *how long it takes to
+first reach and arm the DMA transfer* (dependent on how many periodic ticks other code needs
+first), not whether the fix resolves it once armed. Confirmed load-bearing, not a fluke.
+
+**Boot now reaches `dsp_boot_handshake`** — a name already established in a prior session
+(not freshly discovered this session), confirming this really is new, further territory:
+`cold_boot_hw_init`'s own later lines (already visible in this file's very first `cold_boot_
+hw_init` decompile, further down than anything reached before now) call
+`scif5_dsp_link_driver_init(); scif5_wait_hsk1_ready(); dsp_boot_handshake();` — part of the
+SCIF5 DSP-link bring-up, never reached by any traced boot path before this session.
+
+**The next blocker, only lightly traced (deliberately not chased further this session):**
+`dsp_boot_handshake` calls `scif5_bitrev_transmit_word()` (bit-reverses a 32-bit word and
+transmits it -- its own register-offset pattern, `iVar4 + -0x2e0` written with values like
+`0x10000`/`0xa0000000`, looks more like an RSPI-shaped control sequence than a plain SCIF one,
+not reconciled with its own name this session) then busy-waits on a status byte
+(`0x203906ba` in this build) only that same function's tail can plausibly clear. It ends by
+enabling **GIC ID 0x9f (159)** via the same generic `FUN_200b8308` helper used for every other
+interrupt in this file -- not yet identified against the SVD, not yet live-checked the way
+DMAC/MTU2 were. This is a different subsystem from DMAC/MTU2 (a real DSP-link handshake
+protocol, per this project's own signal-chain notes) and, per the front-panel handshake's own
+precedent (`scif.c`'s `rza1h_scif3_frontpanel_ack`), may need a genuine virtual responder
+rather than just a timer-backed device -- judged worth its own dedicated investigation rather
+than a quick continuation of this one. See `README.md`'s Status section for the current
+resume point.

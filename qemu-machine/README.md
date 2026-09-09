@@ -14,9 +14,9 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — a real MTU2 channel 3 built and confirmed load-bearing: the
-## task-readiness counter now advances, boot progresses dramatically further, and the very
-## next blocker is already identified (DMAC channel 0, GIC ID 41)
+## Status, 2026-09-09 — a real DMAC channel 0 built and confirmed load-bearing too: boot now
+## reaches `dsp_boot_handshake` (SCIF5 DSP link bring-up), a whole further stage than ever
+## before; the next blocker is a different subsystem entirely (GIC ID 0x9f, not yet identified)
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -129,23 +129,34 @@ busy-wait**, visiting a wide, changing spread of addresses across `0x20005xxx`/`
 confirmed, not inferred: the fix genuinely unblocks `cold_boot_hw_init` and boot progresses
 further than any previous session reached.
 
-**Active resume point — the next blocker, already identified via the same method:** free-
-running sampling settles predominantly (12/15 samples over 30s) on `0x200b5f28`, inside
-`FUN_200b5ea4` (one of the four calls `cold_boot_hw_init` makes immediately after the
-now-resolved busy-wait: `FUN_200b5b64(); FUN_200b5be0(); FUN_200b5ea4(); FUN_200b5f38();`).
-`FUN_200b5ea4` has its own nested busy-wait on two flag bytes at a fixed address in this
-build (`0x203906ed`/`0x203906ee`, offsets `-0x13`/`-0x12` from `DAT_200b6318`=`0x20390700`).
-Traced the writer the same way as the MTU2 counter (`references_to` on the flag address):
-written from inside `FUN_200b5be0` (the call immediately before this one), which itself
-calls `register_event_handler(0x29, FUN_200b5b90)` followed by the same `FUN_200b8308(0x29)`
-GIC-enable helper — **GIC ID 41 (`0x29`)**. Identified via the same `ICDISRn`
-register-index×32+bit SVD formula (register index 1, bit 9): **`DMAINT0`, the RZ/A1H's DMA
-controller channel 0 completion interrupt** — a peripheral this project has never modeled at
-all (not in the Confirmed-peripherals table, currently whatever generic unimplemented-device
-catch-all its address range falls under). Not yet live-confirmed the way MTU2 was (no GIC
-register read done yet to check whether ID 41 is armed/pending) — that live check is the
-natural next step before building anything, per this session's own now-twice-proven
-discipline (check the hypothesis live first, the way the SLV5 lead got retired above).
+**`src/dmac.c` is now also built, wired, and confirmed load-bearing.** Live-checked GIC ID 41
+first (per this session's own now-established discipline): armed by the guest
+(`GICD_ISENABLER1` bit 9 = 1), never pending (`GICD_ISPENDR1` bit 9 = 0) — the same
+armed-but-never-fired shape MTU2 had — and confirmed **edge**-triggered (`GICD_ICFGR2` bits
+18-19), unlike MTU2's level `TGI3A`. Traced the exact register sequence live too (`N0SA_0`/
+`N0DA_0`/`N0TB_0` — DMAC channel 0's source/dest/count — written in that order, source a RAM
+buffer, dest a GPIO-region address) via `references_to` on the SVD's real per-offset
+addresses, the same method used for MTU2's `TGRA_3`. Built `dmac.c` for channel 0 only
+(real transfer via `address_space_read()`/`address_space_write()`, edge IRQ on completion —
+full derivation in README-history.md's newest section) and retested with multiple free-running
+trials (not just one snapshot — this project's own established discipline, since real
+interrupt-driven scheduling makes a single boot non-representative): **the DMAINT0 busy-wait
+now resolves in every trial**, run-to-run timing varying only in *when* it clears, never
+whether. Boot then reaches **`dsp_boot_handshake`** (already-identified/named from an earlier
+session) — a whole further stage, part of the SCIF5 DSP-link bring-up
+(`scif5_dsp_link_driver_init()` → `scif5_wait_hsk1_ready()` → `dsp_boot_handshake()`), never
+reached before this session.
+
+**Active resume point — the next blocker, a different subsystem, only lightly traced so
+far:** `dsp_boot_handshake` calls `scif5_bitrev_transmit_word()` (a bit-reversed serial word
+transmit — despite the name, its own register accesses look like RSPI, not plain SCIF; not
+yet reconciled) and then busy-waits on a status byte (`*0x203906ba` in this build) that only
+that transmit function's own tail can plausibly clear. `scif5_bitrev_transmit_word` ends by
+enabling **GIC ID 0x9f (159)** via the same `FUN_200b8308` helper — not yet identified against
+the SVD, not yet live-checked. This is a new, separate subsystem from DMAC/MTU2 (real DSP-link
+handshake protocol, likely needing a virtual responder analogous to SCIF3's already-solved
+front-panel one, per this project's own signal-chain notes) — worth its own dedicated
+investigation rather than a quick continuation.
 
 ## Confirmed peripherals
 
@@ -161,6 +172,7 @@ discipline (check the hypothesis live first, the way the SLV5 lead got retired a
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI on channel 3 too, backing a virtual front-panel responder (SCIF3 only) — see Status above |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
+| DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer) — **confirmed load-bearing 2026-09-09**, unblocks the busy-wait right after MTU2's, see Status above. Every other channel/register still plain storage |
 
 ## Directory layout
 
@@ -222,9 +234,10 @@ spot-check.
 2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/`CMP`=32000, now
    annotated in Ghidra (`ostm0_tick_arm_and_get_irq_id` at `0x200b93b0`).
 3. ~~Port the remaining Unicorn-side peripherals to real C devices~~ — done: `gpio.c`/`l2c.c`
-   (real behavior), `riic.c` (real), `mtu2.c` channel 3 (real, 2026-09-09 — confirmed
-   load-bearing, see Status above); `add_plain_ram_region()` still covers CPG (plain storage,
-   nothing traced needs more) and everything in MTU2 outside channel 3.
+   (real behavior), `riic.c` (real), `mtu2.c` channel 3 and `dmac.c` channel 0 (real,
+   2026-09-09 — both confirmed load-bearing, see Status above); `add_plain_ram_region()`
+   still covers CPG (plain storage, nothing traced needs more) and everything in MTU2/DMAC
+   outside their one real channel each.
 4. ~~SCIF UART output~~ — done: TX plus real per-channel TXI, real RXI + a virtual front-panel
    responder on channel 3 (2026-09-09). The SCIF3 front-panel handshake now fully resolves for
    the first time ever, and boot reaches real ITRON task activation as a direct result.
@@ -232,11 +245,13 @@ spot-check.
    built and validated standalone; `riic.c` built and validated end-to-end against a real
    natural boot; `FUN_2002b29c`'s entire cold-boot branch gate now clears; the SCIF3
    front-panel handshake now genuinely completes; boot reaches real `itron_act_tsk` task
-   activation; **`mtu2.c` now resolves the task-readiness busy-wait right after it, and boot
-   progresses dramatically further than any previous session**. **Currently blocked on**: the
-   very next busy-wait in the same init chain, gated on GIC ID 41 (`DMAINT0`, DMA controller
-   channel 0) — not yet modeled at all, see "Active resume point" above. Once past that, the
-   original question — does the
+   activation; **`mtu2.c` and `dmac.c` together clear cold_boot_hw_init's whole
+   task-readiness-wait cluster, and boot now reaches `dsp_boot_handshake` (SCIF5 DSP-link
+   bring-up) — the furthest any session has reached**. **Currently blocked on**: a new busy-
+   wait inside the DSP handshake itself, gated on GIC ID 0x9f (159, not yet identified) — see
+   "Active resume point" above. This looks like it may need its own virtual responder (like
+   SCIF3's), not just another timer/DMA device — worth a dedicated investigation. Once past
+   it, the original question — does the
    SD-card update flow reach MMCIF against a *properly* kernel-created task, and would the
    whole chain accept and boot custom firmware entirely offline — becomes directly retestable
    with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.
