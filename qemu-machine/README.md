@@ -49,15 +49,32 @@ active resume point.
 ## trials, ~20-45s in, all with `-icount shift=auto`). This means the ring-overflow fix's own
 ## prior "confirmed clean, zero overflows across two 130s/160s trials" finding needs a real
 ## caveat: no prior trial ever ran with a genuinely working DMAC channel 0 *and* `-icount` *and*
-## the OSTM/MTU2 real-clock fix all active together until this session's fix went in — whether
-## this is the same overflow mechanism re-surfacing under a now-different boot timing profile,
-## or something the DMAC fix's own changed scheduling newly exposes, is genuinely open, not yet
-## traced this session. **Concrete next step**: `tools/trace_job_ring_overflow.py` against
-## `0x200b93fc`, re-deriving producer/consumer/timing fresh rather than assuming last session's
-## `0x20420120`-ring analysis still applies unchanged. See README-history.md's newest section for
-## the full derivation, including why the breakpoint-based verification attempt tried first this
-## session was itself discarded as untrustworthy (a real, live example of the project's own
-## documented gdbstub-artifact class) before the GDB-free QMP method settled it.
+## the OSTM/MTU2 real-clock fix all active together until this session's fix went in.
+##
+## **Re-derived fresh rather than assumed: it's the same `0x20420120` ring, same producer/
+## consumer, same burst shape as the prior session's own analysis** (`r0`=`0x2`/`lr`=
+## `0x20187c29` at the trap match exactly; `pending` sits at 0-1 for tens of seconds then jumps
+## straight to overflow in well under half a second, both re-confirmed live). **One real new
+## lead**: a header sample caught right at the burst's own onset landed at `pc=0x200051ec` —
+## cross-checked directly via `objdump` against `scratch/unpacked/142/body.bin` (the address
+## was undefined bytes in Ghidra, the project's own known ARM/Thumb bug) and confirmed to be
+## the SVC/software-interrupt exception dispatcher (`cps #19` entry, syscall-number jump-table
+## dispatch). This directly confirms the ring's real producer path (`FUN_20186fb4`, a generic
+## "post a message to a channel" primitive) is reachable via `software_interrupt(0)` from **any**
+## user-mode task system-wide, not just its 2 known direct call sites — reframing this as a
+## genuine multi-task message burst occasionally exceeding a fixed 16-slot queue, not a
+## consumer-starvation or icount-artifact story. *Not yet found*: which task(s) actually fire the
+## burst, or why specifically at this boot phase (display/EGL setup remains the leading guess,
+## unconfirmed). **New methodology finding**: narrowing the polling cadence to 0.02s right before
+## the expected overflow *suppressed it entirely* (0/1, 50s) — even non-breakpoint periodic
+## `interrupt()`+`read_memory()` perturbs this race if frequent enough; the coarse 0.25s cadence
+## `trace_job_ring_overflow.py` already used is the proven sweet spot. A fix request is filed in
+## `scratch/armthumb_fix_requests.txt` (`0x200051c0 0xb8 arm`) so a real Ghidra function can be
+## created at the dispatcher once the user applies it. See README-history.md's newest two
+## sections for the full derivation, including why the breakpoint-based DMAC-race verification
+## attempt tried first this session was itself discarded as untrustworthy (a real, live example
+## of the project's own documented gdbstub-artifact class) before the GDB-free QMP method
+## settled it.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,

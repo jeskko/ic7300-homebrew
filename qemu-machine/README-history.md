@@ -2446,3 +2446,67 @@ timing this deep in boot. `tools/qmp_read_mem.py` (this session, new) is the gen
 takeaway tool going forward: any future "this never seems to clear" finding should get a fully
 GDB-free QMP cross-check before being trusted, the same way this session's own correction to the
 prior "RESOLVED" DMAC finding depended on exactly that.
+
+## 2026-09-10 session, continued: re-derived the `0x200b93fc` ring-overflow trap fresh (now that DMAC actually works) -- same ring, same mechanism, one real new lead
+
+Picked up the resume point left right after the DMAC completion-race fix: `0x200b93fc` (the
+already-known job-ring-overflow trap) is now reliably reachable, so re-ran
+`tools/trace_job_ring_overflow.py` (unchanged, still targets the `0x20420120` ring from the
+2026-09-09 analysis) rather than assuming that prior analysis still applies unchanged.
+
+**Re-confirmed, not just assumed, that this is the same ring/mechanism as before**: reproduced
+the overflow trap live (default coarse 0.25s wall-clock polling, no breakpoint near the hot
+path), `r0` (the trap's own error code) reads `0x2` and `lr` reads `0x20187c29` -- both match
+the prior session's own static derivation exactly (`FUN_20187bb4`'s own overflow-error path,
+the `0x20420120` ring's producer). Header samples show the identical burst shape already
+documented: `pending` sits at 0-1 for tens of seconds, then jumps to `pending=4` within one
+0.25s-polling gap, then fully overflows (`pending=16`) well under half a second later.
+
+**New methodology finding, worth remembering broadly**: tried narrowing in with the tool's own
+`fine_start`/`fine_interval` feature (switching to 0.02s polling shortly before the expected
+overflow window) -- **this suppressed the overflow entirely** (50s run, zero overflows) even
+though the exact same finer-grained technique is just `interrupt()`+`read_memory()`, no
+breakpoint at all. This generalizes the project's own prior finding (a breakpoint on the hot
+push path masks this bug) one step further: even a *non-breakpoint*, low-overhead periodic
+interrupt is enough perturbation to prevent this specific burst, if frequent enough. Coarse
+(0.25s) polling was the sweet spot that still let it reproduce.
+
+**Traced why `FUN_20186c4c` (the queue's real producer-side caller) can plausibly receive a
+genuine multi-task burst, rather than assuming a single hot loop**: `FUN_20186c4c` itself pushes
+exactly one item per call (no loop) -- indexes a per-channel target-function table
+(`DAT_20186c70`) by a channel argument and calls `FUN_20187bb4` once. Its own single caller,
+`FUN_20186fb4`, is a generic "post a message to a channel" primitive: if not in kernel context,
+it invokes `software_interrupt(0)` (an SVC) instead of pushing directly. Only 2 real *direct*
+(kernel-context) call sites exist for `FUN_20186fb4` itself (neither yet named/analyzed), but
+the SVC path means **any user-mode task anywhere in the system** can reach the same push via a
+software interrupt, not just those 2 sites -- a genuinely generic OS primitive, not a narrow one.
+
+**Confirmed this SVC path directly, not just inferred it**: one header sample right at the
+burst's own onset (`t=40.654s`, `pending` jumping from 0 to 4) caught `pc=0x200051ec`. That
+address was undefined bytes in Ghidra (no disassembly-context ever applied there -- the
+project's own known ARM/Thumb Ghidra bug, see the "Known Ghidra/tooling gotchas" entry in
+`../.claude/projects/.../icom-ic7300-re-project.md`), so cross-checked directly against
+`arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000` on `scratch/unpacked/142/
+body.bin`: decodes cleanly and gaplessly as real ARM code from `0x200051c0` (`cps #19` --
+switch to SVC mode, the literal entry of an exception vector) through a real `rfeia sp!`
+return at `0x20005274`, with a syscall-number-indexed jump table dispatch through `0x204201d0`
+in the middle. This is the SVC/software-interrupt exception dispatcher itself -- directly
+confirms `FUN_20186fb4`'s `software_interrupt(0)` call really does re-enter the kernel through
+here, and that syscall handler registration table is genuinely a many-caller, whole-OS-wide
+mechanism (matches "very plausibly graphics/display" activity, already speculated by an earlier
+session, being a plausible burst source at this exact boot phase). Filed a fix request in
+`scratch/armthumb_fix_requests.txt` (`0x200051c0 0xb8 arm`) so a real Ghidra function can be
+created here, plus an `Analysis` bookmark pointing back to this section.
+
+**Not yet done, honest resume point for whoever picks this up next**: this reframes the bug as
+"a real multi-task message burst, from a genuinely generic whole-OS syscall path, occasionally
+exceeding a fixed 16-slot queue" rather than either a consumer-starvation or an icount-artifact
+theory -- but *which* task(s) fire the actual burst, and why specifically around the ~20-45s
+boot mark, is still open. Once the ARM-mode fix above is applied (needs the user's own GUI
+action, per this project's established Ghidra workaround), the natural next step is identifying
+what's scheduled/active right at the burst's own onset -- e.g. a live watch on which tasks are
+running via the context-switch path, or checking what boot milestone typically lands around
+this exact wall-clock mark (display/EGL surface setup was the leading guess before this
+session, still unconfirmed). Given this session's own finding that *any* added observation
+(even non-breakpoint polling, fine-grained enough) suppresses the burst, favor the same
+low-perturbation coarse-polling technique already proven to work here over anything tighter.
