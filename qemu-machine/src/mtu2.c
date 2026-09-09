@@ -139,6 +139,30 @@
  * consistent application of the same "fixed one-shot period, not the
  * guest's real relative delay" simplification already established for
  * TGI4A above.
+ *
+ * A fifth event, `0x308`/`0x305` bit 0 (2026-09-09, continuing straight
+ * on): confirmed live via a free-run poll the same way the fourth event
+ * was -- once that fix let `scif5_cmd_transmit_now`'s and `rspi2_
+ * transmit`'s own busy-waits (the latter needing `rspi2.c`, a genuinely
+ * new peripheral) resolve, boot reached previously entirely unanalyzed
+ * firmware (no Ghidra function symbol existed yet at its entry) and
+ * parked on a *different* bit of `MTU2_DSP_PACE_STATUS`'s own byte,
+ * paired with a *different* target register (`0x308`, not `0x30c`) --
+ * confirmed by reading the raw disassembly's actual branch condition
+ * (one of three near-identical-looking wait blocks in the new code
+ * turned out to use the *opposite* branch sense from the other two, a
+ * real, meaningful difference easy to miss skimming rather than reading
+ * closely). Two independent callers arm it (both via a shared helper,
+ * `references_to` confirmed only these two), both with the identical
+ * literal period `0x7d00`/32000 -- unlike the fourth event, this one's
+ * real requested period genuinely is known, so it's honored exactly
+ * (`MTU2_SWTIMER_B_ONESHOT_NS`) rather than approximated. This caller
+ * isn't SCIF5/DSP-comms related (reached via a DMA-descriptor-setup
+ * routine, very plausibly graphics/display given `ui_graphics_lifecycle_
+ * task`'s already-confirmed EGL work) -- confirming this is a genuinely
+ * shared, multi-subsystem software-timeout facility (one counter, several
+ * independent compare/status pairs), not something SCIF5-private that
+ * happened to get reused.
  */
 
 #include "qemu/osdep.h"
@@ -186,6 +210,14 @@ struct RZA1HMtu2State {
      * always "not yet expired". */
     int64_t dsp_pace_deadline_ns;
 
+    /* A second, independent compare-match sharing the same status byte
+     * (`0xFCFF0305`, a different bit) and the same underlying counter
+     * (`0xFCFF0306`) as the one above -- confirmed live 2026-09-09,
+     * reached from a DMA-descriptor-setup routine, not SCIF5 (see file
+     * comment's "A fifth event" paragraph for the derivation and why the
+     * caller's real purpose isn't claimed further than that). */
+    int64_t swtimer_b_deadline_ns;
+
     uint8_t regs[RZA1H_MTU2_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case --
                                      * matches the add_plain_ram_region()
@@ -217,6 +249,18 @@ struct RZA1HMtu2State {
  * tick-for-tick fidelity isn't needed here (same rationale as TGI4A's own
  * MTU2_CH4A_ONESHOT_COUNTS). */
 #define MTU2_DSP_PACE_ONESHOT_NS 50000
+
+/* A second, independent compare-match sharing MTU2_DSP_PACE_STATUS's own
+ * byte (a different bit) -- see file comment's "A fifth event" paragraph. */
+#define MTU2_SWTIMER_B_TARGET 0x308 /* 16-bit; writing this arms the deadline */
+#define MTU2_SWTIMER_B_STATUS_BIT (1 << 0) /* same status byte, MTU2_DSP_PACE_STATUS */
+/* Unlike MTU2_DSP_PACE_ONESHOT_NS, this one's real requested period is
+ * actually known (both call sites request the same literal 0x7d00/32000
+ * -- confirmed via `references_to`, not assumed) -- honored exactly
+ * rather than guessed, at this device's own already-established
+ * MTU2_FREQ_HZ: 32000 / 25000000 = 1.28ms. */
+#define MTU2_SWTIMER_B_ONESHOT_NS ((int64_t)32000 * NANOSECONDS_PER_SECOND \
+                                  / MTU2_FREQ_HZ)
 
 /* 25 MHz -- deliberately NOT ostm.c's own 500 MHz "fast for testing"
  * constant, and not arbitrary: lowered from an original 500 MHz choice,
@@ -304,10 +348,17 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
          * sidesteps needing a live 16-bit counter/wraparound at all, see
          * file comment. Persisted into regs[] once observed expired so a
          * plain memcpy elsewhere (e.g. a wider read spanning this byte)
-         * stays consistent with what this exact read already saw. */
+         * stays consistent with what this exact read already saw. Two
+         * independent bits, two independent deadlines, one shared byte. */
+        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
         if (s->dsp_pace_deadline_ns != INT64_MAX &&
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >= s->dsp_pace_deadline_ns) {
+            now >= s->dsp_pace_deadline_ns) {
             s->regs[offset] |= MTU2_DSP_PACE_STATUS_BIT;
+        }
+        if (s->swtimer_b_deadline_ns != INT64_MAX &&
+            now >= s->swtimer_b_deadline_ns) {
+            s->regs[offset] |= MTU2_SWTIMER_B_STATUS_BIT;
         }
     }
 
@@ -404,6 +455,12 @@ ch4_configure:
         s->dsp_pace_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                   MTU2_DSP_PACE_ONESHOT_NS;
         return;
+    case MTU2_SWTIMER_B_TARGET:
+        memcpy(&s->regs[offset], &value, size);
+        s->regs[MTU2_DSP_PACE_STATUS] &= ~MTU2_SWTIMER_B_STATUS_BIT;
+        s->swtimer_b_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                   MTU2_SWTIMER_B_ONESHOT_NS;
+        return;
     default:
         memcpy(&s->regs[offset], &value, size);
         return;
@@ -451,6 +508,7 @@ static void rza1h_mtu2_reset(DeviceState *dev)
     rza1h_mtu2_stop(&s->ch4a);
     rza1h_mtu2_stop(&s->ch4c);
     s->dsp_pace_deadline_ns = INT64_MAX;
+    s->swtimer_b_deadline_ns = INT64_MAX;
 }
 
 static void rza1h_mtu2_init(Object *obj)

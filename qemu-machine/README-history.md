@@ -1488,3 +1488,103 @@ this session (`ui_graphics_lifecycle_task`, which creates the real EGL window/pi
 Not yet traced further this session -- genuinely new territory, appropriately left for a fresh
 investigation rather than rushed. See `README.md`'s Status section for the concrete resume
 point.
+
+## Status as of the MTU2/RSPI2 session (superseded by README.md's current Status -- kept here
+## verbatim for the narrative trail)
+
+## Status, 2026-09-09 — two more real, previously-unmodeled peripherals found and fixed
+## (a rate-limiter compare-match in MTU2, and RSPI channel 2); boot reaches previously
+## entirely unanalyzed firmware for the first time -- likely graphics/display DMA setup
+
+**Confirmed, solid, foundational (from prior sessions, still true):**
+- A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
+  vendored checkout under `qemu-src/`, gitignored — `setup.sh` recreates it) and boots real,
+  unmodified v1.42 firmware: `base.dat`'s traced sequence runs, the body decompresses, real GIC
+  IRQ delivery works (OSTM0 is `body.bin`'s real tick source — GIC ID 134, `CMP`=32000).
+- **With `tools/build_riic_eeprom_image.py`'s output supplied as RIIC2's backing image** (see
+  "Running it" below), `FUN_2002b29c`'s entire cold-boot-vs-power-state branch decision clears —
+  every EEPROM signature check and the real GPIO power-good gate all resolve correctly.
+- **SCIF3's TXI (transmit-complete) IRQ is real and verified end-to-end** (found and fixed the
+  same day the two bullets below did their work: not wired at all; a level-vs-edge/redundant-
+  raise-is-a-no-op bug matching a class `riic.c` had already hit; and an emulator-only lost-edge
+  artifact). Full three-bug derivation in README-history.md's "SCIF3 TXI made real" section —
+  this Status section only tracks the current, much-further-along state from here on.
+
+**Confirmed, solid, this session — continuing straight on from the SCIF5-responder work above:
+a virtual SCIF5 DSP responder resolved `scif5_send_and_wait_reply`'s reply-ready deadlock (full
+derivation in `scif.c`'s own file comment and README-history.md), and two further real,
+previously-unmodeled peripherals were found and fixed getting past the next two blockers:**
+- **`scif5_cmd_transmit_now`'s own busy-wait turned out to gate on a different flag than the
+  prior resume point assumed** — not the shared ring-active flag, but a real hardware
+  compare-match (`0xFCFF0305` bit 2) that a live 90-second `set_watchpoint` confirmed is never
+  written at all. Fixed in `mtu2.c` (a fourth compare event, modeled as a host-wall-clock
+  deadline rather than a live counter — sidesteps 16-bit wraparound entirely).
+- **Boot then reached a real, previously-untriggered RSPI2 (job-type-3) ring entry** —
+  `rspi2_transmit`'s own busy-wait (`SPSR2` bit 6), a function already fully documented by an
+  earlier session (2026-08-29) but never built. Fixed with a new, minimal `rspi2.c` (TX-ready
+  always set, TX bytes logged only — same permissive philosophy as `mmc.c`'s virtual SD card).
+- **Confirmed load-bearing across 2 independent trials**: both reached genuinely new ground —
+  `0x200600a8`-area code with **no existing Ghidra function symbol at all**, the first time
+  this project has traced execution into previously entirely unanalyzed firmware. A quick look
+  at its containing block shows DMA-descriptor-shaped setup (three chained transfers), very
+  plausibly graphics/display DMA — consistent with `itron_act_tsk`'s already-identified target
+  (`ui_graphics_lifecycle_task`, which creates the real EGL surfaces).
+
+**Active resume point:** a busy-wait in the newly-reached, still-unnamed `0x200600a8`-area code
+— not yet traced this session. Same playbook as always: decompile/name the containing function,
+confirm live what the loop is actually waiting on, before building anything.
+
+## A fifth MTU2 compare event found and fixed (same shared status byte, a different bit); boot
+## reaches a real, pre-existing generic ring-overflow trap in genuinely new territory
+## (2026-09-09, continuing straight on)
+
+Picked up the resume point directly: decompiled/read the raw listing of the still-unnamed
+`0x2006003c`-area function (the one containing `0x200600a8`) in full, rather than just the one
+block already seen.
+
+**The three "near-identical" wait blocks aren't identical -- one has an inverted branch
+condition, a real difference easy to miss skimming.** Blocks 1 and 3 skip their own retry-poll
+when a status halfword's bit `0x200` is *clear* (`beq`); block 2 -- the one execution actually
+reaches -- does the opposite (`bne`), entering the retry-poll precisely when that bit is
+*clear*. Traced block 2's own retry target (`FUN_20360b24` on a literal-pool address) to
+`0xFCFF0305` bit 0 -- the *same* status byte `mtu2.c`'s fourth event (bit 2) already covers,
+paired with a *different* compare-target register (`0xFCFF0308`, not `0x30c`). Confirmed live
+(free-run poll, this project's own established technique) that bit 0 genuinely never sets on
+its own, the same shape every blocker this session has had.
+
+Traced the arming side too (`references_to` found exactly 2 call sites, both via a shared
+helper): both pass the identical literal period `0x7d00`/32000 -- unlike the fourth event, this
+one's real requested period is fully known, so it's honored exactly at this device's own
+already-established `MTU2_FREQ_HZ` (32000/25MHz = 1.28ms) instead of approximated. Confirms
+this is a genuinely shared, multi-subsystem software-timeout facility (one counter, several
+independent compare/status channels) -- this caller isn't SCIF5/DSP-comms related at all
+(reached via the DMA-descriptor-setup routine from the previous section, very plausibly
+graphics/display).
+
+**Built and confirmed live.** Across 2 independent trials, boot now progresses well past this
+point into previously never-reached code, and hits a **real, pre-existing generic
+overflow-protection trap** (`0x200b93fc`, an unconditional infinite loop taking an error code
+in `r0` -- already documented by an earlier session as backing a *different* ring's own
+overflow protection, `FUN_20187bb4`/`FUN_201877e4`, "used well beyond just this one ring").
+
+**Applied this session's own established diagnostic technique** (breakpoint the generic
+ring-push helper itself, capture every hit's caller and ring pointer across a real run) before
+assuming anything: found one single, extremely steady producer (LR `0x20186c67`, ~12 pushes/sec
+across 1092 hits in 90 breakpoint-slowed seconds, zero overflows) feeding a *different* ring
+(`0x20415c60`) than the one that actually overflowed in an un-breakpointed trial (`0x20420120`)
+-- the breakpoint overhead itself likely delays reaching whatever triggers the second ring's own
+overflow, matching this project's own prior finding that pausing execution on every hit changes
+timing enough to mask a real race. A follow-up free-run poll of `0x20420120`'s own header bytes
+(read/write index, a capacity of 16, and what looks like a third, separate "pending" counter)
+showed values cycling in the 5-15 range between 5-second samples, always caught with read==write
+-- consistent with a fast burst-then-drain producer/consumer pair that only occasionally loses
+the race, not a steady rate mismatch like the earlier-diagnosed overflow. `FUN_20186c4c` (the
+caller of both the observed producer and, presumably, whatever feeds `0x20420120`) turned out to
+be a generic "broadcast one event to N registered subscriber rings" dispatcher, not something
+ring-specific -- genuinely new, not-yet-mapped infrastructure.
+
+**Active resume point:** root cause not yet found for the `0x20420120` ring's own overflow --
+same playbook as always, but this one needs a more targeted trace (breakpoint filtered to this
+specific ring pointer, or a tighter polling interval around the observed ~40-second mark) rather
+than the broad producer-trace already tried, which caught the wrong ring's traffic. See
+README.md's Status section for the concrete next step.

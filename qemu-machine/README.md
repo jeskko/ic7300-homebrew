@@ -14,9 +14,9 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — two more real, previously-unmodeled peripherals found and fixed
-## (a rate-limiter compare-match in MTU2, and RSPI channel 2); boot reaches previously
-## entirely unanalyzed firmware for the first time -- likely graphics/display DMA setup
+## Status, 2026-09-09 — a fifth MTU2 compare event found and fixed (same shared status byte
+## as the fourth, a different bit); boot now hits a real, pre-existing generic ring-overflow
+## trap in genuinely new territory, root cause not yet found
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -32,32 +32,36 @@ active resume point.
   artifact). Full three-bug derivation in README-history.md's "SCIF3 TXI made real" section —
   this Status section only tracks the current, much-further-along state from here on.
 
-**Confirmed, solid, this session — continuing straight on from the SCIF5-responder work above:
-a virtual SCIF5 DSP responder resolved `scif5_send_and_wait_reply`'s reply-ready deadlock (full
-derivation in `scif.c`'s own file comment and README-history.md), and two further real,
-previously-unmodeled peripherals were found and fixed getting past the next two blockers:**
-- **`scif5_cmd_transmit_now`'s own busy-wait turned out to gate on a different flag than the
-  prior resume point assumed** — not the shared ring-active flag, but a real hardware
-  compare-match (`0xFCFF0305` bit 2) that a live 90-second `set_watchpoint` confirmed is never
-  written at all. Fixed in `mtu2.c` (a fourth compare event, modeled as a host-wall-clock
-  deadline rather than a live counter — sidesteps 16-bit wraparound entirely).
-- **Boot then reached a real, previously-untriggered RSPI2 (job-type-3) ring entry** —
-  `rspi2_transmit`'s own busy-wait (`SPSR2` bit 6), a function already fully documented by an
-  earlier session (2026-08-29) but never built. Fixed with a new, minimal `rspi2.c` (TX-ready
-  always set, TX bytes logged only — same permissive philosophy as `mmc.c`'s virtual SD card).
-- **Confirmed load-bearing across 2 independent trials**: both reached genuinely new ground —
-  `0x200600a8`-area code with **no existing Ghidra function symbol at all**, the first time
-  this project has traced execution into previously entirely unanalyzed firmware. A quick look
-  at its containing block shows DMA-descriptor-shaped setup (three chained transfers), very
-  plausibly graphics/display DMA — consistent with `itron_act_tsk`'s already-identified target
-  (`ui_graphics_lifecycle_task`, which creates the real EGL surfaces).
+**Confirmed, solid, this session — continuing straight on from the SCIF5-responder/MTU2/RSPI2
+work above (full narrative in README-history.md's last two sections):**
+- **The three "near-identical" wait blocks in the newly-reached `0x2006003c`-area code weren't
+  identical** — one has an inverted branch condition, easy to miss skimming but confirmed by
+  reading the raw listing closely. It gated on a *fifth* MTU2 compare event: the *same* shared
+  status byte (`0xFCFF0305`) the fourth event already covers, a *different* bit (0, not 2),
+  paired with a *different* compare-target register (`0xFCFF0308`, not `0x30c`) — confirmed
+  live (free-run poll) that this bit genuinely never sets on its own either. This one's real
+  requested period *is* known (both call sites use the identical literal `0x7d00`/32000), so
+  it's honored exactly rather than approximated — confirming this is a genuinely shared,
+  multi-subsystem software-timeout facility, and this particular caller isn't SCIF5-related at
+  all (reached via the DMA-descriptor-setup routine, very plausibly graphics/display).
+- **Confirmed load-bearing across 2 independent trials**: boot progresses well past this point
+  into previously never-reached code, and hits a **real, pre-existing generic
+  overflow-protection trap** (already documented by an earlier session as backing a *different*
+  ring's overflow protection — a shared, reused mechanism, not ring-specific).
+- **Applied this session's own established diagnostic technique before assuming anything**:
+  breakpointing the generic ring-push helper found one steady producer (~12 pushes/sec, zero
+  overflows across 1092 breakpoint-slowed hits) — but feeding a *different* ring than the one
+  that actually overflowed in an un-breakpointed trial. The breakpoint overhead itself likely
+  delays reaching whatever triggers the second ring's overflow (this project's own established
+  finding: pausing on every hit changes timing enough to mask a real race). A follow-up poll of
+  the overflowing ring's own header showed values cycling in a burst-then-drain pattern between
+  samples, not a steady climb — a different shape than the earlier-diagnosed rate-mismatch
+  overflow, not yet root-caused.
 
-Full derivation (the MTU2 watchpoint trace, the RSPI2 register confirmation, the new code
-region) in README-history.md's newest section.
-
-**Active resume point:** a busy-wait in the newly-reached, still-unnamed `0x200600a8`-area code
-— not yet traced this session. Same playbook as always: decompile/name the containing function,
-confirm live what the loop is actually waiting on, before building anything.
+**Active resume point:** the `0x20420120` ring's own overflow, root cause not yet found — the
+broad producer-trace already tried caught the wrong ring's traffic; needs a more targeted trace
+(breakpoint filtered to this specific ring pointer, or tighter polling around the observed
+~40-second mark) before building anything.
 
 ## Confirmed peripherals
 
@@ -69,7 +73,7 @@ confirm live what the loop is actually waiting on, before building anything.
 | GPIO/port registers | `gpio.c` | Real (masked set/clear, `PNOT` toggle, live `PPR` pin levels) — `P1_6`/`PDV` (power-fail detector) defaults high, see Status above |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
-| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and a fourth, purely-polled rate-limiter compare-match (`0xFCFF0305`/`0x30c`, no GIC ID — a host-wall-clock deadline, not a live counter) — **all four confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, 2026-09-09), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
+| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine, 2026-09-09), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
@@ -153,13 +157,13 @@ spot-check.
    whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait; a generic RTOS
    job-queue overflow that followed turned out to be a self-inflicted timing artifact, fixed by
    tuning `mtu2.c`'s tick rate; a virtual SCIF5 DSP responder resolved `scif5_send_and_wait_
-   reply`'s own reply-ready deadlock; **`mtu2.c`'s fourth compare event and `rspi2.c` (both
-   2026-09-09) together clear `scif5_cmd_transmit_now`'s own busy-wait and a real RSPI2
-   transmit stage** — see Status above for the full derivation of each. Boot now reaches
-   previously entirely unanalyzed firmware for the first time (`0x200600a8`-area code, no
-   Ghidra function symbol yet, very plausibly graphics/display DMA setup). **Currently blocked
-   on**: a busy-wait in that new code, not yet traced — see "Active resume point" above. Once
-   past enough of this new territory, the original question — does the SD-card update flow
-   reach MMCIF against a *properly* kernel-created task, and would the whole chain accept and
-   boot custom firmware entirely offline — becomes directly retestable with the existing
-   `force_call_fup.py`/`test_fup_scheduling.py` tooling.
+   reply`'s own reply-ready deadlock; `mtu2.c`'s fourth compare event and `rspi2.c` together
+   cleared `scif5_cmd_transmit_now`'s own busy-wait and a real RSPI2 transmit stage; **`mtu2.c`'s
+   fifth compare event (2026-09-09, same shared status byte as the fourth, a different bit)
+   cleared a DMA-descriptor-setup routine's own busy-wait** — see Status above for the full
+   derivation of each. Boot now reaches a real, pre-existing generic ring-overflow trap in
+   genuinely new territory, root cause not yet found. **Currently blocked on**: that overflow
+   — see "Active resume point" above. Once past enough of this new territory, the original
+   question — does the SD-card update flow reach MMCIF against a *properly* kernel-created
+   task, and would the whole chain accept and boot custom firmware entirely offline — becomes
+   directly retestable with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.
