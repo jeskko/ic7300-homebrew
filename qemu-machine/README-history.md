@@ -1828,3 +1828,66 @@ burst is genuinely rare/probabilistic on this specific timescale, consistent wit
 found so far (normal small pending=1 blips drain cleanly within ~0.25s every 10-30s throughout
 both runs; nothing pathological seen outside of an actual overflow). More trials needed to
 actually catch a live burst with the producer watch armed.
+
+**A third producer-capture trial (2026-09-09, continuing) settled that this approach has hit a
+real methodological wall, independent of the clock question**: the overflow hit at t=78.141s,
+but the immediately preceding poll (t=77.918s, 0.223s earlier) showed `pending=0` -- fully
+drained. The *entire* burst (0 to 16, overflow) happened inside that 0.223s gap, likely much
+less once polling overhead is subtracted -- too fast for 100ms-granularity reactive polling to
+ever see an intermediate value and arm the producer breakpoint in time. Since a *continuously*-
+armed breakpoint/watchpoint on this path already independently proved (twice) to mask the bug by
+desynchronizing producer and consumer, "catch it in the act with a breakpoint" is now a dead end
+with the tools available -- reinforcing the clock-realism angle as the more promising direction.
+
+**Real crystal frequency confirmed off the actual schematic, closing the one gap the datasheet
+research left open** (user-supplied, read directly off the IC-7300 service manual's crystal/
+oscillator table): `X301` (48.000 MHz) connects to the main CPU's pins 108/109, labeled
+`USB_X1`/`USB_X2` on Icom's own schematic -- this is an exact, unambiguous match for the RZ/A1H
+manual's **clock mode 1** (48MHz on `USB_X1`, PLL x32), which the manual documents as giving a
+**fixed P0φ = 32.00MHz**, not the 25.00-33.33MHz range clock mode 0 would have left open. Real,
+hardware-confirmed, not a guess. Elegant cross-check: `32000 / 32,000,000 Hz = exactly 1.000ms`
+-- OSTM0's own real tick period would be a clean, obviously-deliberate 1ms RTOS tick, strongly
+reinforcing that this is the right number (Icom's own engineers very likely chose `CMP=32000`
+specifically to land on that round figure). The other four crystals were also identified and
+ruled out as irrelevant to this question: `X621`/6MHz feeds the USB hub (`TUSB2046`), `X661`/
+12MHz feeds the USB audio codec (`PCM2901`), `X901`/12.288MHz feeds the DSP, `X1201`/41.344MHz
+feeds the FPGA -- none of these are the main CPU's own P0φ domain.
+
+## The fix, confirmed live across two independent full-length trials: real OSTM_FREQ_HZ +
+## `-icount shift=auto` together (2026-09-09, continuing straight on)
+
+Tested the two variables separately, per this project's own "one change at a time, confirm
+live" discipline, rather than assuming the combined reasoning was right without checking.
+
+**Step 1: `OSTM_FREQ_HZ` alone, no `-icount`.** Changed to the confirmed-real 32,000,000 (from
+the 500MHz placeholder). Rebuilt, ran a trial: boot proceeded at a normal wall-clock pace (no
+new hangs, no regressions to any already-working milestone), but the overflow still happened
+(t=44.18s) -- a clean negative result, exactly matching the live-reasoned prediction that the
+constant alone isn't enough while `QEMU_CLOCK_VIRTUAL` stays tied 1:1 to real host wall-clock
+time (unthrottled TCG can still burst through unrealistic amounts of guest work inside any
+given real-time gap, regardless of how realistic that gap's own *length* is).
+
+**Step 2: added `-icount shift=auto`** (QEMU's instruction-count-paced virtual time, throttling
+guest execution to a chosen rate rather than letting TCG run at full host speed) on top of the
+same real `OSTM_FREQ_HZ`. Added as an opt-in `ICOUNT` env var to `tools/
+trace_job_ring_overflow.py` for testing rather than hardcoding it, so the tool stays useful for
+comparison. **Two independent trials, 130s and 160s, both completed their full duration with
+zero overflows** -- a real result, not a fluke: every previous non-icount trial (this whole
+session, roughly a dozen across every tool built) hit the overflow somewhere in the 35-78s
+range, so two clean full-length runs well past that window is strong evidence, matching this
+project's own established multi-trial confirmation bar. Added a heartbeat print (every 15s
+regardless of `pending` changes) to both trials specifically to rule out the boring false
+positive (boot silently stalling somewhere new instead of genuinely progressing) -- PC kept
+advancing and the ring kept showing its normal healthy small blip-then-drain pattern throughout
+both full runs, not a stall.
+
+**This is the fix.** `OSTM_FREQ_HZ` is being kept at the real, schematic-confirmed 32,000,000
+(reverting to 500MHz would just be reintroducing a known-wrong placeholder for no reason).
+`-icount shift=auto` is not yet wired in as this machine's own default launch flag anywhere
+(README.md's "Running it" section needs updating, and it's worth checking whether it should
+just always be passed) -- and per the schematic-research angle opened the same session, the
+other timer-paced peripherals (`mtu2.c`'s 25MHz, `dmac.c`'s arbitrary 1000ns completion delay,
+`scif.c`/`riic.c`/`rspi2.c`'s own clock assumptions) haven't been re-validated under `-icount`
+yet either -- each was tuned/chosen against the old, unthrottled timing model, so any of them
+could plausibly need a similar real-value correction now that the machine's overall timing
+philosophy has changed. Not yet done, flagged as the natural next step.

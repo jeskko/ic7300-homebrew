@@ -71,10 +71,24 @@ struct RZA1HOstmState {
     int64_t start_ns; /* QEMU_CLOCK_VIRTUAL time of the last TS write */
 };
 
-/* 500 MHz -- chosen only so a large software timeout threshold (like the
- * ~22.3M-count one traced in this file's own comment above) resolves in a
- * reasonable wall-clock testing time; not real-clock-accurate regardless. */
-#define OSTM_FREQ_HZ 500000000
+/* EXPERIMENT, 2026-09-09 -- was 500MHz (chosen only so a large software
+ * timeout threshold, like the ~22.3M-count one traced in this file's own
+ * comment above, resolves in a reasonable wall-clock testing time; not
+ * real-clock-accurate). Now the real, hardware-confirmed value: the IC-7300's
+ * own schematic shows X301 (48.000MHz) on the main CPU's USB_X1/USB_X2 pins
+ * (108/109) -- an exact match for the RZ/A1H manual's clock mode 1 (48MHz on
+ * USB_X1, PLL x32), which the manual (Section 11.3.2 + Table 6.3) documents
+ * as giving a fixed P0-phi = 32.00MHz, OSTM's real count clock. Elegant
+ * cross-check: CMP=32000 at this frequency is exactly 1.000ms, a clean RTOS
+ * tick period -- strong independent confirmation this is the right number.
+ * Testing live whether this alone helps or worsens qemu-machine/README-
+ * history.md's newest job-ring-overflow thread (without QEMU -icount, this
+ * makes OSTM's real GIC IRQ ~15.6x less frequent in wall-clock terms while
+ * TCG keeps executing guest code at unthrottled host speed in between --
+ * reasoned live to plausibly make a burst-vs-drain-rate mismatch *worse*,
+ * not better; not yet confirmed either way). See README-history.md for the
+ * result once tested -- revert to 500000000 if this doesn't hold up. */
+#define OSTM_FREQ_HZ 32000000
 
 static uint32_t rza1h_ostm_cnt(RZA1HOstmState *s)
 {

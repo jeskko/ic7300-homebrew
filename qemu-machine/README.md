@@ -14,11 +14,10 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — the `0x20420120` job-ring's own struct, producer, and consumer fully
-## derived; its overflow reproduced twice with exact numbers via a new low-perturbation tracing
-## technique; two hypotheses (a DMAC completion cascade, an IRQ-mask window) tested live and
-## both corrected/ruled out by a second trial each -- the drain trigger fires reliably, so the
-## real question is now sharper: what causes a ~16-entry burst inside a single ~200ms gap
+## Status, 2026-09-09 — the `0x20420120` job-ring overflow is FIXED: real OSTM clock (confirmed
+## off the actual schematic, 32.00MHz) + QEMU `-icount shift=auto` together, confirmed clean
+## across two full-length trials (130s/160s, zero overflows, vs. every prior trial hitting it
+## in the 35-78s range) -- see below for the derivation and what's still open
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -91,13 +90,33 @@ a live check behind it). A first trial looked like a clean hit (overflow only 0.
 sequence occurred at almost the same boot offset, but the drain trigger (`irq_context_switch_
 id0`) then fired **142 times over the next 30 seconds** before an overflow finally happened —
 proving the consumer runs reliably (~every 200ms) and ruling out simple starvation-by-masking
-as the general cause. **Sharper resume point**: the real question isn't "why doesn't the
-consumer run" (it does, regularly) — it's what makes ~16 independent pushes land inside a
-single one of those ~200ms gaps, at an unpredictable point roughly 30–65+ seconds into this
-boot phase. Two leads remain open: (1) what consumes `FUN_2005ff1c`'s three "descriptor ready"
-bit-sets; (2) `tools/trace_irq_mask_window.py`'s id0-hit-counting technique, reusable to
-correlate the drain trigger's own firing pattern against `pending` for whichever new hypothesis
-comes next. See README-history.md's newest two sections for the full derivation (including a
+as the general cause. A third trial then showed the whole burst (near-empty to overflow)
+completing in under ~0.22s of wall-clock time — too fast for reactive polling to ever catch a
+producer breakpoint in time, closing off the "catch it in the act" approach as a dead end given
+the tools available.
+
+**The actual fix, found by pivoting to a clock-realism angle instead (user-supplied schematic
+research was the key unlock): confirmed live across two full trials.** The IC-7300's own
+schematic shows crystal `X301` (48.000MHz) on the main CPU's `USB_X1`/`USB_X2` pins — an exact,
+unambiguous match for the RZ/A1H manual's clock mode 1, which gives a **fixed, real P0φ =
+32.00MHz** (not the 25-33.33MHz range clock mode 0 would have left open). `OSTM_FREQ_HZ` had
+always been an explicitly-flagged 500MHz "fast for testing" placeholder — changing it to the
+real 32,000,000 *alone* didn't fix the overflow (tested live, a clean negative result, matching
+the live-reasoned prediction that QEMU's default wall-clock-paced virtual time means a more
+realistic *tick rate* alone doesn't stop unthrottled TCG from bursting through unrealistic
+amounts of guest work inside any given real-time gap). Adding **`-icount shift=auto`** (QEMU's
+instruction-count-paced virtual time) on top of the same real clock **did**: two independent
+trials (130s, 160s) both completed their full duration with zero overflows, vs. every one of
+roughly a dozen non-icount trials this session hitting the overflow somewhere in the 35-78s
+range. Confirmed genuine forward progress, not a stall, via an added heartbeat print.
+
+**Not yet done, natural next steps**: wire `-icount shift=auto` into README.md's own "Running
+it" example as the actual recommended way to run this machine (see below); re-validate the
+*other* timer-paced peripherals (`mtu2.c`'s 25MHz, `dmac.c`'s 1000ns completion delay, `scif.c`/
+`riic.c`/`rspi2.c`'s own clock assumptions) under the new icount-based timing model, since each
+was tuned against the old, unthrottled model and could plausibly need its own correction now;
+and continue toward the original SD-card/VFS testing goal now that this specific blocker is
+resolved. See README-history.md's newest sections for the full derivation (including a
 documented `pkill -f` self-kill footgun any new trace script should avoid).
 
 ## Confirmed peripherals
@@ -110,7 +129,7 @@ documented `pkill -f` self-kill footgun any new trace script should avoid).
 | GPIO/port registers | `gpio.c` | Real (masked set/clear, `PNOT` toggle, live `PPR` pin levels) — `P1_6`/`PDV` (power-fail detector) defaults high, see Status above |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
-| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine, 2026-09-09), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
+| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine, 2026-09-09), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough). **`MTU2_FREQ_HZ`'s 25MHz was chosen empirically, not derived — not yet re-validated under `-icount` (see Status above), a real candidate for its own re-check** |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
@@ -172,8 +191,16 @@ emu/.venv/bin/python3 qemu-machine/tools/build_riic_eeprom_image.py  # produces 
 qemu-machine/qemu-src/build/qemu-system-arm -M rz-a1h -nographic \
     -kernel qemu-machine/flash.bin -serial none -monitor none \
     -global rza1h-riic.image=qemu-machine/riic2_eeprom.img \
+    -icount shift=auto \
     -qmp unix:/tmp/qemu.sock,server,nowait   # or -s -S for GDB
 ```
+
+**`-icount shift=auto` is now recommended, not optional**, for any boot test that needs to
+reach past ~30 seconds of boot time reliably: without it, `body.bin` hits a real job-ring
+overflow trap (`0x200b93fc`) somewhere in the 35-78s range with high, near-total reliability
+(a genuine emulation-timing-realism gap, not a firmware bug — see Status below and
+README-history.md's newest sections for the full derivation). Confirmed clean across two full
+130s/160s trials with it enabled, vs. every trial without it hitting the trap.
 
 Omit the `-global rza1h-riic.image=...` line to boot with an empty virtual EEPROM instead — a
 real, valid configuration (matches how earlier sessions tested), but boot will stop much
@@ -213,12 +240,14 @@ spot-check.
    cleared `scif5_cmd_transmit_now`'s own busy-wait and a real RSPI2 transmit stage; **`mtu2.c`'s
    fifth compare event (2026-09-09, same shared status byte as the fourth, a different bit)
    cleared a DMA-descriptor-setup routine's own busy-wait** — see Status above for the full
-   derivation of each. Boot now reaches a real, pre-existing generic ring-overflow trap in
-   genuinely new territory; **the ring's own struct/producer/consumer are now fully derived and
-   its overflow reproduced live with exact numbers, but the real burst producer is still open**
-   (2026-09-09 follow-up — a DMAC-completion-cascade hypothesis was live-tested and ruled out).
-   **Currently blocked on**: that overflow
-   — see "Active resume point" above. Once past enough of this new territory, the original
+   derivation of each. Boot then reached a real, pre-existing generic ring-overflow trap in
+   genuinely new territory — **fully resolved, 2026-09-09**: not a firmware bug, but a genuine
+   emulation-timing-realism gap (unthrottled TCG bursting through unrealistic amounts of guest
+   work between OSTM's own wall-clock-paced real GIC IRQ), fixed by pairing OSTM's real,
+   schematic-confirmed clock (32.00MHz) with QEMU's `-icount shift=auto`, confirmed clean across
+   two full 130s/160s trials — see Status above and README-history.md's newest sections for the
+   full derivation. **No longer a blocker** — always launch with `-icount shift=auto` (see
+   "Running it" above) for any boot test past ~30 seconds. Now that this is clear, the original
    question — does the SD-card update flow reach MMCIF against a *properly* kernel-created
    task, and would the whole chain accept and boot custom firmware entirely offline — becomes
    directly retestable with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.

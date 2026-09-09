@@ -69,14 +69,19 @@ OVERFLOW_TRAP = 0x200b93fc
 import os
 
 DMAC_DEBUG_LOG = os.environ.get("DMAC_DEBUG_LOG")
+ICOUNT = os.environ.get("ICOUNT")  # e.g. "shift=auto" -- see README-history.md's clock-realism
+                                    # thread, 2026-09-09, for why this is being tried
 
 
 def launch_qemu() -> subprocess.Popen:
     stderr_target = open(DMAC_DEBUG_LOG, "w") if DMAC_DEBUG_LOG else subprocess.DEVNULL
+    args = [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
+            "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234",
+            "-global", f"rza1h-riic.image={RIIC_IMAGE}"]
+    if ICOUNT:
+        args += ["-icount", ICOUNT]
     return subprocess.Popen(
-        [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
-         "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234",
-         "-global", f"rza1h-riic.image={RIIC_IMAGE}"],
+        args,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_target,
     )
 
@@ -114,6 +119,7 @@ def main():
 
         start = time.time()
         last_pending = None
+        last_heartbeat = -1
         overflowed = False
         samples = 0
         while time.time() - start < total_seconds:
@@ -138,10 +144,14 @@ def main():
             hdr = read_ring_header(g)
             samples += 1
             in_fine = fine_start is not None and elapsed_before >= fine_start
-            if hdr["pending"] != last_pending or in_fine:
+            heartbeat = int(elapsed) % 15 == 0 and int(elapsed) != int(last_heartbeat)
+            if hdr["pending"] != last_pending or in_fine or heartbeat:
+                tag = "  (heartbeat, no pending change)" if heartbeat and hdr["pending"] == last_pending else ""
                 print(f"t={elapsed:6.3f}s  pc={pc:#010x} lr={regs['r14']:#x}  "
-                      f"header={hdr}  (stop={stop!r})")
+                      f"header={hdr}  (stop={stop!r}){tag}")
                 last_pending = hdr["pending"]
+                if heartbeat:
+                    last_heartbeat = elapsed
 
             g.cont()
 
