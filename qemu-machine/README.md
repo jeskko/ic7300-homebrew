@@ -19,9 +19,13 @@ active resume point.
 ## itself isn't yet a fully reliable way to reach deep boot milestones: DMAC's own completion
 ## wait can stall under it (ported to `ptimer`, a real improvement but not sufficient alone), and
 ## a *different* fixed-shift setting that avoids that stall just relocates the same class of
-## problem to a different busy-wait (`scif5_wait_hsk1_ready`) instead of eliminating it. Not yet
-## root-caused; the original ring-overflow fix is unaffected and still stands. MTU2's own real
-## clock (also 32.00MHz) confirmed too, not yet re-tested given this open issue. See below.
+## problem to a different busy-wait (`scif5_wait_hsk1_ready`) instead of eliminating it. A further
+## diagnostic confirmed the DMAC completion mechanism itself works (ptimer fires, the real ISR
+## runs) yet the exact same single code path still stalls depending on *how it's observed* —
+## pointing at `-icount shift=auto`'s own adaptive tuning as the likely culprit, not yet confirmed
+## against QEMU's own source. Not yet root-caused; the original ring-overflow fix is unaffected
+## and still stands. MTU2's own real clock (also 32.00MHz) confirmed too, not yet re-tested given
+## this open issue. See below and README-history.md's newest section for the concrete next steps.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -146,13 +150,27 @@ demonstrably fails faster and harder on a different wait. SCIF/RIIC/RSPI2 were a
 (background research) and confirmed to have no timing-sensitive constants at all currently —
 nothing to correct there regardless of how this resolves.
 
-**Not yet done, natural next steps**: root-cause the general icount-cooperation issue (why a
-slice boundary/timer check seemingly never happens for *some* tight busy-wait loops under
-either shift setting tried) — likely needs genuine QEMU icount internals research, not another
-device-level fix; re-validate `mtu2.c`'s new 32MHz value once a reliable long-boot
-configuration exists; and continue toward the original SD-card/VFS testing goal once that's
-resolved. See README-history.md's newest sections for the full derivation (including a
-documented `pkill -f` self-kill footgun any new trace script should avoid).
+**Follow-up diagnostic, handoff prep for a new session**: confirmed via temporary debug
+instrumentation (reverted after) that DMAC's `ptimer` completion callback fires correctly and
+promptly, and confirmed via a live GDB breakpoint that the real ISR (`FUN_200b5b90`) genuinely
+gets entered — ruling out "the timer/IRQ mechanism itself never fires" as the explanation.
+Yet in a wall-clock-polling trial the *same* single code path (`FUN_200b5ea4` has exactly one
+real caller, confirmed via `references_to`) reliably stalls, while under a light-breakpoint
+diagnostic it completes in under a second. **Refined, checkable hypothesis**: `-icount
+shift=auto`'s own adaptive tuning is likely stateful (adjusts based on observed workload over
+time), so different observation methods leave it in a different internal state by the time
+this code runs — not yet confirmed against QEMU's own source.
+
+**Not yet done, concrete next steps for a fresh session (cheapest first)**: (1) read QEMU's own
+vendored `-icount shift=auto` implementation to confirm/refute the stateful-auto-tuner theory;
+(2) reproduce using `-d int,exec` trace logging or QMP instead of GDB, to see if the stall still
+happens under a non-GDB observation method; (3) try a fixed shift value (not `1`, which broke a
+different wait) to remove the state-dependency; (4) if still stuck, read `qemu-src/system/cpu-
+timers.c`/`accel/tcg/cpu-exec.c`'s icount deadline handling — genuine QEMU internals research at
+that point. Once resolved: re-validate `mtu2.c`'s new 32MHz value, then continue toward the
+original SD-card/VFS testing goal. See README-history.md's newest section for the full
+derivation (including a documented `pkill -f` self-kill footgun any new trace script should
+avoid).
 
 ## Confirmed peripherals
 
@@ -209,6 +227,14 @@ documented `pkill -f` self-kill footgun any new trace script should avoid).
   entry to count how often the ring's drain trigger actually fires in a given window — the
   technique that found the drain trigger fires reliably (~every 200ms) even right before an
   overflow, ruling out simple starvation. See README-history.md's newest section.
+- **`tools/trace_dmac_isr.py`** (new, 2026-09-09) — two low-frequency breakpoints (the real
+  DMAINT0 ISR entry, `FUN_200b5ea4`'s own wait-loop check) to check whether the DMAC/icount
+  stall's ISR genuinely gets entered at all. Confirmed it does — the puzzle is why the *same*
+  single code path stalls under wall-clock polling but not under this diagnostic. Also add
+  `qemu-machine/src/dmac.c`'s completion path back the same temporary `fprintf` debug lines this
+  session used (armed/complete timestamps to `DMAC_DEBUG_LOG`, see git history — reverted after
+  use, not left in tracked source) if re-confirming the completion mechanism itself is needed.
+  See README-history.md's newest section for the full diagnostic and concrete next steps.
 - **`patches/hw-arm-build.patch`** — the small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in the vendored QEMU checkout.
 - **`setup.sh`** — idempotent: clones QEMU `v11.1.1` (shallow) if missing, applies the patch,

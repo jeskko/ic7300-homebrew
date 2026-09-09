@@ -1990,3 +1990,71 @@ internals research (why does a slice boundary / timer check seemingly never happ
 tight busy-wait loops under either shift setting tried), or a different overall strategy for
 long-running boot tests than blanket `-icount`. Not resolved this session -- flagged honestly
 rather than claimed fixed.
+
+## Handoff prep for a new session: one more diagnostic on the DMAC/icount stall, real progress
+## but a genuine, honestly-unresolved puzzle -- not closed out (2026-09-09, continuing straight on)
+
+Before handing this off, did one more cheap, targeted diagnostic to sharpen the resume point
+rather than leave it at "not yet root-caused."
+
+**Confirmed via temporary debug instrumentation (added to `dmac.c`'s completion path, reverted
+immediately after -- zero trace left in tracked source) that the completion mechanism itself
+works under `-icount shift=auto`**: reproduced the original stall scenario (default launch, the
+now-`ptimer`-based `dmac.c`) with `DMAC_DEBUG_LOG` capturing both the "armed" and "complete"
+events. The completion callback fired only ~67 real microseconds after being armed -- the
+one-shot delay resolves essentially instantly, and `qemu_irq_pulse()` executes right after.
+**This rules out "the ptimer callback never fires" as the mechanism** -- a real, previously
+untested fact, not an assumption.
+
+**Then checked the next link with a live GDB breakpoint on the real DMAINT0 ISR
+(`FUN_200b5b90`, already confirmed by an earlier session)**: built `tools/trace_dmac_isr.py`
+(two low-frequency breakpoints -- the ISR entry, and `FUN_200b5ea4`'s own wait-loop check,
+the latter disarmed after its first hit to avoid reintroducing per-push-frequency masking).
+**The ISR genuinely was entered** -- hit at `t=3.731s`, with the wait-loop check itself reached
+at `t=3.937s`, ~0.2s later. In this specific 40-second trial, **the stall did not reproduce at
+all** -- no overflow trap, no further unexpected stops, for the entire remaining ~36 seconds.
+
+**A genuine puzzle, checked immediately rather than left dangling**: this diagnostic run's ISR
+hit at `t≈3.7s` is far earlier than every wall-clock-polling trial's own observed stall onset
+(consistently `t≈14-16s` in every prior trial that hit this exact address, `0x200b5f28`).
+`references_to` on `FUN_200b5ea4` confirms **exactly one real caller** (`0x2002b060`, inside
+`cold_boot_hw_init`, as expected) -- ruling out "two different invocations, one that completes
+fast and a later one that stalls" outright. This is the *same single* call, just reached at a
+very different real wall-clock time depending on what observation technique preceded it.
+
+**Refined hypothesis, better supported now that the alternative is ruled out**: something about
+the *accumulated* difference between this diagnostic's own two low-frequency breakpoints (set
+once, mostly idle) and the wall-clock-polling trials' own continuous `interrupt()`/`read()`/
+`cont()` cycle (every 0.25-1s from `t=0` onward) changes how fast boot reaches this point *and*
+what happens once it does -- plausibly because `-icount shift=auto` is a *stateful, adaptive*
+mechanism (it tunes its own shift value based on observed workload over time), so the specific
+sequence of pauses/observations *before* reaching this code could leave the auto-tuner in a
+different internal state by the time the DMA arm+wait actually runs, even though the wait's own
+logic and the DMAC device model are identical either way. Not confirmed -- QEMU's own `-icount`
+auto-tuning implementation (vendored under `qemu-src/`) would need reading to verify this
+mechanism exists as described, but it's a concrete, checkable claim, not a vague gesture.
+
+**Concrete next steps for a fresh session, in the order they're cheapest to try**:
+1. Read QEMU's own vendored `-icount shift=auto` implementation (search `qemu-src/system/` and
+   `qemu-src/accel/tcg/` for `icount`-related adaptive-shift logic) to confirm or refute the
+   "stateful auto-tuner" mechanism above -- this is the most direct way to explain why observation
+   method changes the outcome for the *identical* single code path.
+2. Reproduce with a technique that observes without touching GDB's breakpoint/pause machinery at
+   all -- e.g. QEMU's own `-d int,exec` trace flags to a log file (already used elsewhere in this
+   project's history for exactly this "observe without perturbing" need), or QMP monitor commands
+   instead of the GDB stub -- to see whether the stall reproduces under an entirely different,
+   non-GDB observation method, or whether *any* form of pausing avoids it (which would further
+   support the stateful-auto-tuner theory over a GDB-specific one).
+3. Try a **fixed** (non-auto) shift value tuned specifically to still be large enough to avoid
+   the earlier `scif5_wait_hsk1_ready` stall `shift=1` caused (README-history.md's prior section)
+   -- if a stateful auto-tuner really is the mechanism, a fixed shift removes the state-dependency
+   entirely and should make the outcome reproducible one way or the other, rather than varying by
+   observation method.
+4. If genuinely stuck after all of those: read `qemu-src/system/cpu-timers.c`/`accel/tcg/cpu-
+   exec.c` (icount budget/deadline handling) for how a hard IRQ signaled mid-slice actually gets
+   serviced -- the point where this stops being project-specific and starts being real QEMU
+   internals research, per the prior session's own assessment.
+
+`tools/trace_dmac_isr.py` (new) is kept as a reusable diagnostic, and `references_to` on
+`FUN_200b5ea4` (or any other suspected multi-invocation site) is worth reaching for early before
+assuming a stall is code-path-specific rather than timing/state-dependent.
