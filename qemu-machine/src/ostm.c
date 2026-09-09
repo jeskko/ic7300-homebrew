@@ -57,6 +57,7 @@
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HOstmState, RZA1H_OSTM)
 
@@ -126,6 +127,9 @@ static void rza1h_ostm_write(void *opaque, hwaddr offset, uint64_t value,
         s->cmp = value;
         break;
     case 0x14: /* TS -- start */
+        rza1h_debug("ostm", "TS: started, cmp=%u (periodic -- own ticks not logged, "
+                   "see rza1h_debug.h's own \"boundary events, not noise\" design)",
+                   s->cmp);
         s->start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         ptimer_transaction_begin(s->timer);
         ptimer_set_limit(s->timer, s->cmp ? s->cmp : 1, 1);
@@ -133,6 +137,7 @@ static void rza1h_ostm_write(void *opaque, hwaddr offset, uint64_t value,
         ptimer_transaction_commit(s->timer);
         break;
     case 0x18: /* TT -- stop */
+        rza1h_debug("ostm", "TT: stopped");
         ptimer_transaction_begin(s->timer);
         ptimer_stop(s->timer);
         ptimer_transaction_commit(s->timer);

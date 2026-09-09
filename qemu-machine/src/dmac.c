@@ -92,6 +92,7 @@
 #include "system/address-spaces.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HDmacState, RZA1H_DMAC)
 
@@ -139,6 +140,9 @@ static void rza1h_dmac_ch0_complete(void *opaque)
     memcpy(&dst, &s->regs[DMAC_N0DA_0], 4);
     memcpy(&count, &s->regs[DMAC_N0TB_0], 4);
 
+    rza1h_debug("dmac", "ch0 complete: src=%#x dst=%#x count=%u, pulsing DMAINT0",
+               src, dst, count);
+
     if (count > 0) {
         g_autofree uint8_t *buf = g_malloc(count);
 
@@ -159,6 +163,8 @@ static void rza1h_dmac_write(void *opaque, hwaddr offset, uint64_t value,
 
     memcpy(&s->regs[offset], &value, size);
     if (offset == DMAC_N0TB_0) {
+        rza1h_debug("dmac", "ch0 armed: N0TB_0 write count=%u -- ptimer set for %d ns",
+                   (unsigned)value, DMAC_COMPLETE_DELAY_NS);
         ptimer_transaction_begin(s->complete_timer);
         ptimer_set_count(s->complete_timer, DMAC_COMPLETE_DELAY_NS);
         ptimer_run(s->complete_timer, 1); /* oneshot */

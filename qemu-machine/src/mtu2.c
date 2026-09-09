@@ -176,6 +176,7 @@
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HMtu2State, RZA1H_MTU2)
 
@@ -359,12 +360,16 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
         if (s->dsp_pace_deadline_ns != INT64_MAX &&
-            now >= s->dsp_pace_deadline_ns) {
+            now >= s->dsp_pace_deadline_ns &&
+            !(s->regs[offset] & MTU2_DSP_PACE_STATUS_BIT)) {
             s->regs[offset] |= MTU2_DSP_PACE_STATUS_BIT;
+            rza1h_debug("mtu2", "dsp_pace expired (0x305 bit 2 now set)");
         }
         if (s->swtimer_b_deadline_ns != INT64_MAX &&
-            now >= s->swtimer_b_deadline_ns) {
+            now >= s->swtimer_b_deadline_ns &&
+            !(s->regs[offset] & MTU2_SWTIMER_B_STATUS_BIT)) {
             s->regs[offset] |= MTU2_SWTIMER_B_STATUS_BIT;
+            rza1h_debug("mtu2", "swtimer_b expired (0x305 bit 0 now set)");
         }
     }
 
@@ -460,12 +465,16 @@ ch4_configure:
         s->regs[MTU2_DSP_PACE_STATUS] &= ~MTU2_DSP_PACE_STATUS_BIT;
         s->dsp_pace_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                   MTU2_DSP_PACE_ONESHOT_NS;
+        rza1h_debug("mtu2", "dsp_pace armed (0x305 bit 2), deadline +%d ns",
+                   MTU2_DSP_PACE_ONESHOT_NS);
         return;
     case MTU2_SWTIMER_B_TARGET:
         memcpy(&s->regs[offset], &value, size);
         s->regs[MTU2_DSP_PACE_STATUS] &= ~MTU2_SWTIMER_B_STATUS_BIT;
         s->swtimer_b_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                    MTU2_SWTIMER_B_ONESHOT_NS;
+        rza1h_debug("mtu2", "swtimer_b armed (0x305 bit 0), deadline +%lld ns",
+                   (long long)MTU2_SWTIMER_B_ONESHOT_NS);
         return;
     default:
         memcpy(&s->regs[offset], &value, size);
@@ -485,6 +494,7 @@ static void rza1h_mtu2_ch3a_tick(void *opaque)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
 
+    rza1h_debug("mtu2", "ch3 TGI3A compare-match (GIC 154)");
     s->regs[MTU2_TSR_3] |= (1 << s->ch3a.bit);
     rza1h_mtu2_update_irq(s, &s->ch3a);
 }
@@ -493,6 +503,7 @@ static void rza1h_mtu2_ch4a_tick(void *opaque)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
 
+    rza1h_debug("mtu2", "ch4 TGI4A compare-match (GIC 159)");
     s->regs[MTU2_TSR_4] |= (1 << s->ch4a.bit);
     rza1h_mtu2_update_irq(s, &s->ch4a);
 }
@@ -501,6 +512,7 @@ static void rza1h_mtu2_ch4c_tick(void *opaque)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
 
+    rza1h_debug("mtu2", "ch4 TGI4C compare-match (GIC 161)");
     s->regs[MTU2_TSR_4] |= (1 << s->ch4c.bit);
     rza1h_mtu2_update_irq(s, &s->ch4c);
 }

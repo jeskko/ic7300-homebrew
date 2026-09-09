@@ -2058,3 +2058,207 @@ mechanism exists as described, but it's a concrete, checkable claim, not a vague
 `tools/trace_dmac_isr.py` (new) is kept as a reusable diagnostic, and `references_to` on
 `FUN_200b5ea4` (or any other suspected multi-invocation site) is worth reaching for early before
 assuming a stall is code-path-specific rather than timing/state-dependent.
+
+## The "DMAC/icount stall" was never a real DMA or `-icount` bug -- it's a GDB-remote-stub
+## reliability artifact, confirmed by removing GDB from the loop entirely (2026-09-09, new session)
+
+Picked up exactly where the prior session's own "concrete next steps" list left off, in order.
+Step 1 (read QEMU's own `-icount shift=auto` implementation): confirmed straight from
+`qemu-src/accel/tcg/icount-common.c` that the adaptive tuner genuinely is stateful --
+`icount_adjust()` fires every real 1000ms off `QEMU_CLOCK_VIRTUAL_RT` (a clock that keeps
+advancing in real time even while the vCPU is `vm_stop()`ped) and ratchets `icount_time_shift`
+up/down based on drift between executed-icount-as-ns and real elapsed time, capped at
+`MAX_ICOUNT_SHIFT` (10). Also found, from `qemu-src/accel/tcg/tcg-accel-ops-icount.c`, that
+`icount_get_limit()` converts the nearest pending `QEMU_CLOCK_VIRTUAL` timer deadline into an
+*instruction budget* via `icount_round()` (dividing by `2^shift`) -- confirming the theory was at
+least mechanically plausible. This made the stateful-auto-tuner theory look like the answer.
+
+**Live testing immediately complicated that picture, then overturned it entirely.** A new
+diagnostic (`tools/trace_dmac_icount_shift.py`) layered the *exact* periodic `interrupt()`/
+`cont()` wall-clock cadence the original stall-observing scripts use on top of light breakpoints,
+sustained for a full 240s (well past the 130-300s range where the stall was previously found) --
+clean, healthy progress the whole time, no stall. This directly refuted "periodic GDB pausing
+alone causes it" (step 2 of the prior session's plan, in spirit). A follow-up genuinely
+hands-off free run (`tools/trace_dmac_hands_off.py`, zero GDB interaction after the initial
+continue, checked only via external `ps`) ran clean for 347s too -- but `ps` CPU% alone can't
+distinguish "still making real progress" from "pinned in the wait the whole time", so this wasn't
+decisive on its own.
+
+**The decisive test bracketed the wait's own natural exit instead of guessing at proxies.**
+Reading `FUN_200b5ea4`'s raw listing found the real structure: two internal waits, not one --
+loop 1 (`0x200b5f00`-`0x14`, waiting for a *shared* busy flag to go idle before starting) then an
+arm step (`FUN_200b5dc0`, which itself sets that flag busy) then loop 2 (`0x200b5f28`-`30`, the
+actual completion wait, falling straight through to the function's real return at `0x200b5f34`
+once it clears). `tools/trace_dmac_wait_completion.py`/`_completion2.py` set exactly one (then
+two) breakpoints at these natural exits, nothing at or near the loops themselves, and free-ran
+otherwise untouched. **Two full 500s trials: `LOOP1_EXIT` (`0x200b5f18`) fired quickly (t=3.8s,
+confirming the transfer gets armed just fine -- not a shared-resource deadlock), but
+`DMAC_WAIT_RETURN` (`0x200b5f34`) never fired in either trial.** This looked like rock-solid
+confirmation that the *specific* arm-to-completion path was the real, narrow blocker -- Case B
+from a two-case framework (Case A: stuck waiting for a *prior* user of the shared flag; Case B:
+own transfer armed, completion never comes back) laid out mid-session while explaining the
+mechanism to the user.
+
+**Then a completely independent verification method (host-side-only instrumentation, zero GDB
+involvement) directly contradicted that "confirmation".** Added temporary `fprintf`-based debug
+logging straight into `dmac.c`'s own `rza1h_dmac_write()`/`rza1h_dmac_ch0_complete()` (guarded by
+`DMAC_DEBUG_LOG`, same disposable-instrumentation pattern earlier sessions already used and
+reverted for this exact device) -- logging the arm write, the ptimer firing, the IRQ pulse, and
+any guest write back to `CHCTRL_0` (which only the real ISR, `FUN_200b5b90`, ever writes, so
+seeing it is direct proof the *guest's own ISR code* executed, not just that the host's ptimer
+callback fired). **Ran completely free of any gdbstub at all** (no `-S`, no `-gdb` in the QEMU
+invocation whatsoever) -- the whole arm -> ptimer-fire -> IRQ-pulse -> guest-ISR-runs-and-acks
+chain completed in **under 1 millisecond of real time**, reproduced identically across 8 separate
+trials. This includes trials that individually re-added every variable suspected of mattering --
+`-gdb` present but unconnected, `-S` resumed via QMP instead of GDB, a GDB client connected and
+disconconnecting immediately, a real breakpoint hit-and-removed mid-execution (`LOOP1_EXIT`
+itself) -- **every single one of these still completed instantly**. The only configuration that
+ever failed to show completion was the *exact* original diagnostic: GDB attached, both
+`LOOP1_EXIT` and `DMAC_WAIT_RETURN` armed as breakpoints from the start, `LOOP1_EXIT` hit and
+disarmed, then blocking on `DMAC_WAIT_RETURN`. Forcing a `interrupt()` mid-run under that exact
+configuration reported the CPU pinned at `0x200b5f28` (the loop's own check instruction) --
+*directly contradicting* the independent, GDB-free device-model log, which by then had already
+proven the guest's ISR ran and the flag was cleared.
+
+**Ruled out a retry-loop explanation for the log's own three `CHCTRL_0` writes before accepting
+this conclusion**, per this project's own established discipline of checking before asserting:
+`cold_boot_hw_init`'s decompile (the real caller context) shows `FUN_200b5be0(); FUN_200b5ea4();
+FUN_200b5f38();` called in strict, single-pass straight-line sequence -- `FUN_200b5ea4` is called
+exactly once, no outer loop that could explain repeated arming. The three `CHCTRL_0` writes are
+real: one from the ISR's own `|=0x62` ack (confirmed in its decompile), the other two most likely
+from the two immediately-following sibling transfers' own analogous channel-control writes
+(`FUN_200b5f38`/`FUN_200b60dc`, already known from `references_to` to share this same flag) --
+not independently confirmed in detail, but not needed to be, since the single-call-site fact
+alone already rules out "this is just a hot retry loop with a coincidentally-revisited PC".
+
+**Conclusion, stated as plainly as the evidence supports**: the actual DMAC hardware/software
+completion chain works correctly and fast under `-icount shift=auto`, with or without GDB
+attached, with or without breakpoints set. What does *not* work reliably is QEMU's own GDB
+remote-serial-protocol stub, specifically for this address pattern (a breakpoint sitting at the
+literal fall-through target of a tight polling loop's own conditional branch) under `-icount`:
+either the breakpoint silently never traps, or a forced `interrupt()`'s register snapshot reports
+a stale/incorrect PC, or some combination -- not yet narrowed further, and the root QEMU-internals
+cause (something in gdbstub's interaction with icount-paced translation-block execution/
+invalidation near this address) is still genuinely open. But it no longer matters for this
+project's actual goal: **this specific busy-wait is not a real blocker**, and every trial this
+session actually reached, watched via GDB, that appeared to "never complete" was very likely
+seeing this same artifact, not a real hang.
+
+**A humbling implication, stated honestly rather than glossed over**: the *original* diagnosis
+that motivated porting `dmac.c` from a raw `QEMUTimer` to `ptimer` (this file's earlier "FIXED,
+2026-09-09" section) almost certainly used the same GDB-based observation method that's now shown
+to be unreliable here. This does **not** mean that port was wrong or should be reverted -- it's
+still a real architectural improvement, consistent with `ostm.c`/`mtu2.c`'s own pattern, and
+`dmac.c`'s temporary debug instrumentation was reverted from *this* (already-`ptimer`-based)
+version, so nothing here re-tests the old raw-`QEMUTimer` version directly. But it does mean the
+specific claim "the raw `QEMUTimer`'s callback never fired... a real `-icount` bug" should be read
+with real skepticism now, not treated as settled -- it's plausible the old version would have
+shown the identical "instant completion, GDB-free" result if it had ever been tested that way.
+Not going back to re-verify the old version; flagging the uncertainty honestly is enough.
+
+**Durable methodology lesson for this whole project, worth internalizing broadly, not just for
+DMAC**: a "stall" that only manifests when observed via GDB breakpoints/forced-interrupts, and
+disappears under a genuinely independent, host-side-only verification (device-model logging via
+`fprintf`, or `-d unimp` for a device that already logs its own real commands, as `mmc.c` turns
+out to already do for every real SD command via `qemu_log_mask(LOG_UNIMP, ...)`) should be
+treated as suspect *by default* from now on, before spending further effort on a device model or
+`-icount` explanation. This project's whole GDB-based tooling (`gdbrsp.py`, every `trace_*.py`
+script) is fast and has been reliable for plenty of other findings this project has made (SCIF,
+RIIC, MTU2, the earlier ring-overflow diagnosis, etc.) -- this isn't a blanket indictment of the
+approach -- but it is now a confirmed, real failure mode specifically under `-icount shift=auto`
+that any future "this busy-wait never clears" finding should be cross-checked against before being
+trusted. **Concrete next step, in progress as this section is being written**: a genuinely
+GDB-free long free run (no `-S`, no `-gdb`, no QMP polling at all -- the true baseline none of
+this session's earlier "hands-off" tests actually were, since they all used `qemu_launch.py`'s
+fixed `-S -gdb tcp::1234` args under the hood) to see how much further boot naturally progresses
+now that this false blocker is understood, watching in particular for real MMCIF/SD-card activity
+(`mmc.c` already logs every real command via `qemu_log_mask(LOG_UNIMP, ...)`, so `-d unimp` alone
+is enough to see it -- no new instrumentation needed there).
+
+## `src/rza1h_debug.h`: the GDB-stub lesson made into a permanent tool, plus what a genuinely
+## GDB-free 15-minute free run actually shows (2026-09-09, same session, continuing straight on)
+
+**A failed measurement attempt worth recording so it isn't retried**: before landing on the
+"bracket the wait's natural exit" technique that actually resolved the DMAC finding above, this
+session first tried `tools/measure_dmac_wait_throughput.py` -- comparing real elapsed time for N
+consecutive GDB single-steps (`step()`) inside the DMAC wait loop against N steps of ordinary ISR
+code, hoping to directly measure "is this specific loop's real per-instruction cost
+disproportionate". The result was uninformative, not just wrong: both regions measured
+~82,000 microseconds *per single step*, a 1.00x ratio -- meaning the measurement was entirely
+dominated by GDB single-step round-trip overhead (already large under this icount config,
+apparently independent of what instruction actually executes), swamping any real difference by
+several orders of magnitude. Kept as a cautionary, not deleted -- any future temptation to
+single-step-time a suspected slow region under `-icount` should budget for this ~80ms/step floor
+first, or use a completely different technique (breakpoint hit-rate over a fixed wall-clock
+window, not raw per-instruction stepping).
+
+**The actual resolution technique, once found, was clean**: reading `FUN_200b5ea4`'s raw listing
+found it has two internal waits, not one (loop 1: is the shared slot idle; loop 2: has my own
+transfer completed), each with a natural exit PC reached only on genuine completion. Bracketing
+those two exits with exactly two breakpoints, nothing at or near the loops themselves, and
+free-running otherwise untouched, at first looked like clean confirmation of a narrow blocker
+(loop 1 cleared in 3.8s, loop 2 never fired in two full 500s trials) -- until independent,
+completely GDB-free verification (temporary `fprintf` logging directly in `dmac.c`'s own
+callbacks, reverted after use) proved the whole chain actually completes in under 1ms, 8/8
+trials, including trials that reintroduced every suspected variable one at a time. The full
+derivation is the "GDB-remote-stub reliability artifact" section above; this note is just
+recording the two techniques that led there, in the order they were actually tried, for whoever
+picks this up next.
+
+**`src/rza1h_debug.h` built, same session, directly motivated by that lesson** (per the user's
+own framing: "would it be a reasonable idea to add debug option for our implemented peripherals
+... would get cheap-ish info what's happening without needing to have gdb" -- yes, and today is
+the proof). A small, permanent, project-owned helper (`rza1h_debug(dev_name, fmt, ...)`, gated by
+one `RZA1H_DEBUG=<comma-separated names>|all` env var, silent when unset), deliberately *not*
+built on QEMU's own `-d`/`qemu_log_mask()` mechanism -- `mmc.c`'s pre-existing real
+command-dispatch logging already (mis)used `LOG_UNIMP` for this, which works but pollutes that
+category's otherwise-clean "genuinely unimplemented access" signal (directly relied on earlier
+this same session to answer "does anything touch display/VDC5 hardware at all" -- a routine
+peripheral trace mixed into the same category would have made that check meaningfully less
+trustworthy). A dedicated mechanism also needs no QEMU source patching, avoiding a second patch
+to rebase against future QEMU version bumps on top of the existing `patches/hw-arm-build.patch`.
+Wired into `dmac.c` (arm/complete), `mtu2.c` (all three compare-match ticks, both software-timer
+arm/expire events), `riic.c` (START/RESTART/STOP conditions, DRT phase transitions), `scif.c`
+(TX/RX bytes, both virtual responders' canned acks), `rspi2.c` (TX bytes), and `mmc.c` (real SD
+command dispatch, migrated off its old `LOG_UNIMP` misuse, same for `scif.c`/`riic.c`/`rspi2.c`'s
+own pre-existing `LOG_UNIMP` calls). `gpio.c`/`l2c.c`/`spi_boot.c` deliberately left untouched --
+plain-storage/self-clearing devices with no real protocol state machine worth tracing, and adding
+calls there would just be noise against this tool's own stated design principle. One real build
+gotcha hit along the way: `MTU2_SWTIMER_B_ONESHOT_NS`'s computed type didn't match `PRId64` under
+`G_GNUC_PRINTF`'s strict format checking on this host (`long` vs `long long`, a real, if
+mundane, type-checking mismatch) -- fixed by an explicit `(long long)` cast plus a literal
+`%lld`, not by fighting the platform's own `inttypes.h` macros.
+
+**Immediately validated the new tool is useful, not just plausible in theory.** A genuinely
+GDB-free 15-minute (900s) free run with only `-d unimp,guest_errors` (no `RZA1H_DEBUG`) showed
+the process alive and steady (~102% CPU) the whole time, but **zero new logged activity for 840
+straight seconds** after an initial burst -- ambiguous on its own (could be a healthy steady
+state touching only already-real-modeled devices, which `-d unimp` can't see at all by design;
+could equally be a genuinely different stall). A second run with `RZA1H_DEBUG=all` immediately
+resolved the ambiguity in the *reassuring* direction: `mtu2.c`'s ch3 (`TGI3A`)/ch4 (`TGI4C`)
+compare-match events fire continuously, alternating at a steady ~964 combined events/second --
+matching the free-running 16-bit-wraparound math almost exactly (`0x10000` counts / 32,000,000 Hz
+≈ 2.048ms per channel's own wraparound ≈ 488Hz/channel, ×2 channels ≈ 976Hz, close enough to the
+measured 964Hz that this isn't a coincidence). **This is direct, independent-of-GDB proof the
+system is genuinely alive and actively running a real, ongoing RTOS-scheduler-tick mechanism
+throughout the stretch the `unimp` trace alone made look quiet/frozen -- not evidence of a new
+stall.** A follow-up run scoped to the rarer channels only (`RZA1H_DEBUG=dmac,riic,scif,rspi2`,
+excluding the now-understood, extremely chatty `mtu2`/`ostm` ticks) was run for the same full
+900s to see whether anything *else* interesting happens during this stretch (a later DMAC
+transfer, RIIC/SCIF activity, etc.).
+
+**Result: fully decisive, not ambiguous.** The log held at exactly 142 lines for the entire 900
+real seconds -- literally zero new `dmac`/`riic`/`scif`/`rspi2` activity anywhere past the
+initial boot burst (the RIIC2 EEPROM reads, the SCIF3 front-panel identify/keepalive handshake,
+and one DMAC transfer, all landing within the first ~3-8 real seconds). Combined with `mtu2.c`'s
+continuous, steady ~964Hz combined tick rate confirmed in the same window, this settles the
+question cleanly: **the system reaches a genuine, stable RTOS idle loop -- alive and actively
+scheduling (the tick keeps running), but making no further forward progress of any kind for a
+full 15 real minutes.** Not a new blocker -- a firmware that has legitimately finished everything
+it can do without an external trigger (a front-panel button, an SD-card insert event, a specific
+menu action) that a purely passive free-running boot will never generate on its own. **Concrete
+next step for whoever picks this up next**: `force_call_fup.py`'s "force a direct call into
+`firmware_update_main`" approach (already built, not yet retested against this now-much-further,
+now-correctly-understood boot state) is the right next move, not a longer or differently-scoped
+free run -- the passive-observation avenue is now closed out with a real, well-supported answer,
+not abandoned for lack of one.

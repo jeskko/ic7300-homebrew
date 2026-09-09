@@ -27,7 +27,7 @@ echo "Symlinking sources..."
 # pass caught it (it was already symlinked by hand in an earlier session,
 # so the gap was latent -- a from-scratch qemu-src/ checkout would have
 # failed to build). Keep this in sync with meson.build's files() list.
-for f in rz_a1h.c rz_a1h.h ostm.c spi_boot.c gpio.c l2c.c scif.c mmc.c riic.c mtu2.c dmac.c rspi2.c; do
+for f in rz_a1h.c rz_a1h.h rza1h_debug.h ostm.c spi_boot.c gpio.c l2c.c scif.c mmc.c riic.c mtu2.c dmac.c rspi2.c; do
     ln -sf "../../../src/$f" "$QEMU_SRC/hw/arm/$f"
 done
 

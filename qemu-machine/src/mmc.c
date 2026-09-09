@@ -47,6 +47,7 @@
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HMmcState, RZA1H_MMC)
 
@@ -230,8 +231,8 @@ static void mmc_do_command(RZA1HMmcState *s)
 
     s->app_cmd_pending = false;
 
-    qemu_log_mask(LOG_UNIMP, "rza1h-mmc: %sCMD%u arg=%#x rtyp=%u wdat=%d dwen=%d\n",
-                 is_acmd ? "A" : "", cmd, s->arg, rtyp, wdat, dwen);
+    rza1h_debug("mmc", "%sCMD%u arg=%#x rtyp=%u wdat=%d dwen=%d",
+               is_acmd ? "A" : "", cmd, s->arg, rtyp, wdat, dwen);
 
     memset(s->resp, 0, sizeof(s->resp));
 

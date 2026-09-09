@@ -198,12 +198,12 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
-#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qom/object.h"
 #include "system/address-spaces.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HScifState, RZA1H_SCIF)
 
@@ -466,8 +466,7 @@ static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
     address_space_write(as, struct_base + 0xc, MEMTXATTRS_UNSPECIFIED,
                         &count, 1);
 
-    qemu_log_mask(LOG_UNIMP,
-                 "rza1h-scif5: DSP-link responder: canned class-2 ack\n");
+    rza1h_debug("scif", "scif5: DSP-link responder: canned class-2 ack");
     s->frdr = 0x00; /* the one byte actually delivered through the normal
                       * RXI path -- see this function's own comment */
     s->rx_pending = true;
@@ -554,8 +553,8 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
         /* Always surfaced, chardev or not -- the whole point of this
          * roadmap item is *observability*, and most testing won't bother
          * wiring a real -chardev per channel. */
-        qemu_log_mask(LOG_UNIMP, "rza1h-scif%u: TX %02x ('%c')\n",
-                     s->channel, byte, (byte >= 0x20 && byte < 0x7f) ? byte : '.');
+        rza1h_debug("scif", "scif%u: TX %02x ('%c')",
+                   s->channel, byte, (byte >= 0x20 && byte < 0x7f) ? byte : '.');
         if (qemu_chr_fe_backend_connected(&s->chr)) {
             qemu_chr_fe_write_all(&s->chr, &byte, 1);
         }
@@ -600,9 +599,9 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
             } else if (s->tx_frame_pos >= 1) {
                 if (byte == 0xFD) {
                     if (s->tx_frame_type == 0xF0 || s->tx_frame_type < 0x20) {
-                        qemu_log_mask(LOG_UNIMP,
-                            "rza1h-scif3: front-panel responder: canned "
-                            "ACK for outbound type %#x\n", s->tx_frame_type);
+                        rza1h_debug("scif",
+                            "scif3: front-panel responder: canned "
+                            "ACK for outbound type %#x", s->tx_frame_type);
                         rza1h_scif3_frontpanel_ack(s->tx_frame_type);
                         s->frdr = 0xFD; /* the one byte actually delivered
                                           * through the normal RXI path --
@@ -673,6 +672,7 @@ static void rza1h_scif_receive(void *opaque, const uint8_t *buf, int size)
     /* No overrun modeling (LSR.ORER) -- can_receive() already refuses a
      * new byte until the previous one is read, so QEMU's chardev core
      * won't call this while one is still pending. */
+    rza1h_debug("scif", "scif%u: RX %02x (real -chardev backend)", s->channel, buf[0]);
     s->frdr = buf[0];
     s->rx_pending = true;
 }

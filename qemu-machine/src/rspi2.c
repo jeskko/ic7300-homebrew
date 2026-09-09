@@ -46,11 +46,11 @@
 
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
-#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HRspi2State, RZA1H_RSPI2)
 
@@ -89,10 +89,10 @@ static void rza1h_rspi2_write(void *opaque, hwaddr offset, uint64_t value,
     if (offset == RSPI2_SPDR2) {
         /* Always surfaced, chardev or not -- see file comment (matches
          * scif.c's own FTDR convention). */
-        qemu_log_mask(LOG_UNIMP, "rza1h-rspi2: TX %02x ('%c')\n",
-                     (uint8_t)value,
-                     ((uint8_t)value >= 0x20 && (uint8_t)value < 0x7f)
-                         ? (uint8_t)value : '.');
+        rza1h_debug("rspi2", "TX %02x ('%c')",
+                   (uint8_t)value,
+                   ((uint8_t)value >= 0x20 && (uint8_t)value < 0x7f)
+                       ? (uint8_t)value : '.');
         return;
     }
 

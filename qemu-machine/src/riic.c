@@ -103,6 +103,7 @@
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HRiicState, RZA1H_RIIC)
 
@@ -256,11 +257,13 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
     case RIIC_REG_CR2:
         s->cr2 = value & ~CR2_BBSY; /* BBSY is synthesized, not stored */
         if ((value & CR2_ST) && s->phase == RIIC_IDLE) {
+            rza1h_debug("riic", "riic%u: START condition", s->channel);
             s->phase = RIIC_WAIT_ADDR;
             s->sp_pending = false;
             s->sr2 |= SR2_START;
             qemu_irq_raise(s->irq[IRQ_STI]);
         } else if ((value & CR2_RS) && s->phase == RIIC_WAIT_RESTART) {
+            rza1h_debug("riic", "riic%u: RESTART condition", s->channel);
             qemu_irq_lower(s->irq[IRQ_TEI]); /* real hardware: the next
                                                * CR2 write after TEND
                                                * auto-clears it */
@@ -271,6 +274,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                                * source as the initial
                                                * start, per real hardware */
         } else if (value & CR2_SP) {
+            rza1h_debug("riic", "riic%u: STOP requested (phase %u)",
+                       s->channel, (unsigned)s->phase);
             /* Real STOP request -- see file comment on why this doesn't
              * raise SPI immediately (it follows the in-flight DRR read
              * the driver always issues right after, per the traced
@@ -315,7 +320,9 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
     case RIIC_REG_SAR2: s->sar2 = value; break;
     case RIIC_REG_BRL: s->brl = value; break;
     case RIIC_REG_BRH: s->brh = value; break;
-    case RIIC_REG_DRT:
+    case RIIC_REG_DRT: {
+        unsigned old_phase = s->phase;
+
         s->drt = value;
         switch (s->phase) {
         case RIIC_WAIT_ADDR:
@@ -364,12 +371,14 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                               * needed for a level line */
             break;
         default:
-            qemu_log_mask(LOG_UNIMP,
-                         "rza1h-riic%u: unexpected DRT write 0x%02x in "
-                         "phase %d\n", s->channel, (unsigned)value, s->phase);
+            rza1h_debug("riic", "riic%u: unexpected DRT write %#x in phase %u",
+                       s->channel, (unsigned)value, old_phase);
             break;
         }
+        rza1h_debug("riic", "riic%u: DRT=%#x, phase %u -> %u",
+                   s->channel, (unsigned)value, old_phase, (unsigned)s->phase);
         break;
+    }
     case RIIC_REG_DRR:
         break; /* real hardware: read-only */
     default:
