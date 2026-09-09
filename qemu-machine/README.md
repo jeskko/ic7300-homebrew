@@ -16,8 +16,9 @@ active resume point.
 
 ## Status, 2026-09-09 — the `0x20420120` job-ring's own struct, producer, and consumer fully
 ## derived; its overflow reproduced twice with exact numbers via a new low-perturbation tracing
-## technique; the DMAC-cascade hypothesis it pointed at tested live and ruled out (a real,
-## useful negative result) -- the actual burst producer is still open, two concrete leads left
+## technique; two hypotheses (a DMAC completion cascade, an IRQ-mask window) tested live and
+## both corrected/ruled out by a second trial each -- the drain trigger fires reliably, so the
+## real question is now sharper: what causes a ~16-entry burst inside a single ~200ms gap
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -81,14 +82,23 @@ README-history.md's newest section):**
   also retracts the prior session's own "DMAC channel kicks" characterization — it only touches
   a software descriptor table, never real DMAC MMIO.
 
-**Active resume point:** the real burst producer is still unidentified. Two concrete next
-leads (neither tried yet): (1) trace what actually consumes `FUN_2005ff1c`'s three
-"descriptor ready" bit-sets — the real downstream trigger is now the leading suspect; (2) use
-`trace_job_ring_overflow.py`'s coarse/fine two-phase polling to bracket a fresh overflow with
-~10ms polls and see whether the recurring `pc=0x20005258` vectored-IRQ-dispatch stub is one GIC
-ID retriggering or several firing in a cluster. See README-history.md's newest section for the
-full derivation, including a documented `pkill -f` self-kill footgun any new trace script should
-avoid.
+**Follow-up, same session: chased the most concrete lead (`FUN_2005ff1c`'s two callers both
+bracket their shared body in a real `cpsid i`/`cpsie i` IRQ-mask pair) live — a real correction
+after a second trial, not a clean confirmation.** `FUN_2005ff1c` turns out to be called directly
+from `cold_boot_hw_init` itself (retracting the "graphics/display DMA" label — there was never
+a live check behind it). A first trial looked like a clean hit (overflow only 0.55s after the
+`cpsie`), but a second, independent trial directly contradicted it: the same `cpsid`/`cpsie`
+sequence occurred at almost the same boot offset, but the drain trigger (`irq_context_switch_
+id0`) then fired **142 times over the next 30 seconds** before an overflow finally happened —
+proving the consumer runs reliably (~every 200ms) and ruling out simple starvation-by-masking
+as the general cause. **Sharper resume point**: the real question isn't "why doesn't the
+consumer run" (it does, regularly) — it's what makes ~16 independent pushes land inside a
+single one of those ~200ms gaps, at an unpredictable point roughly 30–65+ seconds into this
+boot phase. Two leads remain open: (1) what consumes `FUN_2005ff1c`'s three "descriptor ready"
+bit-sets; (2) `tools/trace_irq_mask_window.py`'s id0-hit-counting technique, reusable to
+correlate the drain trigger's own firing pattern against `pending` for whichever new hypothesis
+comes next. See README-history.md's newest two sections for the full derivation (including a
+documented `pkill -f` self-kill footgun any new trace script should avoid).
 
 ## Confirmed peripherals
 
@@ -139,6 +149,12 @@ avoid.
   approximate overflow time is known. **Don't `pkill -f qemu-system-arm` before launching it**
   (or any new script like it) — that pattern matches the invoking shell's own command line and
   self-kills; see README-history.md's newest section.
+- **`tools/trace_irq_mask_window.py`** (new, 2026-09-09) — breakpoints the `cpsid i`/`cpsie i`
+  pair bracketing `FUN_2005ff1c`'s shared caller body plus the ring-overflow trap (all rare,
+  low-overhead), and can reactively arm a fourth breakpoint on `irq_context_switch_id0`'s own
+  entry to count how often the ring's drain trigger actually fires in a given window — the
+  technique that found the drain trigger fires reliably (~every 200ms) even right before an
+  overflow, ruling out simple starvation. See README-history.md's newest section.
 - **`patches/hw-arm-build.patch`** — the small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in the vendored QEMU checkout.
 - **`setup.sh`** — idempotent: clones QEMU `v11.1.1` (shallow) if missing, applies the patch,

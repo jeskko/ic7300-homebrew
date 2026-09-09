@@ -1720,3 +1720,70 @@ different ones firing in a tight cluster, without needing a risky direct GIC IAR
 outside the CPU's own execution. `tools/trace_job_ring_overflow.py`'s coarse/fine two-phase
 polling (`[seconds] [poll_interval] [fine_start] [fine_interval]`) already supports narrowing in
 once a fresh trial's own approximate overflow time is known from a first coarse pass.
+
+## Followed the CPSID/CPSIE lead live -- a real, useful correction after a second trial
+## contradicted the first (2026-09-09, same session, immediately following)
+
+Read `FUN_2005ff1c`'s actual caller context properly (it had never been done -- the prior
+session's "graphics/display DMA" label was itself a guess, never verified): its two callers,
+`FUN_200605e4` and `FUN_200605fc`, both tail-jump into a shared body at `0x2006003c` containing
+the ~20 MTU2-rate-limiter-gated retry loops already known from the fifth-compare-event work
+earlier this session -- and **that whole body is bracketed by a real `cpsid i` (`0x20060040`)
+and `cpsie i` (`0x200604bc`)**, i.e. IRQs (including GIC ID 0, the job-ring's only drain
+trigger) are architecturally incapable of firing for its entire span. `FUN_200605fc` itself is
+called from exactly one site: **`cold_boot_hw_init`** (`0x2002b0b8`) -- so this isn't graphics
+DMA at all, it's a call embedded directly in the same master boot-init function this whole
+project thread has centered on all along; the "graphics/display" label is retracted alongside
+the earlier "DMAC channel kicks" one.
+
+Built `tools/trace_irq_mask_window.py`: three low-frequency breakpoints (the `cpsid`/`cpsie`
+addresses, plus the overflow trap), each hit only pausing long enough to log a timestamp and
+step past it -- deliberately avoiding the per-push-frequency masking problem the ring's own
+producer/consumer already demonstrated twice.
+
+**Trial 1 (first run) looked like a clean confirmation**: `CPSID` at t=34.267s (pending=0) →
+a second, back-to-back `CPSID` at t=34.514s (pending=0, no intervening `CPSIE` -- a genuine,
+reproducible oddity, see below) → `CPSIE` at t=34.764s (pending=0, masked window measured at
+exactly 0.2500s) → **overflow at t=35.310s, only 0.55s later**. Read in isolation, this is a
+compelling story: nothing could push during the mask, `pending` was still 0 right as IRQs came
+back, then a burst followed almost immediately after.
+
+**Trial 2, run to get a second, independent data point (this project's own established
+discipline -- a single snapshot isn't a reliable regression test once real interrupt-driven
+scheduling is involved), directly contradicted that reading.** The identical `CPSID`/`CPSID`/
+`CPSIE`/`CPSIE` pattern occurred again, at almost exactly the same wall-clock offset (t=34.42s,
+0.246s spacing this time -- matching trial 1's 0.247s closely enough that this specific
+double-event is clearly a real, deterministic-ish part of normal boot, not noise; its own cause
+is still unexplained and not worth chasing further right now). This time a fourth breakpoint,
+armed reactively right at the `CPSIE` hit, watched `irq_context_switch_id0`'s own entry
+(`0x20005960`, the ring's only drain trigger) to directly measure how often the consumer
+actually runs afterward. **It fired 142 times over the next ~30 seconds** (roughly once every
+210ms) before the overflow finally happened at t=65.078s -- thirty seconds after the `cpsie`,
+not 0.55s. **This flatly contradicts trial 1's apparent correlation**: the consumer was running
+reliably and often the whole time, so total starvation-by-masking isn't the general
+explanation, and this specific `cpsid`/`cpsie` window isn't a reliable trigger either -- trial
+1's close timing was most likely coincidental, not causal. Retracting that reading here rather
+than letting it stand uncorrected.
+
+**What this second trial actually establishes, and it's a real sharpening of the question, not
+a dead end**: since the drain trigger fires reliably (~every 200ms) and *still* an overflow
+eventually happens, the real question isn't "why doesn't the consumer run" (it does) -- it's
+"what makes upwards of 14-16 entries land inside a single one of those ~200ms gaps, at some
+unpredictable point roughly 30-65+ seconds into this boot phase." `FUN_20187ae4` (the consumer)
+has no per-call drain cap -- its own loop runs `while (pending != 0)`, so every one of those 142
+calls, if it ran with anything queued, would have fully emptied the ring -- reinforcing that
+this is genuinely a single-gap burst-exceeds-capacity event, consistent with (and now better
+explaining) the very first coarse-polling trials' own numbers (near-empty to full within well
+under half a second).
+
+**Active resume point, corrected and sharpened**: the real burst producer is still
+unidentified, and the `cpsid`/`cpsie` lead is downgraded from "likely cause" to "an interesting,
+reproducible boot-sequence detail, not yet shown to be causal." The two leads from the previous
+section are still the live ones (what consumes `FUN_2005ff1c`'s "descriptor ready" bit-sets;
+whether other GIC IDs besides 0 are also active in the same window) -- now reframed around a
+sharper question: given the consumer demonstrably runs every ~200ms, what could make ~16
+independent things happen inside one such gap. `tools/trace_irq_mask_window.py` (the id0-hit
+counting logic in particular) is directly reusable for testing whichever new hypothesis comes
+next -- arm the id0-entry watch and correlate its hit-count/spacing against the ring's own
+`pending` byte read at the same moments, rather than assuming a specific fixed code location is
+the trigger.
