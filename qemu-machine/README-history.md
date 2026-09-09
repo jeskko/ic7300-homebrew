@@ -2550,3 +2550,82 @@ reaches, and whether that's traceable to a specific bursting task at all -- or a
 real design characterization rather than a bug, that a fixed 16-slot queue fed by a genuinely
 generic system-wide primitive will occasionally see a burst exceed it, and move on to whatever
 this project's SD-card/VFS goal needs next instead of chasing this particular overflow further.
+
+## 2026-09-10 session, continued a third time: found the ring's real producer -- a periodic MTU2 tick, not a burst at all (two wrong leads corrected honestly along the way)
+
+Picked up from the user's own question after the SVC-dispatch retraction: "what do the messages
+in that ring look like?" -- a much more direct question than continuing to trace the caller
+chain from the top down. Built `tools/dump_job_ring_at_overflow.py` to read all 16 queued
+entries (job-object pointer + payload word each) directly at the overflow moment.
+
+**All 16 entries are byte-for-byte identical**: `job_ptr=0x20415c60`, `payload=1`, every single
+slot. Decompiling the consumer's type-0 dispatch handler (`FUN_201874a8`) showed this is a
+classic event-flag/event-group "OR bits in, check a wait mask, wake if satisfied" primitive --
+so this is a single, generic "results ready" doorbell object, not 16 different per-request
+messages. That's consistent with either "the same notification posted 16 times redundantly" or
+"16 different real completions all ringing the same shared doorbell" -- couldn't tell which
+from the ring contents alone.
+
+**First hypothesis, tried and RETRACTED**: `0x200b9dc0` (right where the overflow's own `lr`
+pointed, inside `FUN_20187bb4`'s only caller `FUN_20186c4c`, itself only called from
+`FUN_20186fb4`) turned out to sit inside `sdcard_file_rpc_dispatch_task` -- a function this
+project already named and has tried for a long time to reach live. Decompiling its full loop
+(a real command-receive / dispatch-table-call / post-result / post-doorbell structure, matching
+the file-RPC mechanism `notes/kernel-rtos.md` already documents) made "16 real file-RPC
+completions flooding the doorbell" look like a strong, exciting hypothesis -- this project's
+first-ever evidence of that task actually doing work. **Checked live before trusting it, per
+this project's own discipline, and it didn't hold up**: three separate, increasingly targeted
+breakpoints -- `file_rpc_post_command` (the 26-wrapper-fed entry point), the generic
+`FUN_20186e68` "signal an object" primitive it calls (6 real static callers, not just this
+task), and the task's own exact doorbell-post call site (`0x200b9ddc`) -- **all three showed
+zero hits before the overflow**, and the task's own wait-target field read back `0x0` the whole
+run. `sdcard_file_rpc_dispatch_task` was never involved in this specific burst at all. Corrected
+in Ghidra (comment/bookmark) and here rather than left standing.
+
+**Real producer, found directly rather than assumed**: breakpointed `FUN_20186fb4`'s own entry
+(the one real chokepoint every path into `FUN_20187bb4` must pass through) and logged every
+hit's `(msg, param2, lr)` unfiltered. Result: `msg=0x20415c60, param2=1, lr=0x20005bb4` --
+**every single hit, starting at t=0.16s, spaced almost exactly 82ms apart** (60 consecutive
+hits checked, one continuous steady rhythm, not a late-appearing burst at all). Traced `lr`'s
+containing function: registered (`adr r1,0x20005b98; mov r0,#0x9a; bl 0x200b9490` -- a real
+"register handler for GIC ID 154" call) as the handler for **MTU2 channel 3's TGI3A**, this
+project's own already-confirmed, foundational real timer (GIC ID 154, in the Confirmed
+peripherals table since the very first `qemu-machine/` sessions). Renamed in Ghidra
+(`mtu2_ch3_periodic_housekeeping_tick`). It calls `FUN_20062c44` (-> our doorbell post)
+*unconditionally*, every single invocation -- a steady housekeeping heartbeat, not an event
+tied to any particular external trigger.
+
+**Bonus, real, and worth its own follow-up**: this same handler also calls
+`ssif0_bring_up_and_pump()`/`ssif1_bring_up_and_pump()` (gated on a separate flag) -- a direct,
+concrete tie into this project's long-standing SSIF/RTTY-SSTV-audio-source investigation (see
+`icom-custom-code-goal` memory: a confirmed SSIF capture pipeline with "no found reader" as of
+the last session that looked). Not chased further this session (out of scope for the ring
+investigation), but flagged as a real, fresh lead for that thread.
+
+**What this actually means for the ring overflow**: since this steady ~82ms tick runs
+continuously from the very start of boot without overflowing the ring for the first ~27
+seconds, the real question was never "what bursts" -- it's **why the ring's consumer
+(`irq_context_switch_id0`) stops keeping pace with an already-steady producer specifically
+around the ~27s mark**. That's a scheduling-gap question much closer to the *original*
+2026-09-09 session's very first hypothesis (before that session pivoted away from it) -- not
+yet re-tested against this specific timing profile (post-DMAC-fix boot reaches this depth for
+the first time ever, so the earlier session's own "id0 fires reliably every ~200ms, ruling out
+starvation" check was never run under these exact conditions).
+
+**One more loose end, noted not chased**: `mtu2_ch3_periodic_housekeeping_tick` re-arms its own
+MTU2 compare register by a fixed `+8000` each time -- at MTU2's confirmed real 32MHz clock, that
+implies a 250us period, not the observed ~82ms (a ~328x discrepancy). Flagged in the Ghidra
+comment for whoever looks at this next; not reconciled this session.
+
+**Concrete next step for whoever picks this up next**: check what `irq_context_switch_id0`
+(or whatever schedules it) is doing differently around the ~27s mark of this specific boot
+profile -- a live, low-frequency hit-counting trace on `irq_context_switch_id0`'s own entry,
+narrowly windowed around the expected overflow time (coarse polling elsewhere in this thread
+has already been shown safe; a *sparse* breakpoint on a real, rare-per-window event should be
+too, following this project's own established rare-vs-hot-path discipline) would directly
+answer whether it's a genuine gap or something else. `tools/dump_job_ring_at_overflow.py` and
+`tools/trace_20186fb4_callers.py` are the two tools that actually settled this session's own
+open questions; the other four new tools this session built and later ruled out
+(`trace_file_rpc_burst_source.py`, `trace_signal_calls.py`, `trace_task_own_post.py`, plus the
+earlier `trace_dmac_race.py`/`trace_dmac_flag_writes.py` pair, since deleted) are kept or noted
+for their own reusable techniques and honest derivation trail, not as current leads.

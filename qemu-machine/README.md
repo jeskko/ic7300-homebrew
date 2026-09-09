@@ -68,16 +68,30 @@ active resume point.
 ## (`0x20005960`, the ring's own already-known consumer) and entry 41 is exactly the DMAC ISR
 ## (`0x200b5b90`) — this is simply the shared entry point for every hardware IRQ the firmware
 ## handles, unrelated to the message-post/`software_interrupt(0)` path it was wrongly connected
-## to. Ghidra renamed to `irq_exception_dispatch` with a corrected comment/bookmark. **The
-## `0x20420120` ring's real burst source is open again** — the one solid new fact from this
-## thread is a methodology one: narrowing the polling cadence to 0.02s right before the expected
-## overflow *suppressed it entirely* (0/1, 50s) — even non-breakpoint periodic
-## `interrupt()`+`read_memory()` perturbs this race if frequent enough; the coarse 0.25s cadence
-## `trace_job_ring_overflow.py` already used is the proven sweet spot, not just "gentler than a
-## breakpoint". See README-history.md's newest two sections for the full derivation, including
-## why the breakpoint-based DMAC-race verification attempt tried first this session was also
-## discarded as untrustworthy (a real, live example of the project's own documented gdbstub-
-## artifact class) before the GDB-free QMP method settled that part.
+## to. Ghidra renamed to `irq_exception_dispatch` with a corrected comment/bookmark.
+##
+## **Found the ring's real producer — it's not a burst at all, it's a steady tick whose
+## consumer stops keeping pace.** Reading the 16 queued entries directly (new tool,
+## `tools/dump_job_ring_at_overflow.py`) showed they're byte-for-byte identical (same job
+## object, same payload) — a generic "results ready" event-flag doorbell, not 16 distinct
+## messages. **A second wrong lead, also retracted the same session**: this pointed at
+## `sdcard_file_rpc_dispatch_task` (alive and processing real file-RPC commands, genuinely
+## exciting — but three separate targeted breakpoints all showed **zero** hits before the
+## overflow, so that task was never actually involved here). **The real producer, found by
+## breakpointing the one real chokepoint (`FUN_20186fb4`) directly**: a perfectly regular ~82ms
+## tick, running continuously from the very start of boot, registered as the handler for
+## **MTU2 channel 3's TGI3A** (GIC ID 154 — this project's own oldest, most-confirmed real
+## timer). Renamed in Ghidra (`mtu2_ch3_periodic_housekeeping_tick`). Since this steady tick
+## runs fine for ~27 seconds before the ring ever overflows, **the real open question is why
+## the consumer (`irq_context_switch_id0`) stops keeping pace with an already-steady producer
+## around that mark** — not "what bursts". **Bonus finding, worth its own follow-up**: this same
+## handler also conditionally pumps SSIF0/SSIF1 audio hardware — a direct, fresh lead for this
+## project's long-standing RTTY/SSTV audio-source thread (see `icom-custom-code-goal` memory).
+## See README-history.md's newest two sections for the full derivation, including both
+## retracted leads (why each looked plausible and exactly how each was checked and ruled out)
+## and why the breakpoint-based DMAC-race verification attempt tried earlier this session was
+## also discarded as untrustworthy (a real, live example of the project's own documented
+## gdbstub-artifact class) before the GDB-free QMP method settled that part.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
