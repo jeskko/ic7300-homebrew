@@ -188,34 +188,39 @@ confirmed" section — summary:
 
   **Found, same day, using those exact bit numbers as a targeted search** — the standing "some other,
   not-yet-found indirection" is resolved. `TCLK`/`TDAT` are **not** bit-banged GPIO at all —
-  `FUN_200b3a30` (0x200b3a30) configures `PFC7`/`PFCE7`/`PFCAE7`/`PMC7` to put `P7_3`/`P7_4` into real
-  peripheral (alt-function) mode, routing them to a small on-chip serial-shift peripheral at
-  `0xE800A800`-`0xE800A814` (register shape matches the confirmed RSPI2 poll-status-then-write-data
-  pattern, but at different addresses — **not yet identified against the RZ/A1H manual**, a real open
-  item if the exact shift-clock timing ever matters). This fully explains why no `TCLK`/`TDAT` bit-bang
-  loop on raw `P7` was ever found — it was never going to be GPIO.
+  `tuner_relay_serial_bus_init` (renamed from `FUN_200b3a30`) configures `PFC7`/`PFCE7`/`PFCAE7`/`PMC7`
+  to put `P7_3`/`P7_4` into real peripheral (alt-function) mode, routing them to a small on-chip
+  serial-shift peripheral at `0xE800A800`-`0xE800A814` (register shape matches the confirmed RSPI2
+  poll-status-then-write-data pattern, but at different addresses — **not yet identified against the
+  RZ/A1H manual**, a real open item if the exact shift-clock timing ever matters). This fully explains
+  why no `TCLK`/`TDAT` bit-bang loop on raw `P7` was ever found — it was never going to be GPIO.
 
-  `TSTB1`-`4`, however, genuinely **are** GPIO, driven by `FUN_200b391c` (0x200b391c, registered as
-  event `0xa0` off the same generic per-tick dispatcher already confirmed servicing RSPI2/SSIF/
-  front-panel) via masked writes to `PSR7` (`0xFCFE311C`, not the plain `P7` data register — this is
-  why the earlier `0xFCFE301C`-only search came back empty, the exact same "check the *actual* register
-  used, not just the data register" lesson this project has hit before). Picks one of 4 pending "dirty"
-  bits (one per relay-driver chip) and pulses it via a 2-phase write pair (`table_hi[i]` then, after a
-  ~35-iteration software delay, `table_lo[i]`) from a 4-entry table at `0x20335F98`/`0x20335FA8` — **the
-  touched bit for index 0/1/2/3 is bit 1/2/5/6, an exact, independent match to the schematic's
-  `TSTB1`/`TSTB2`/`TSTB3`/`TSTB4` = `P7_1`/`P7_2`/`P7_5`/`P7_6`**, real code confirming the real pin
-  reading with zero ambiguity in the bit selection itself (the two 16-bit halves' precise set-vs-clear
-  polarity within `PSR7` carries the same "structurally motivated, not independently confirmed"
-  caveat `gpio.c`'s own docstring already flags for this register family generally).
+  `TSTB1`-`4`, however, genuinely **are** GPIO, driven by `tuner_relay_tstb_strobe_dispatch` (renamed
+  from `FUN_200b391c`, registered as event `0xa0` off the same generic per-tick dispatcher already
+  confirmed servicing RSPI2/SSIF/front-panel) via masked writes to `PSR7` (`0xFCFE311C`, not the plain
+  `P7` data register — this is why the earlier `0xFCFE301C`-only search came back empty, the exact same
+  "check the *actual* register used, not just the data register" lesson this project has hit before).
+  Picks one of 4 pending "dirty" bits (one per relay-driver chip) and pulses it via a 2-phase write pair
+  (the "hi" half then, after a ~35-iteration software delay, the "lo" half) from a 32-byte table labeled
+  `g_tuner_tstb_pulse_table` (`0x20335F98`, lo half at the base, hi half at `+0x10`) — **the touched bit
+  for index 0/1/2/3 is bit 1/2/5/6, an exact, independent match to the schematic's `TSTB1`/`TSTB2`/
+  `TSTB3`/`TSTB4` = `P7_1`/`P7_2`/`P7_5`/`P7_6`**, real code confirming the real pin reading with zero
+  ambiguity in the bit selection itself (the two 16-bit halves' precise set-vs-clear polarity within
+  `PSR7` carries the same "structurally motivated, not independently confirmed" caveat `gpio.c`'s own
+  docstring already flags for this register family generally). **Renamed and PLATE-commented in Ghidra,
+  2026-09-09** (both functions plus the table) — high-confidence findings only; the still-open items
+  below were deliberately left as their auto-generated `FUN_*` names.
 
-  Surrounding cluster, also found: `FUN_200b3c5c` (cold-boot driver init, called from the same
-  init-sequence block as the front-panel/SD-card driver inits) calls `FUN_200b3a30`, sets all 4 chips'
-  target state to `0x555`, asserts `TOE` active-low via `PSR7`, waits 10ms, then calls
-  `FUN_200b3bf4` (default/all-off relay pattern). `FUN_200b3d34` (the periodic per-tick state machine,
-  serviced by the same generic dispatcher as `FUN_200b391c`) builds a 2-bit-per-output pattern from two
-  24-byte target arrays — sizes matching `notes/ic7300-hardware.md`'s own `RL20xx`/`RL21xx` relay table
-  almost exactly (4 chips × 6 outputs × 2 bits) — and hands it to `FUN_200b3718`/`FUN_200b37dc`, which
-  marks the per-chip dirty bits `FUN_200b391c` consumes.
+  Surrounding cluster, also found (not yet renamed — their own roles read clearly from direct decompile,
+  but weren't independently cross-checked against real hardware the way the two renamed functions were):
+  `FUN_200b3c5c` (cold-boot driver init, called from the same init-sequence block as the front-panel/
+  SD-card driver inits) calls `tuner_relay_serial_bus_init`, sets all 4 chips' target state to `0x555`,
+  asserts `TOE` active-low via `PSR7`, waits 10ms, then calls `FUN_200b3bf4` (default/all-off relay
+  pattern). `FUN_200b3d34` (the periodic per-tick state machine, serviced by the same generic dispatcher
+  as `tuner_relay_tstb_strobe_dispatch`) builds a 2-bit-per-output pattern from two 24-byte target
+  arrays — sizes matching `notes/ic7300-hardware.md`'s own `RL20xx`/`RL21xx` relay table almost exactly
+  (4 chips × 6 outputs × 2 bits) — and hands it to `FUN_200b3718`/`FUN_200b37dc`, which marks the
+  per-chip dirty bits `tuner_relay_tstb_strobe_dispatch` consumes.
 
   **Not yet proven, medium confidence**: the concrete end-to-end link from `tuner_engage_gpio_toggle`/
   `civ_cmd_1c01_tuner_handler`/CI-V `0x2A` down to this specific cluster — plausible (same general RAM
