@@ -183,4 +183,11 @@
 #define RZA1H_DMAC_CH0_IRQ 41 /* DMAINT0 */
 #define TYPE_RZA1H_DMAC "rza1h-dmac"
 
+/* RSPI (Renesas Serial Peripheral Interface) channel 2 -- see rspi2.c's own
+ * file comment. SPCR2=base+0, SPSR2=base+3, SPDR2=base+4, SPCMD2=base+0x20
+ * (all confirmed 2026-08-29 against real body.bin disassembly). */
+#define RZA1H_RSPI2_BASE 0xE800D800
+#define RZA1H_RSPI2_SIZE 0x00000024
+#define TYPE_RZA1H_RSPI2 "rza1h-rspi2"
+
 #endif

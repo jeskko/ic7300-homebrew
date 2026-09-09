@@ -1430,3 +1430,61 @@ empty (write pointer == read pointer). Not yet traced this session whether/why t
 isn't reaching empty -- the natural next step, same playbook as always: confirm live (is the
 ring's write pointer still advancing faster than its read pointer, and if so from what
 producer) before building anything.
+
+## SCIF5 ring-drain and RSPI2 blockers found and fixed; boot reaches previously-unanalyzed code
+## for the first time (2026-09-09, continuing straight on from the SCIF5-responder session)
+
+Picked up the resume point directly: `scif5_cmd_transmit_now`'s busy-wait on the shared
+ring-active flag (`DAT_200b1cac`), not yet traced.
+
+**Live-traced the real gate, and it wasn't the ring-active flag at all.** Reading
+`scif5_cmd_transmit_now`'s decompile more carefully: it has *two* gates, checked in order --
+`*pcVar1` (`DAT_200b1cac`, ring-active) only second. The *first*, `*pcVar2 != 0` (`DAT_200b1cb0`
+'s target), guards a real hardware-register poll (`FUN_20360b24` on `DAT_200b1cb4`'s target,
+bit 2 of `0xFCFF0305`) -- and a live 90-second `set_watchpoint` on that exact address (this
+project's own established technique for "is this genuinely never written, not just rarely")
+confirmed zero writes across the whole run. Traced the arm/clear pair by reading raw
+disassembly around the two other write sites `references_to` found (Ghidra's decompile again
+represented the arming call, `FUN_200b7ae0`, as if inlined into `scif5_cmd_transmit_now` with
+no visible call, rather than showing it as a separate function -- confirmed by direct listing,
+not assumed): `scif5_cmd_transmit_now` itself arms this compare (a real, deliberate 640-tick
+rate-limiter on direct SCIF5 sends) as its own last step after every successful transmit,
+computing a relative target from a *widely-referenced* free-running counter (`0xFCFF0306` --
+read from many unrelated subsystems, not just SCIF5, strongly suggesting a real, shared system
+timer) and clearing the status bit to await a genuine hardware compare-match that this
+project's plain-storage MTU2 passthrough can never produce.
+
+**Fixed in `mtu2.c`** (the same 1KB-window device already covering channels 3/4, confirmed via
+`RZA1H_MTU2_SIZE`/`0x400` that `0xFCFF0305`/`0xFCFF030c` genuinely fall inside its own mapped
+region): a fourth compare-match event, modeled as a host-wall-clock deadline (sidesteps 16-bit
+counter wraparound entirely) rather than a live counter -- the same "fixed one-shot period, not
+the guest's real relative delay" simplification already established for TGI4A. Purely polled,
+no IRQ needed (none was found registered anywhere near it).
+
+**Confirmed load-bearing live**: `scif5_cmd_transmit_now`'s own busy-wait resolved. Boot
+progressed to a **third, distinct blocker** the very same free-run trial: `shared_job_ring_
+dispatch`'s case 3 (a real, previously-untriggered job-type-3 "RSPI2 transmit" ring entry, only
+reachable once the ring could drain far enough) calls `rspi2_transmit` directly, whose own
+internal busy-wait (`SPSR2` bit 6, TX-ready) blocked next -- `rspi2_transmit` itself was already
+fully confirmed and documented by an earlier session (2026-08-29: `SPCR2`=`0xE800D800`,
+`SPSR2`=`0xE800D803`, `SPDR2`=`0xE800D804`, `SPCMD2`=`0xE800D820`), just never built, the exact
+same "real, previously-unmodeled peripheral" shape every blocker this session has had.
+
+**Built `rspi2.c`**, minimal (same permissive philosophy as `mmc.c`'s virtual SD card and
+`scif.c`'s TX-always-logged FTDR): SPSR2's TX-ready bit always reads set, SPDR2 writes are
+logged only, no real transaction timing or the completion IRQ (GIC `0xa2`/162) modeled --
+`shared_job_ring_dispatch`'s own case 3 doesn't wait for that completion event either, so
+unblocking `rspi2_transmit`'s internal poll is everything this stage needs. Wired into
+`rz_a1h.c` (overlap-mapped inside the existing "io-e8000000" catch-all, no IRQ connected) and
+the build patch/setup.sh's symlink list.
+
+**Confirmed load-bearing across 2 independent trials**: both reached genuinely new ground --
+`0x200600a8`-area code with **no existing Ghidra function symbol at all**, the first time this
+project has traced execution into previously entirely unanalyzed firmware. A quick decompile of
+its containing block (`0x2005ff1c`) shows DMA-descriptor-shaped setup (three chained `0x240`-
+byte transfers, `FUN_20360b0c`-style DMAC channel kicks) -- very plausibly graphics/display DMA,
+consistent with `itron_act_tsk`'s already-identified target this whole thread reached earlier
+this session (`ui_graphics_lifecycle_task`, which creates the real EGL window/pixmap surfaces).
+Not yet traced further this session -- genuinely new territory, appropriately left for a fresh
+investigation rather than rushed. See `README.md`'s Status section for the concrete resume
+point.

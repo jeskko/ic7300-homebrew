@@ -118,6 +118,27 @@
  * -- simpler, and indistinguishable from the guest's own perspective for
  * what's traced. TIOR/TMDR/TGRB/TGRD are stored but inert (no real
  * output-pin or buffer-mode behavior modeled).
+ *
+ * A fourth event, `0x30c`/`0x305` bit 2 (2026-09-09, DSP-comms session,
+ * continued -- see MTU2_DSP_PACE_TARGET/STATUS below): `scif5_cmd_
+ * transmit_now`'s own real busy-wait after unblocking `scif5_send_and_
+ * wait_reply`'s reply-ready flag. Confirmed live via `gdbrsp.py`'s
+ * `set_watchpoint` (a write watchpoint on `0xFCFF0305` across a full
+ * 90-second free-run boot, zero hits) that nothing ever writes this
+ * status bit at all -- not a wrong value, a genuinely unmodeled real
+ * compare-match, same shape as TGI3A/TGI4A/TGI4C each were before this
+ * device existed. `0xFCFF0306` (the free-running counter this compare
+ * reads to compute its own relative target, `TCNT + 0x280` in the one
+ * caller found, `scif5_cmd_transmit_now`'s own direct-send rate-limiter)
+ * has many more read sites across unrelated subsystems (not just SCIF5),
+ * so this is very likely a real, widely-shared system timer, not a
+ * SCIF5-private one -- only this one compare/status pair is modeled,
+ * matching this file's own established narrow-scope philosophy. Modeled
+ * as a host-wall-clock deadline rather than a live 16-bit counter plus
+ * comparison (sidesteps 16-bit wraparound math entirely) -- a further,
+ * consistent application of the same "fixed one-shot period, not the
+ * guest's real relative delay" simplification already established for
+ * TGI4A above.
  */
 
 #include "qemu/osdep.h"
@@ -159,6 +180,12 @@ struct RZA1HMtu2State {
     RZA1HMtu2Event ch4a; /* TGI4A, GIC ID 159 */
     RZA1HMtu2Event ch4c; /* TGI4C, GIC ID 161 */
 
+    /* scif5_cmd_transmit_now's own rate-limiter compare-match -- purely
+     * polled (no IRQ registration found anywhere near it), see file
+     * comment's Simplifications paragraph. INT64_MAX = never armed /
+     * always "not yet expired". */
+    int64_t dsp_pace_deadline_ns;
+
     uint8_t regs[RZA1H_MTU2_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case --
                                      * matches the add_plain_ram_region()
@@ -179,6 +206,17 @@ struct RZA1HMtu2State {
 #define MTU2_TSTR    0x280
 #define MTU2_TSTR_CST3   (1 << 6)
 #define MTU2_TSTR_CST4   (1 << 7)
+
+/* scif5_cmd_transmit_now's own rate-limiter compare-match -- see file
+ * comment's Simplifications paragraph (the "A fourth event" note). */
+#define MTU2_DSP_PACE_TARGET 0x30c /* 16-bit; writing this arms the deadline */
+#define MTU2_DSP_PACE_STATUS 0x305 /* byte; bit 2 is this event's own flag */
+#define MTU2_DSP_PACE_STATUS_BIT (1 << 2)
+/* 50us -- small, real, and well under this project's own established
+ * multi-second free-run poll intervals; see file comment for why exact
+ * tick-for-tick fidelity isn't needed here (same rationale as TGI4A's own
+ * MTU2_CH4A_ONESHOT_COUNTS). */
+#define MTU2_DSP_PACE_ONESHOT_NS 50000
 
 /* 25 MHz -- deliberately NOT ostm.c's own 500 MHz "fast for testing"
  * constant, and not arbitrary: lowered from an original 500 MHz choice,
@@ -260,6 +298,18 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
     uint64_t val = 0;
+
+    if (offset == MTU2_DSP_PACE_STATUS && size == 1) {
+        /* Computed on read, not maintained by a ptimer callback --
+         * sidesteps needing a live 16-bit counter/wraparound at all, see
+         * file comment. Persisted into regs[] once observed expired so a
+         * plain memcpy elsewhere (e.g. a wider read spanning this byte)
+         * stays consistent with what this exact read already saw. */
+        if (s->dsp_pace_deadline_ns != INT64_MAX &&
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >= s->dsp_pace_deadline_ns) {
+            s->regs[offset] |= MTU2_DSP_PACE_STATUS_BIT;
+        }
+    }
 
     memcpy(&val, &s->regs[offset], size);
     return val;
@@ -348,6 +398,12 @@ ch4_configure:
             rza1h_mtu2_rearm(s, ev);
         }
         return;
+    case MTU2_DSP_PACE_TARGET:
+        memcpy(&s->regs[offset], &value, size);
+        s->regs[MTU2_DSP_PACE_STATUS] &= ~MTU2_DSP_PACE_STATUS_BIT;
+        s->dsp_pace_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                  MTU2_DSP_PACE_ONESHOT_NS;
+        return;
     default:
         memcpy(&s->regs[offset], &value, size);
         return;
@@ -394,6 +450,7 @@ static void rza1h_mtu2_reset(DeviceState *dev)
     rza1h_mtu2_stop(&s->ch3a);
     rza1h_mtu2_stop(&s->ch4a);
     rza1h_mtu2_stop(&s->ch4c);
+    s->dsp_pace_deadline_ns = INT64_MAX;
 }
 
 static void rza1h_mtu2_init(Object *obj)

@@ -14,9 +14,9 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — a virtual SCIF5 DSP responder resolves the reply-ready deadlock (a
-## real ordering-race bug found and fixed getting there); boot now reaches a new busy-wait on
-## the shared DSP-comms ring's own "still active" flag
+## Status, 2026-09-09 — two more real, previously-unmodeled peripherals found and fixed
+## (a rate-limiter compare-match in MTU2, and RSPI channel 2); boot reaches previously
+## entirely unanalyzed firmware for the first time -- likely graphics/display DMA setup
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -32,42 +32,32 @@ active resume point.
   artifact). Full three-bug derivation in README-history.md's "SCIF3 TXI made real" section —
   this Status section only tracks the current, much-further-along state from here on.
 
-**Confirmed, solid, this session — the SCIF5 DSP reply-ready deadlock is resolved via a
-virtual DSP responder, and boot reaches a new, further busy-wait:**
-- **`scif5_send_and_wait_reply`'s "reply-ready" flag (`*(DAT_200b1c84+3)`) was confirmed
-  genuinely, permanently stuck** (a 90-second free-run poll never once saw it clear). Its real
-  clearer, `scif5_rx_isr`, was mis-represented by an earlier session's own decompile — a real
-  dead-store-elision artifact silently dropped the actual clearing instruction, caught by
-  comparing the raw disassembly listing against the pseudocode line by line — and needs 4 real
-  bytes over SCIF5's RX path (an `rbit`-reversed reply word), which no virtual DSP ever sends.
-- **A virtual channel-5 DSP responder now supplies that missing input**, mirroring the
-  channel-3 front-panel responder's own "precompute the end state, deliver only the genuinely
-  necessary last byte through the real FRDR/RXI path" technique — a universal class-2
-  ("trivial ack") reply, matching this project's established permissive-peripheral philosophy.
-- **The first design (triggered off a complete 4-byte TX) worked in one live trial, then got
-  stuck again in the very next one** — a real ordering race: the reply-ready flag isn't set
-  busy until *after* the caller's TX returns (inside `scif5_arm_retry_timer`), so a
-  synchronous TX-triggered ack can land before that write and get silently overwritten by it.
-  Fixed by hooking a write provably sequenced *after* the busy-flag set instead — a genuine,
-  previously-unmodeled hardware register at `0xFCFE3120` that `scif5_arm_retry_timer` itself
-  reprograms as its very next step, reached two independent ways in the firmware (a real
-  confirmation it's one register, not two), modeled as a second, tiny MMIO region mapped only
-  on the channel-5 SCIF instance. Race-free by construction (real instruction order, not
-  timing) — **confirmed load-bearing across 2 independent 90-second trials**, both reaching
-  the same new frontier.
+**Confirmed, solid, this session — continuing straight on from the SCIF5-responder work above:
+a virtual SCIF5 DSP responder resolved `scif5_send_and_wait_reply`'s reply-ready deadlock (full
+derivation in `scif.c`'s own file comment and README-history.md), and two further real,
+previously-unmodeled peripherals were found and fixed getting past the next two blockers:**
+- **`scif5_cmd_transmit_now`'s own busy-wait turned out to gate on a different flag than the
+  prior resume point assumed** — not the shared ring-active flag, but a real hardware
+  compare-match (`0xFCFF0305` bit 2) that a live 90-second `set_watchpoint` confirmed is never
+  written at all. Fixed in `mtu2.c` (a fourth compare event, modeled as a host-wall-clock
+  deadline rather than a live counter — sidesteps 16-bit wraparound entirely).
+- **Boot then reached a real, previously-untriggered RSPI2 (job-type-3) ring entry** —
+  `rspi2_transmit`'s own busy-wait (`SPSR2` bit 6), a function already fully documented by an
+  earlier session (2026-08-29) but never built. Fixed with a new, minimal `rspi2.c` (TX-ready
+  always set, TX bytes logged only — same permissive philosophy as `mmc.c`'s virtual SD card).
+- **Confirmed load-bearing across 2 independent trials**: both reached genuinely new ground —
+  `0x200600a8`-area code with **no existing Ghidra function symbol at all**, the first time
+  this project has traced execution into previously entirely unanalyzed firmware. A quick look
+  at its containing block shows DMA-descriptor-shaped setup (three chained transfers), very
+  plausibly graphics/display DMA — consistent with `itron_act_tsk`'s already-identified target
+  (`ui_graphics_lifecycle_task`, which creates the real EGL surfaces).
 
-Full derivation (the decompiler artifact, the byte-level `rbit` arithmetic, the race and its
-fix) in `scif.c`'s own file comment and README-history.md's newest section.
+Full derivation (the MTU2 watchpoint trace, the RSPI2 register confirmation, the new code
+region) in README-history.md's newest section.
 
-**Active resume point:** both confirming trials progressed to `scif5_cmd_transmit_now`'s own
-busy-wait (traced via `LR`, since PC alone kept landing inside a tiny, ubiquitous
-register-field-read helper called from many places) on the shared ring-active flag
-(`DAT_200b1cac`) — the same flag `scif5_send_and_wait_reply` itself waits on at its own entry,
-cleared only once the background DSP-comms ring (the same one `dsp_param_sync_tick`'s ~23-word
-parameter stream and the earlier-diagnosed job-queue overflow both involve) reaches genuinely
-empty. Not yet traced this session whether/why that ring isn't reaching empty — same playbook
-as always: confirm live (is the write pointer still outrunning the read pointer, and from what
-producer) before building anything.
+**Active resume point:** a busy-wait in the newly-reached, still-unnamed `0x200600a8`-area code
+— not yet traced this session. Same playbook as always: decompile/name the containing function,
+confirm live what the loop is actually waiting on, before building anything.
 
 ## Confirmed peripherals
 
@@ -79,11 +69,12 @@ producer) before building anything.
 | GPIO/port registers | `gpio.c` | Real (masked set/clear, `PNOT` toggle, live `PPR` pin levels) — `P1_6`/`PDV` (power-fail detector) defaults high, see Status above |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
-| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154) and channel 4's `TGI4A`/`TGI4C` (GIC 159/161) — **all three confirmed load-bearing 2026-09-09** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
+| MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and a fourth, purely-polled rate-limiter compare-match (`0xFCFF0305`/`0x30c`, no GIC ID — a host-wall-clock deadline, not a live counter) — **all four confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait, ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, 2026-09-09), see Status above. Every other channel/register/event still plain storage (`regs[]` passthrough) |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer) — **confirmed load-bearing 2026-09-09**, unblocks the busy-wait right after MTU2's, see Status above. Every other channel/register still plain storage |
+| RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
 
 ## Directory layout
 
@@ -145,10 +136,11 @@ spot-check.
 2. ~~Find what really arms `body.bin`'s tick source~~ — done, OSTM0/ID 134/`CMP`=32000, now
    annotated in Ghidra (`ostm0_tick_arm_and_get_irq_id` at `0x200b93b0`).
 3. ~~Port the remaining Unicorn-side peripherals to real C devices~~ — done: `gpio.c`/`l2c.c`
-   (real behavior), `riic.c` (real), `mtu2.c` channel 3 + channel 4 (both `TGI4A`/`TGI4C`) and
-   `dmac.c` channel 0 (real, 2026-09-09 — all confirmed load-bearing, see Status above);
-   `add_plain_ram_region()` still covers CPG (plain storage, nothing traced needs more) and
-   everything in MTU2/DMAC outside their modeled channels/events.
+   (real behavior), `riic.c` (real), `mtu2.c` channel 3 + channel 4 (both `TGI4A`/`TGI4C`) plus
+   a fourth purely-polled rate-limiter event, `dmac.c` channel 0, and `rspi2.c` (all real,
+   2026-09-09 — all confirmed load-bearing, see Status above); `add_plain_ram_region()` still
+   covers CPG (plain storage, nothing traced needs more) and everything in MTU2/DMAC outside
+   their modeled channels/events.
 4. ~~SCIF UART output~~ — done: TX plus real per-channel TXI, real RXI + two virtual
    responders (a front-panel one on channel 3, a DSP-link one on channel 5, 2026-09-09). The
    SCIF3 front-panel handshake fully resolves, boot reaches real ITRON task activation, and the
@@ -157,16 +149,17 @@ spot-check.
    built and validated standalone; `riic.c` built and validated end-to-end against a real
    natural boot; `FUN_2002b29c`'s entire cold-boot branch gate now clears; the SCIF3
    front-panel handshake now genuinely completes; boot reaches real `itron_act_tsk` task
-   activation; **`mtu2.c` (channels 3 and 4) and `dmac.c` together clear cold_boot_hw_init's
-   whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait**; a generic RTOS
-   job-queue overflow that followed turned out to be a self-inflicted timing artifact
-   (`mtu2.c`'s own tick rate outrunning an unrelated queue's real-hardware-paced consumer,
-   not a scheduler bug), fixed by tuning that rate; **a virtual SCIF5 DSP responder now
-   resolves `scif5_send_and_wait_reply`'s own reply-ready deadlock too** (2026-09-09, see
-   Status above for the real ordering-race bug found and fixed getting there). **Currently
-   blocked on**: `scif5_cmd_transmit_now`'s busy-wait on the shared DSP-comms ring's own
-   "still active" flag, not yet traced — see "Active resume point" above. Once past it, the
-   original question — does the SD-card update flow reach MMCIF against a *properly*
-   kernel-created task, and would the whole chain accept and boot custom firmware entirely
-   offline — becomes directly retestable with the existing `force_call_fup.py`/
-   `test_fup_scheduling.py` tooling.
+   activation; `mtu2.c` (channels 3 and 4) and `dmac.c` together clear `cold_boot_hw_init`'s
+   whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait; a generic RTOS
+   job-queue overflow that followed turned out to be a self-inflicted timing artifact, fixed by
+   tuning `mtu2.c`'s tick rate; a virtual SCIF5 DSP responder resolved `scif5_send_and_wait_
+   reply`'s own reply-ready deadlock; **`mtu2.c`'s fourth compare event and `rspi2.c` (both
+   2026-09-09) together clear `scif5_cmd_transmit_now`'s own busy-wait and a real RSPI2
+   transmit stage** — see Status above for the full derivation of each. Boot now reaches
+   previously entirely unanalyzed firmware for the first time (`0x200600a8`-area code, no
+   Ghidra function symbol yet, very plausibly graphics/display DMA setup). **Currently blocked
+   on**: a busy-wait in that new code, not yet traced — see "Active resume point" above. Once
+   past enough of this new territory, the original question — does the SD-card update flow
+   reach MMCIF against a *properly* kernel-created task, and would the whole chain accept and
+   boot custom firmware entirely offline — becomes directly retestable with the existing
+   `force_call_fup.py`/`test_fup_scheduling.py` tooling.
