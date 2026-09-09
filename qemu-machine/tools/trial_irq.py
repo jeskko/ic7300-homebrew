@@ -14,17 +14,13 @@ Usage: trial_irq.py <n_trials> [extra qemu args...]
 
 from __future__ import annotations
 
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gdbrsp import GdbRsp
-
-HERE = Path(__file__).resolve().parent.parent
-QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
-FLASH = HERE / "flash.bin"
+from qemu_launch import launch_qemu
 
 WFE_LOOP_LO = 0x200b939c
 WFE_LOOP_HI = 0x200b93ac
@@ -36,12 +32,7 @@ ARM_CMP = 5_000_000
 
 def run_one_trial(extra_args: list[str]) -> bool:
     """Returns True if the CPU left the idle loop after arming OSTM0."""
-    proc = subprocess.Popen(
-        [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
-         "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234",
-         *extra_args],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    proc = launch_qemu(extra_args)
     try:
         time.sleep(0.4)
         g = GdbRsp(port=1234)

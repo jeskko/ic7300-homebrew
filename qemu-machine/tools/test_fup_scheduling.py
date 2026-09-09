@@ -58,10 +58,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gdbrsp import GdbRsp
-
-HERE = Path(__file__).resolve().parent.parent
-QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
-FLASH = HERE / "flash.bin"
+from qemu_launch import launch_qemu as _launch_qemu
 
 # -- breakpoint targets, see module docstring -------------------------
 BP_WAIT_RETURN = 0x200B9D34
@@ -126,11 +123,7 @@ def wait_for_idle_loop(g: GdbRsp, max_retries: int = 5) -> dict:
 
 
 def launch_qemu() -> subprocess.Popen:
-    return subprocess.Popen(
-        [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
-         "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    return _launch_qemu()
 
 
 def run_trial(label: str, forced_call: bool, watch_seconds: float) -> dict:

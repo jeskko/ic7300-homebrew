@@ -35,10 +35,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gdbrsp import GdbRsp
+from qemu_launch import launch_qemu, HERE
 
-HERE = Path(__file__).resolve().parent.parent
-QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
-FLASH = HERE / "flash.bin"
 RIIC_IMAGE = HERE / "riic2_eeprom.img"
 
 RING_BASE = 0x20420120
@@ -51,15 +49,6 @@ PRODUCER_ADDR = 0x20186c4c
 OVERFLOW_TRAP = 0x200b93fc
 
 
-def launch_qemu() -> subprocess.Popen:
-    return subprocess.Popen(
-        [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
-         "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234",
-         "-global", f"rza1h-riic.image={RIIC_IMAGE}"],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-
-
 def main():
     total_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 90.0
     arm_threshold = int(sys.argv[2]) if len(sys.argv) > 2 else 4
@@ -70,7 +59,7 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    proc = launch_qemu()
+    proc = launch_qemu(["-global", f"rza1h-riic.image={RIIC_IMAGE}"])
     try:
         time.sleep(0.4)
         g = GdbRsp(port=1234)

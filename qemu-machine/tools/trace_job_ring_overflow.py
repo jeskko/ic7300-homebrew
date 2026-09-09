@@ -44,6 +44,7 @@ Usage: trace_job_ring_overflow.py [seconds] [poll_interval_s]
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -51,10 +52,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gdbrsp import GdbRsp
+from qemu_launch import launch_qemu as _launch_qemu, HERE
 
-HERE = Path(__file__).resolve().parent.parent
-QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
-FLASH = HERE / "flash.bin"
 RIIC_IMAGE = HERE / "riic2_eeprom.img"
 
 RING_BASE = 0x20420120
@@ -65,24 +64,19 @@ RING_CAPACITY = RING_BASE + 3    # constant (16)
 
 OVERFLOW_TRAP = 0x200b93fc
 
-
-import os
-
 DMAC_DEBUG_LOG = os.environ.get("DMAC_DEBUG_LOG")
-ICOUNT = os.environ.get("ICOUNT")  # e.g. "shift=auto" -- see README-history.md's clock-realism
-                                    # thread, 2026-09-09, for why this is being tried
+# icount is qemu_launch's own default (shift=auto) now that it's this machine's recommended
+# way to run at all -- ICOUNT="" opts out, for an A/B comparison against the old unthrottled
+# timing model (this is exactly how the fix itself was found and confirmed, 2026-09-09).
+ICOUNT = os.environ.get("ICOUNT", "shift=auto") or None
 
 
-def launch_qemu() -> subprocess.Popen:
-    stderr_target = open(DMAC_DEBUG_LOG, "w") if DMAC_DEBUG_LOG else subprocess.DEVNULL
-    args = [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
-            "-serial", "none", "-monitor", "none", "-S", "-gdb", "tcp::1234",
-            "-global", f"rza1h-riic.image={RIIC_IMAGE}"]
-    if ICOUNT:
-        args += ["-icount", ICOUNT]
-    return subprocess.Popen(
-        args,
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr_target,
+def launch_qemu():
+    stderr_target = open(DMAC_DEBUG_LOG, "w") if DMAC_DEBUG_LOG else None
+    return _launch_qemu(
+        ["-global", f"rza1h-riic.image={RIIC_IMAGE}"],
+        icount=ICOUNT,
+        **({"stderr": stderr_target} if stderr_target else {}),
     )
 
 
