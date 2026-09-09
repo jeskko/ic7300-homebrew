@@ -54,6 +54,25 @@ the parts list (see below), even though D402/D406/D409 are all confirmed
 *live* code inputs — they're just apparently never asserted on real
 hardware in production.
 
+**D408/D411/D414/D417's own "no consumer found" mystery — a real, narrowing
+PCB-level negative check (2026-09-09)**: the user checked the actual PCB
+photos directly for these four diodes, since the schematic omits the diode
+matrix entirely — found no visible trace/routing leading anywhere beyond
+the matrix scan itself (no separate signal line, no second consumer trace
+distinguishable from the other, already-confirmed diodes in the same
+matrix). This doesn't prove there's no software consumer (a trace being
+invisible in a photo isn't the same as a trace not existing, and the
+already-confirmed diodes' own real consumers are all *firmware-side*
+logic reading the matrix's scanned bit pattern, not separate physical
+traces either — so this check couldn't have found a consumer even for a
+diode that DOES have one). But it does rule out the one hardware-side
+hypothesis that would have made further firmware searching moot (a
+second, undocumented physical connection carrying these bits somewhere
+the matrix-scan code never touches) — reinforcing that if these four
+diodes do anything, the answer is still purely in firmware, not on the
+board. Narrows the standing "vestigial vs. undiscovered code" question
+without resolving it either way.
+
 ## Official per-version population data (service manual Parts List)
 
 Source: service manual §5 Parts List, Main Unit, page 5-1 — per-diode

@@ -180,6 +180,14 @@ confirmed" section — summary:
   (`0xFCFE301C`) that would carry those signals has exactly one reference in the whole image — the
   generic one-time boot GPIO init, same signature as the already-solved `DRESD`/`P2_6` case — so the
   real runtime relay-shift-out code goes through some other, not-yet-found indirection.
+  **Exact bit assignments confirmed off the schematic, 2026-09-09** (previously only known as
+  "shared `TDAT`/`TCLK`/`TOE`, individually latched by `TSTB1`-`4`" with no bit numbers): `TSTB1`=`P7_1`,
+  `TSTB2`=`P7_2`, `TSTB3`=`P7_5`, `TSTB4`=`P7_6`, `TCLK`=`P7_3`, `TDAT`=`P7_4`; also on the same port,
+  `TOE`=`P7_7`, and both `PHASEI`/`IMPI` read as `P7_8` (unconfirmed whether that's a genuine shared/
+  muxed pin or a transcription slip — don't treat as settled either way). This turns the standing
+  "some other, not-yet-found indirection" search into a concrete, targeted one: find whatever code
+  touches these specific bit positions of `0xFCFE301C` (or whatever register/indirection actually
+  carries them, given the direct one has only the generic boot-init reference) — not yet done.
 - **First real hardware-pin-level confirmation, same day**: following up the user's `EKEY`/`PHASEI`/
   `IMPI`/`SWRL`/`TPWRL` hint found **`tuner_jack_poll_and_autotrigger`** (renamed `FUN_2006672c`, runs
   every idle-loop tick) and **`tuner_jack_signal_precheck`** (renamed `FUN_20066154`) — both read the
@@ -194,8 +202,15 @@ confirmed" section — summary:
   tuner subsystem" and "physically drives the internal relay network" remain two separately-unconfirmed
   claims. The `SWRL`/`TPWRL` hint didn't pan out on this function's own threshold locals (traced to
   generic shared state, not power/SWR samples) — best remaining lead is checking `0x2001f168` (the
-  paired tuner housekeeping function) for a `PPR1` read, not yet done. See the history file for full
-  derivation.
+  paired tuner housekeeping function) for a `PPR1` read, not yet done. **`PPR1` clarified, 2026-09-09**:
+  not a distinct schematic-named signal (the user checked and couldn't find one under that name) —
+  it's this project's own already-established register-naming shorthand for "the Port Pin Read
+  register, Port 1" (`0xFCFE3204`, already used this way in `notes/firmware-update.md`'s own
+  `P1_6`/`PDV` trace), which reads all of Port 1's pins at once. `SWRL`=`P1_15`/`TPWRL`=`P1_14` (both
+  already in `notes/ic7300-signal-chain.md`'s own P1 pin table) are just two bits *of* that same
+  register, not separate registers of their own — so the still-open lead is unchanged in substance
+  (does `0x2001f168` read `0xFCFE3204` at all, and if so do bits 14/15 matter to it), just no longer
+  confusing to phrase. See the history file for full derivation.
 
 ## Living reference: full boot-time task catalog
 
