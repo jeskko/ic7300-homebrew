@@ -72,13 +72,52 @@
  * way, as a one-shot delay line (a fixed 1GHz internal tick rate so the
  * limit value is directly the delay in nanoseconds -- `ptimer_run(timer,
  * 1)`'s own `oneshot` argument handles "fire once per arm", not a policy
- * flag). Manual research this session confirmed there's no cleanly
- * derivable *value* to replace the delay with either (DMAC's real clock
- * domain is Bφ, 128.00MHz at this SoC's confirmed clock mode, but the
- * manual gives no single "cycles per byte" figure to build a real transfer-
- * time constant from -- so this stays the same arbitrary-but-short
- * placeholder value it always was, just delivered through an icount-aware
- * mechanism now). */
+ * flag).
+ *
+ * CORRECTED, 2026-09-10 -- the `ptimer` port above genuinely fixed the
+ * "never fires" symptom, but a session that concluded from that fix (plus
+ * host-side dmac.c print correlation and one GDB breakpoint at the ISR's
+ * own entry) that the whole busy-wait "genuinely completes in under 1ms,
+ * 8/8 trials" and filed the remaining mystery as a pure QEMU gdbstub
+ * reliability artifact was WRONG -- it never independently checked the
+ * actual RAM flag firmware itself reads, only that the device model's own
+ * internal chain (arm -> ptimer -> IRQ -> ISR entry) runs fast. A fully
+ * GDB-free direct read of that flag (0x203906EE, via QMP's
+ * `human-monitor-command` -> `xp`, zero gdbstub involvement at all) on a
+ * real natural boot showed it permanently stuck non-zero, confirmed across
+ * multiple independent trials -- `FUN_200b5ea4` really does hang forever,
+ * and (since it's `cold_boot_hw_init`'s very next call after DMAC and
+ * shares the identical control struct) so does its sibling `FUN_200b5f38`,
+ * which is never even reached.
+ *
+ * The real bug: `FUN_200b5dc0` (this firmware's own low-level "arm"
+ * routine, shared by all 6 real callers of channel 0) writes `N0TB_0` --
+ * the exact write this model treats as "start the completion ptimer" --
+ * and only ONE instruction later marks its own struct busy (`strb r0,
+ * [r2,#2]`, i.e. sets the very flag `FUN_200b5ea4`/`FUN_200b5f38` poll).
+ * With the delay short enough (the original 1000ns, under `-icount`'s own
+ * virtual-time pacing), the ptimer callback -- and the guest ISR it
+ * triggers, which correctly clears that same flag -- can run to completion
+ * in the single-instruction gap between the arm write and the firmware's
+ * own busy=1 write. The firmware's delayed busy=1 then silently overwrites
+ * an already-correct completion, permanently (the transfer is done, so
+ * nothing will ever clear it again). Confirmed directly: raising
+ * `DMAC_COMPLETE_DELAY_NS` alone (still 100% GDB-free QMP reads, no
+ * breakpoint anywhere near the race) took the flag from permanently stuck
+ * at 0x01 to reliably 0x00, 5/5 trials, at both 10ms and 100us -- real DMA
+ * can't outrun the CPU's own very next instruction the way a sub-microsecond
+ * model can, so this was always a self-inflicted emulation race, not a real
+ * hardware race and not a GDB artifact. `DMAC_COMPLETE_DELAY_NS` raised to
+ * 100us below (still an arbitrary, not-real-clock-accurate value, same
+ * rationale as before -- see the manual-clock-domain research two
+ * paragraphs up -- just comfortably clear of this specific race instead of
+ * landing right inside its danger zone). With the fix in, boot progresses
+ * well past this point for the first time since the `ptimer` port, straight
+ * into the already-known `0x200b93fc` job-ring-overflow trap (reproduced
+ * 2/2 fresh trials, ~20-45s in) -- see qemu-machine/README.md's Status
+ * section for why that trap's own prior "confirmed clean under -icount"
+ * finding needs a fresh look given it was never actually tested together
+ * with a genuinely working DMAC channel 0 before now. */
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
@@ -116,9 +155,12 @@ struct RZA1HDmacState {
  * completion, and short enough that a boot-time busy-wait resolves in a
  * reasonable wall-clock testing time. See the FIXED note above for why
  * this is now delivered via `ptimer` at a fixed 1GHz tick rate (1 tick =
- * 1ns) rather than a raw `QEMUTimer` -- the delay value itself is
- * unchanged. */
-#define DMAC_COMPLETE_DELAY_NS 1000
+ * 1ns) rather than a raw `QEMUTimer`. Raised from the original 1000ns to
+ * 100us, 2026-09-10 (see the CORRECTED note above) -- 1000ns was short
+ * enough to race the firmware's own next instruction under `-icount`;
+ * 100us confirmed clear of that race, 5/5 trials (also confirmed at 10ms,
+ * kept at 100us as the smaller value that still tested clean). */
+#define DMAC_COMPLETE_DELAY_NS 100000
 #define DMAC_TIMER_FREQ_HZ 1000000000
 
 static uint64_t rza1h_dmac_read(void *opaque, hwaddr offset, unsigned size)

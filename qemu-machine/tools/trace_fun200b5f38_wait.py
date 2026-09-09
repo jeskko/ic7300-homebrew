@@ -40,6 +40,15 @@ Concrete first things to check once this narrows further:
     both functions' own loop 1 but wasn't traced as carefully as 0x203906EE was.
 
 Usage: trace_fun200b5f38_wait.py [max_seconds]
+
+CORRECTED, 2026-09-10 -- this ran to a conclusion (TIMEOUT, neither breakpoint fires) and the
+follow-up direct-memory-read this file's own comment recommended (`read_fun200b5f38_flags.py`)
+found the *real* story is one level up: the CPU isn't stuck in FUN_200b5f38's own loop 1 at
+all -- it never even reaches FUN_200b5f38, because the *preceding* call (`FUN_200b5ea4`, the
+already-"resolved" DMAC completion wait) never returns either. See dmac.c's own "CORRECTED,
+2026-09-10" comment and README-history.md's newest section for the real root cause (a firmware-
+vs-ptimer completion race) and the actual fix. Kept for its own reusable bracketing technique,
+not for its original diagnosis.
 """
 
 from __future__ import annotations

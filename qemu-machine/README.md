@@ -14,28 +14,50 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09/10 — the "DMAC/icount stall" is RESOLVED (a QEMU GDB-remote-stub
-## reliability artifact under `-icount shift=auto`, not a real DMA/timing bug — host-side-only
-## instrumentation proved the real arm→ptimer→IRQ→guest-ISR chain completes in under 1ms every
-## trial). New permanent tool, `src/rza1h_debug.h` (`RZA1H_DEBUG=<names>|all` env var), gives
-## cheap, GDB-free visibility into every real device's own boundary events. **The SD-card path's
-## real blocker turned out to be neither of the two things this session initially suspected**:
-## not the DMAC/icount thread (resolved above), and — a real correction made same session, not
-## left standing — not `FUN_2002b29c`'s branch gate either (`cold_boot_mode_dispatch`'s own
-## decompile shows it calls `cold_boot_hw_init()` directly, which demonstrably runs, so that gate
-## is already passed). **Precisely localized instead, ready for a fresh session to pick up**:
-## `FUN_200b5f38` — `cold_boot_hw_init`'s very next call after the already-resolved DMAC function,
-## sharing its *literal identical* control-struct address (`0x203906EC`) — never reaches its own
-## transfer-arm step at all (confirmed via a completely GDB-free `RZA1H_DEBUG=dmac` run: only one
-## arm+complete event total, matching only the earlier function's). It's stuck in its own loop 1
-## (the shared-slot-idle check), and since this finding is GDB-free, it's likely a real, different
-## bug, not a repeat of the GDB-stub artifact. `tools/trace_fun200b5f38_wait.py` is built and
-## ready — brackets the exact loop-1-exit/return addresses, **not yet run to a conclusion**, per
-## explicit request to prepare this for a fresh session rather than solve it now. The original
-## `0x20420120` ring-overflow fix is unaffected and still stands. See README-history.md's newest
-## four sections for the full derivation (including two real corrections made honestly rather
-## than left standing) — read those before trusting any older "stall"/gate framing further down
-## in this file's own history.
+## Status, 2026-09-10 — the "DMAC/icount stall" is FIXED for real this time (2026-09-09's
+## "RESOLVED, GDB-remote-stub artifact" conclusion turned out to be WRONG — see below). A fresh
+## session picked up the prepared `tools/trace_fun200b5f38_wait.py` handoff, ran it to a
+## TIMEOUT as predicted, then found the prior session's own diagnosis of that timeout was
+## itself mistaken: the CPU was never stuck in `FUN_200b5f38`'s own loop 1 at all — it never
+## even reached `FUN_200b5f38`, because the *preceding* call, `FUN_200b5ea4` (the DMAC completion
+## wait 2026-09-09 called "resolved"), itself never returns. A **fully GDB-free** cross-check
+## (QMP's `human-monitor-command` → `xp`, zero gdbstub involvement at all — new tool,
+## `tools/qmp_read_mem.py`) read the actual busy flag firmware polls (`0x203906EE`) and found it
+## **permanently stuck at 0x01** across multiple independent natural boots — directly
+## contradicting 2026-09-09's "completes under 1ms every trial, 8/8" finding, which turns out to
+## have checked only the DMAC model's own internal chain (arm→ptimer→IRQ→ISR entry, genuinely
+## fast) without ever independently re-reading the actual RAM flag afterward.
+##
+## **The real bug, precisely localized**: `FUN_200b5dc0` (the shared low-level "arm" routine,
+## 6 real callers) writes `N0TB_0` (the model's own "start the completion ptimer" trigger) and,
+## only ONE instruction later, marks its own struct busy — the same flag the ISR clears. Under
+## `-icount`, the original 1000ns completion delay was short enough that the ptimer callback and
+## its ISR can run to completion *inside that single-instruction gap*, so the firmware's own
+## delayed busy=1 write silently overwrites an already-correct completion, permanently. Confirmed
+## live (still 100% QMP-only, no breakpoint anywhere near the race): raising
+## `DMAC_COMPLETE_DELAY_NS` alone, no other change, took the flag from stuck-at-1 to reliably 0,
+## 5/5 trials across two tested values (10ms and 100us) — **fixed by raising it to 100us**
+## (`src/dmac.c`). A real, self-inflicted emulation race (real DMA can't outrun the CPU's own
+## next instruction the way a sub-microsecond model under `-icount` can), not a GDB artifact —
+## very likely a genuine regression introduced by 2026-09-09's own `ptimer` port (which fixed a
+## real "never fires at all" bug but, in doing so, likely made completion fire fast enough
+## relative to `-icount`'s pacing to newly expose this race).
+##
+## **With the fix in, boot now progresses well past this point for the first time since the
+## `ptimer` port — straight into the already-known `0x200b93fc` job-ring-overflow trap**
+## (confirmed a real `b 0x200b93fc` self-branch, not a transient poll; reproduced 3/3 fresh
+## trials, ~20-45s in, all with `-icount shift=auto`). This means the ring-overflow fix's own
+## prior "confirmed clean, zero overflows across two 130s/160s trials" finding needs a real
+## caveat: no prior trial ever ran with a genuinely working DMAC channel 0 *and* `-icount` *and*
+## the OSTM/MTU2 real-clock fix all active together until this session's fix went in — whether
+## this is the same overflow mechanism re-surfacing under a now-different boot timing profile,
+## or something the DMAC fix's own changed scheduling newly exposes, is genuinely open, not yet
+## traced this session. **Concrete next step**: `tools/trace_job_ring_overflow.py` against
+## `0x200b93fc`, re-deriving producer/consumer/timing fresh rather than assuming last session's
+## `0x20420120`-ring analysis still applies unchanged. See README-history.md's newest section for
+## the full derivation, including why the breakpoint-based verification attempt tried first this
+## session was itself discarded as untrustworthy (a real, live example of the project's own
+## documented gdbstub-artifact class) before the GDB-free QMP method settled it.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -208,7 +230,7 @@ that this false blocker is out of the way.
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM (only RIIC2 exercised by any traced boot path so far — the diode-matrix EEPROM, `IC351`/`GT24C128B`) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel. Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
-| DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer) — **confirmed load-bearing 2026-09-09**, unblocks the busy-wait right after MTU2's, see Status above. Every other channel/register still plain storage |
+| DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
 | RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
 
 ## Directory layout
@@ -308,13 +330,22 @@ that this false blocker is out of the way.
   step by `trace_fun200b5f38_wait.py` below once smoke tests showed zero hits even at the very
   first waypoint — its own module comment explains why and points to the more targeted tool.
   Still useful if/once `FUN_200b5f38` itself is resolved and the blocker moves further downstream.
-- **`tools/trace_fun200b5f38_wait.py`** (new, 2026-09-09/10) — **the actual current resume
-  point, prepared but deliberately not run to a conclusion.** Brackets `FUN_200b5f38`'s own
-  loop-1-exit (`0x200b5fbc`) and real return (`0x200b5fd8`) with exactly two breakpoints, mirroring
-  the exact technique that resolved `FUN_200b5ea4` — see its own module comment for the full
-  derivation and concrete follow-up questions (does `FUN_200b5ea4`'s ISR definitely finish first;
-  read `0x203906EE`/`0x203906ED` directly once stuck; check `references_to` on `0x203906ED`
-  specifically, not yet done this session).
+- **`tools/trace_fun200b5f38_wait.py`** (2026-09-09/10) — brackets `FUN_200b5f38`'s own
+  loop-1-exit (`0x200b5fbc`) and real return (`0x200b5fd8`); ran TIMEOUT as the prior session
+  predicted, but the *reason* for that TIMEOUT was corrected 2026-09-10 (the CPU never reaches
+  `FUN_200b5f38` at all — see Status above). Kept for the bracketing technique, not the original
+  diagnosis, per its own updated module comment.
+- **`tools/read_fun200b5f38_flags.py`** (new, 2026-09-10) — the tool that found the real story:
+  free-runs past early boot noise, then periodically `interrupt()`s and reads `r15` plus
+  `0x203906EE`/`0x203906ED` directly (no breakpoint at all). Found the CPU actually parked inside
+  `FUN_200b5ea4`'s *own* loop 2, not `FUN_200b5f38`'s loop 1 — the finding that unraveled
+  2026-09-09's "RESOLVED" DMAC conclusion. See Status above.
+- **`tools/qmp_read_mem.py`** (new, 2026-09-10) — a general-purpose, fully GDB-free physical-
+  memory reader via QMP's `human-monitor-command` → `xp` (needs only `-qmp unix:...`, no
+  `-S`/`-gdb` at all). The tool that actually confirmed the DMAC completion race, and settled
+  it independently of `gdbrsp.py`'s own remote-serial path — reach for this whenever a finding
+  needs a second, structurally-different confirmation before being trusted, the same lesson
+  2026-09-09's own "GDB-remote-stub artifact" story should have applied to itself but didn't.
 - **`patches/hw-arm-build.patch`** — the small diff (`hw/arm/Kconfig` + `hw/arm/meson.build`)
   that registers our files in the vendored QEMU checkout.
 - **`setup.sh`** — idempotent: clones QEMU `v11.1.1` (shallow) if missing, applies the patch,
@@ -422,12 +453,23 @@ spot-check.
    it calls `cold_boot_hw_init()` directly (which demonstrably runs), so that gate is already
    passed; `system_mode_request_dispatch()` is only reached once `cold_boot_hw_init()` itself
    returns, and something inside *that* function's own remaining body is the real blocker.
-   **Precisely localized it before handing off**: a completely GDB-free `RZA1H_DEBUG=dmac` run
-   shows only one DMAC arm+complete event total, meaning `FUN_200b5f38` (`cold_boot_hw_init`'s
-   very next call after the already-resolved DMAC function, sharing its *literal identical*
-   control struct at `0x203906EC`) never arms its own transfer — stuck in its own loop 1, and
-   since this came from a GDB-free run, likely a real, different bug, not the GDB-stub artifact
-   recurring. `tools/trace_fun200b5f38_wait.py` is built and ready (brackets the exact loop-1-exit/
-   return addresses) but **deliberately not run to a conclusion** — prepared for a fresh session
-   per explicit request. See README-history.md's newest section for the full derivation and the
-   concrete follow-up questions once it narrows further.
+   **Precisely localized it before handing off (2026-09-09), then actually fixed, 2026-09-10 —
+   RETRACTED the "resolved" framing of the DMAC/icount stall a second time, for real this time.**
+   The prior session's own localization ("`FUN_200b5f38` stuck in its own loop 1") turned out to
+   be one function off: the CPU never reaches `FUN_200b5f38` at all, because `FUN_200b5ea4` (the
+   *preceding* call, "resolved" the session before that) itself never returns — its own
+   completion flag gets permanently stuck by a real, self-inflicted emulation race (the firmware's
+   own "mark busy" write lands one instruction after the arm write, late enough for the model's
+   sub-microsecond `ptimer` completion to race ahead of it under `-icount` and get silently
+   overwritten). Fixed by raising `dmac.c`'s completion delay past the race window (1000ns → 100us),
+   confirmed via a fully GDB-free QMP memory-read cross-check (`tools/qmp_read_mem.py`, new) rather
+   than trusting a breakpoint anywhere near the race itself. **With the fix in, boot progresses
+   further than ever before — straight into the already-known `0x200b93fc` job-ring-overflow trap,
+   reproduced 3/3 fresh trials.** Whether that's the same overflow mechanism re-surfacing under a
+   now-different boot timing profile, or something the DMAC fix's own changed scheduling newly
+   exposes, is genuinely open — not yet traced. See Status above and README-history.md's newest
+   section for the full derivation, including why a breakpoint-based verification attempt was
+   itself discarded as untrustworthy (a live instance of this project's own documented gdbstub-
+   artifact class) before the GDB-free QMP method settled it. **Concrete next step**:
+   `tools/trace_job_ring_overflow.py` against `0x200b93fc`, re-deriving producer/consumer/timing
+   fresh rather than assuming the prior `0x20420120`-ring analysis still applies unchanged.
