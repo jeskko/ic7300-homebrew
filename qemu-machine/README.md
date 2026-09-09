@@ -54,27 +54,30 @@ active resume point.
 ## **Re-derived fresh rather than assumed: it's the same `0x20420120` ring, same producer/
 ## consumer, same burst shape as the prior session's own analysis** (`r0`=`0x2`/`lr`=
 ## `0x20187c29` at the trap match exactly; `pending` sits at 0-1 for tens of seconds then jumps
-## straight to overflow in well under half a second, both re-confirmed live). **One real new
-## lead**: a header sample caught right at the burst's own onset landed at `pc=0x200051ec` —
-## cross-checked directly via `objdump` against `scratch/unpacked/142/body.bin` (the address
-## was undefined bytes in Ghidra, the project's own known ARM/Thumb bug) and confirmed to be
-## the SVC/software-interrupt exception dispatcher (`cps #19` entry, syscall-number jump-table
-## dispatch). This directly confirms the ring's real producer path (`FUN_20186fb4`, a generic
-## "post a message to a channel" primitive) is reachable via `software_interrupt(0)` from **any**
-## user-mode task system-wide, not just its 2 known direct call sites — reframing this as a
-## genuine multi-task message burst occasionally exceeding a fixed 16-slot queue, not a
-## consumer-starvation or icount-artifact story. *Not yet found*: which task(s) actually fire the
-## burst, or why specifically at this boot phase (display/EGL setup remains the leading guess,
-## unconfirmed). **New methodology finding**: narrowing the polling cadence to 0.02s right before
-## the expected overflow *suppressed it entirely* (0/1, 50s) — even non-breakpoint periodic
+## straight to overflow in well under half a second, both re-confirmed live).
+##
+## **A same-day "SVC dispatch" lead built on `pc=0x200051ec` was WRONG — RETRACTED, checked and
+## corrected the same session it was found, not left standing.** After the user applied the
+## needed ARM-mode disassembly fix (`scratch/armthumb_fix_requests.txt`), decompiling
+## `0x200051c0` for real showed a `GICC_IAR` read (`0xE820200C`) and a `GICC_EOIR` write
+## (`0xE8202010`) — the exact addresses `notes/kernel-rtos.md` already documents as the FreeRTOS
+## RZ/A1H port's own `INTC_ICCIAR_ADDR`/`INTC_ICCEOIR_ADDR`. This is the **generic hardware-IRQ
+## exception vector**, not the SWI/software-interrupt one (that's `swi_handler`, a *separate*
+## function at `0x200056dc`, already named by an earlier session). Confirmed live (GDB-free QMP
+## read of its RAM-resident dispatch table): table entry 0 is exactly `irq_context_switch_id0`
+## (`0x20005960`, the ring's own already-known consumer) and entry 41 is exactly the DMAC ISR
+## (`0x200b5b90`) — this is simply the shared entry point for every hardware IRQ the firmware
+## handles, unrelated to the message-post/`software_interrupt(0)` path it was wrongly connected
+## to. Ghidra renamed to `irq_exception_dispatch` with a corrected comment/bookmark. **The
+## `0x20420120` ring's real burst source is open again** — the one solid new fact from this
+## thread is a methodology one: narrowing the polling cadence to 0.02s right before the expected
+## overflow *suppressed it entirely* (0/1, 50s) — even non-breakpoint periodic
 ## `interrupt()`+`read_memory()` perturbs this race if frequent enough; the coarse 0.25s cadence
-## `trace_job_ring_overflow.py` already used is the proven sweet spot. A fix request is filed in
-## `scratch/armthumb_fix_requests.txt` (`0x200051c0 0xb8 arm`) so a real Ghidra function can be
-## created at the dispatcher once the user applies it. See README-history.md's newest two
-## sections for the full derivation, including why the breakpoint-based DMAC-race verification
-## attempt tried first this session was itself discarded as untrustworthy (a real, live example
-## of the project's own documented gdbstub-artifact class) before the GDB-free QMP method
-## settled it.
+## `trace_job_ring_overflow.py` already used is the proven sweet spot, not just "gentler than a
+## breakpoint". See README-history.md's newest two sections for the full derivation, including
+## why the breakpoint-based DMAC-race verification attempt tried first this session was also
+## discarded as untrustworthy (a real, live example of the project's own documented gdbstub-
+## artifact class) before the GDB-free QMP method settled that part.
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,

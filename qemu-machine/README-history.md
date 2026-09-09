@@ -2510,3 +2510,43 @@ this exact wall-clock mark (display/EGL surface setup was the leading guess befo
 session, still unconfirmed). Given this session's own finding that *any* added observation
 (even non-breakpoint polling, fine-grained enough) suppresses the burst, favor the same
 low-perturbation coarse-polling technique already proven to work here over anything tighter.
+
+## 2026-09-10 session, continued again: the "SVC dispatch" lead was wrong -- corrected the same day, not left standing
+
+The user ran the requested Ghidra ARM-mode fix (`scratch/armthumb_fix_requests.txt`,
+`0x200051c0 0xb8 arm`). Decompiling the address for real (rather than trusting the earlier
+`objdump`-only read, which got the *instructions* right but the *identity* wrong) immediately
+showed the mistake: `*(0xE8202000+0xC)` (a `GICC_IAR` read) and, at the very end,
+`*(0xE8202000+0x10) = ...` (a `GICC_EOIR` write). `notes/kernel-rtos.md` already documents
+these exact two addresses as the FreeRTOS RZ/A1H port's own `INTC_ICCIAR_ADDR`/
+`INTC_ICCEOIR_ADDR` — this is the **generic hardware-IRQ exception vector**, not an SVC/
+software-interrupt dispatcher at all. `swi_handler` (the real SWI vector) is a separate,
+already-named function at `0x200056dc`; the two were never the same thing.
+
+**Confirmed live before trusting the correction, same discipline as the DMAC fix**: read the
+dispatch table this function indexes (`0x204201d0`, GDB-free QMP) — entry 0 is exactly
+`0x20005960` (`irq_context_switch_id0`, already known as the `0x20420120` ring's own consumer)
+and entry 41 is exactly `0x200b5b90` (the DMAC ISR this same session traced earlier). Both
+match perfectly, converging two previously-separate findings into one coherent picture: this
+is simply the shared entry point for *every* hardware IRQ the firmware handles — GIC ID is read
+from `GICC_IAR`, looked up in this table, called, then acknowledged via `GICC_EOIR`. Renamed in
+Ghidra (`irq_exception_dispatch`), corrected comment and bookmark in place of the wrong ones.
+
+**What this retracts**: the previous section's claim that `FUN_20186fb4`'s
+`software_interrupt(0)` call reaches this address, and that the ring's burst is therefore
+reachable from any user-mode task via that specific syscall path. That connection never
+existed — the `pc=0x200051ec` sample that started this whole lead was just the CPU generically
+servicing *some* interrupt at that polled instant (unsurprising, since this same generic vector
+is what runs `irq_context_switch_id0` too), not evidence of a message-post burst specifically.
+
+**The `0x20420120` ring's real burst source is genuinely open again.** What still stands from
+this thread: the ring/producer/consumer/burst-shape re-derivation (solid, re-confirmed live),
+and the methodology finding that even light periodic polling (0.02s) suppresses this specific
+burst while the tool's existing 0.25s default doesn't. What doesn't stand: the SVC/
+`software_interrupt(0)` mechanism as the burst's explanation. A real next step, not yet tried:
+trace `swi_handler` (`0x200056dc`) itself and its own callees to see whether *it* (not
+`irq_exception_dispatch`) is what `FUN_20186fb4`'s `software_interrupt(0)` path actually
+reaches, and whether that's traceable to a specific bursting task at all -- or accept, as a
+real design characterization rather than a bug, that a fixed 16-slot queue fed by a genuinely
+generic system-wide primitive will occasionally see a burst exceed it, and move on to whatever
+this project's SD-card/VFS goal needs next instead of chasing this particular overflow further.
