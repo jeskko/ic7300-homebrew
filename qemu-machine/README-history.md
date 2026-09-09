@@ -1078,3 +1078,69 @@ question directly, rather than it staying purely theoretical. The natural next s
 which task is meant to drain this specific queue and directly test (the same way this
 project already tested `sys_monitor_task_entry`'s own context-switch path) whether it's ever
 actually dispatched. See `README.md`'s Status section for the current resume point.
+
+## The scheduler hypothesis was wrong -- corrected by testing it, not assumed: the real
+## overflow cause was this session's own MTU2 tick rate, fixed by slowing it down
+
+Picked up the previous section's own suggested next step directly -- but rather than diving
+straight into "trace which task drains this queue" (a large, open-ended investigation), first
+tried the cheapest thing that could disprove the scheduler hypothesis outright: a breakpoint
+on the ring-push call itself (`0x20187bb4`), logging every single hit's caller (`LR`) and
+arguments, not just the final overflow. A genuine "consumer never runs" scheduling bug would
+show either a single slow trickle of pushes from one starved producer, or an eventual burst
+once *something* finally got a chance to run; a rate mismatch would show a perfectly healthy,
+steady producer outrunning its consumer regardless.
+
+**Result, across 1080+ hits over 89 real seconds: exactly one caller, never once different**
+(`LR=0x20186c67`, `r0=0x20415c60`, `r1=1` on literally every hit) -- a single software timer,
+inside `FUN_20186c4c` (the timer-ID-indexed dispatch helper this project's own earlier session
+had already partly traced), expiring and re-arming on a steady, regular real-world cadence.
+Not a burst, not a scattered set of different producers -- one clean, periodic, always-
+identical signal. **More tellingly: with the breakpoint active, the overflow never happened
+at all across the full 89-second run** -- a stark contrast to every unbreakpointed run, which
+reliably hit it within 10-26 real seconds. A real context-switch/scheduling defect has no
+reason to care about a debugger pausing execution on one specific, otherwise-healthy producer
+call; a rate mismatch between that producer and its consumer would disappear exactly this way
+once anything -- a breakpoint's own overhead included -- slows the producer down relative to
+the consumer's own real pace.
+
+**This directly retracts this file's own previous section's framing.** The "generic RTOS
+job-queue overflow... points at this project's long-standing open question about concurrent
+task scheduling" conclusion was a reasonable hypothesis given the project's history, but
+wrong -- and only caught because it got tested live instead of accepted and escalated into a
+much larger scheduler investigation. Worth being explicit about this rather than quietly
+revising the record: a real check (arguably one call cheaper than the deep static tracing
+that preceded it) settled the question in minutes.
+
+**Traced the real cause to this session's own earlier work.** `FUN_20186c4c`'s single steady
+producer is, per this project's own established understanding, exactly the kind of software-
+timer-expiry event `FUN_200b7910` (MTU2 channel 3's periodic housekeeping tick, this session's
+very first fix) drives via its own cascading /2/4/8/200 countdown-timer bookkeeping. Channel
+3's `MTU2_FREQ_HZ` (500 MHz -- copied verbatim from `ostm.c`'s own "fast for testing, not
+real-clock-accurate" constant, chosen purely for wall-clock testing speed, not correctness)
+was very likely driving that cascade -- and therefore this exact software-timer-expiry
+producer -- faster than any real RZ/A1H's own MTU2 clock ever would, filling a small,
+fixed-16-slot queue faster than whatever real-hardware-paced consumer normally drains it.
+
+**Confirmed by direct experiment, not left as plausible reasoning**: lowered `MTU2_FREQ_HZ`
+from 500 MHz to 25 MHz (a deliberately conservative slowdown, not derived from any documented
+real RZ/A1H clock value -- picked purely to test the hypothesis cheaply) and reran the same
+free-running trial pattern used throughout this session. **Six independent trials (four 40-
+second runs, two 90-second runs -- 340 real seconds of cumulative boot time) produced zero
+recurrences** of the overflow, where the 500 MHz build reliably hit it within 10-26 real
+seconds on every prior run this session. Boot now progresses further than any prior state
+this session reached, into `scif5_send_and_wait_reply` (already named from an earlier
+session's DSP-comms tracing) -- a real, synchronous DSP command/reply round-trip, several
+genuine stages past where the overflow used to occur.
+
+**A generalizable lesson for this project going forward, not just a one-off fix**: any device
+this project adds with a "fast for testing, not real-clock-accurate" frequency constant
+(`ostm.c`'s `OSTM_FREQ_HZ`, now `mtu2.c`'s `MTU2_FREQ_HZ`) is a latent candidate for exactly
+this class of bug -- correct in isolation, but capable of producing real, reproducible
+downstream symptoms in *other*, unrelated firmware code that happens to share the same
+virtual clock and carries implicit real-time-relative assumptions (a fixed-capacity queue
+sized for a real hardware rate, in this case). A future blocker that "looks like" a
+scheduling or concurrency defect is worth checking against this cheaply first (does slowing
+down a recently-added fast peripheral clock change the symptom?) before escalating into a
+much larger scheduler-correctness investigation. See `README.md`'s Status section for the
+current resume point.

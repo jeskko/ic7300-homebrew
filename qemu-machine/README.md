@@ -14,11 +14,10 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-09 — MTU2 channel 4 (both TGI4A and TGI4C) built and confirmed load-bearing:
-## `dsp_boot_handshake` now resolves for real; boot reaches a genuinely new class of blocker --
-## a generic RTOS job-queue overflow whose trigger is a pure in-RAM flag, not a missing
-## peripheral, pointing at this project's long-standing open question about concurrent
-## task scheduling
+## Status, 2026-09-09 — the RTOS job-queue overflow is resolved, and the previous resume
+## point's own hypothesis (a genuine scheduler/context-switch bug) turned out to be wrong:
+## live testing traced it to this project's own MTU2 tick rate being too fast, fixed by
+## slowing it down; boot now reaches a real synchronous DSP command/reply exchange
 
 **Confirmed, solid, foundational (from prior sessions, still true):**
 - A custom QEMU machine (`rz-a1h`) builds cleanly against real QEMU v11.1.1 source (pinned,
@@ -172,23 +171,52 @@ now resolves reliably once TGI4A works correctly. Boot progresses into `dsp_cmd_
 `dsp_param_sync_tick()` (both already-named/known from an earlier session) — pushing ~23
 parameter words onto a ring buffer meant to be drained by TGI4C.
 
-**Active resume point — TGI4C alone did not fully resolve the next stall, and the real cause
-turned out to be a different, deeper class of problem.** A generic fixed-capacity ring-push
-helper (`FUN_20187bb4`, reused far beyond the DSP link — its 4 call sites sit inside what
-looks like a generic software-timer-expiry dispatch table) hits its own overflow protection
-(`FUN_200b93fc`, an unconditional infinite loop) — confirmed live via register capture at the
-exact halt (`r0=2`, matching this specific overflow site, not the sibling `FUN_201877e4`
-one). Traced the "wake the consumer" call the pusher makes (`FUN_20187b8c`) all the way down:
-it writes to a **plain RAM address** (`0x20336f24`, not any peripheral register) — meaning
-whatever is supposed to notice this flag and drain the ring is a **pure software/RTOS
-construct**, not something waiting on any interrupt this project could model. This points
-directly at this project's own long-standing open fallback hypothesis (first raised
-2026-09-09 morning, before any of today's MTU2/DMAC work): whether this emulator's
-context-switch mechanism genuinely handles multiple concurrently-scheduled tasks correctly —
-today's peripheral work has, for the first time, unlocked enough real concurrent activity to
-actually reach and expose this question directly, rather than it staying purely theoretical.
-Judged worth its own dedicated investigation (tracing which task is supposed to drain this
-queue and whether it's ever actually dispatched) rather than a quick continuation.
+**The previous resume point's own hypothesis was wrong — corrected by further live testing,
+not assumed.** The generic ring-push overflow (`FUN_20187bb4`/`FUN_200b93fc`) looked, from a
+first pass, like it pointed at a genuine emulator scheduling defect (the "wake the consumer"
+call writes a plain RAM flag, not a peripheral register — see README-history.md's previous
+section). Testing that directly instead of accepting it: breakpointed the ring-push call
+itself and captured **every single hit's caller** across a full run, not just the final
+overflow. Result: one single, always-identical producer (same `LR`, same arguments) firing at
+a steady real-world rate — never a multi-source burst, never a different caller. More
+tellingly, **adding the breakpoint itself (which briefly pauses the guest on every hit) made
+the overflow stop happening entirely** across a full 90-second run. A real scheduling defect
+would not care about that kind of pause; a **rate mismatch between one specific producer and
+a small fixed-capacity queue** would disappear exactly like this once something slows the
+producer down.
+
+That pointed straight at this session's own `mtu2.c`: its `MTU2_FREQ_HZ` (500 MHz, the same
+"fast for testing" constant `ostm.c` uses, chosen for wall-clock testing convenience, not
+correctness) was very likely driving the underlying software-timer-expiry scan that feeds
+this exact producer faster than a real chip's own MTU2 clock ever would, filling the queue
+faster than its real-hardware-paced consumer could keep up. **Confirmed by direct experiment,
+not just plausible reasoning**: lowered `MTU2_FREQ_HZ` to 25 MHz and reran — 6 independent
+trials (four 40s runs, two 90s runs, 340 real seconds of boot time total) with **zero
+recurrences** of the overflow, where every prior run (with the 500 MHz constant) reliably hit
+it within 10-26 real seconds. Boot now progresses further than ever, reaching
+`scif5_send_and_wait_reply`'s own busy-wait — a genuine, already-named (from an earlier
+session) synchronous DSP command/reply round-trip, several real stages past the overflow
+point.
+
+**Worth carrying forward as its own methodology lesson**: this project's own first read of
+the overflow (previous resume point) reached for "this must be the long-standing open
+scheduler question" — a real, legitimate hypothesis given the project's history, but wrong
+here, and only correctable by testing it directly (the breakpoint-hit-tracing above) rather
+than building on it. The actual, much more mundane cause was this session's own earlier
+choice of an unrealistically fast peripheral clock having a real downstream effect on
+unrelated firmware code that happened to share the same virtual clock. Every device this
+project adds with a "fast for testing, not real-clock-accurate" frequency constant
+(`ostm.c`'s `OSTM_FREQ_HZ`, now `mtu2.c`'s `MTU2_FREQ_HZ`) is a candidate for this same class
+of issue if a future blocker looks scheduling-shaped -- worth checking before escalating to a
+"is the scheduler broken" investigation.
+
+**Active resume point:** `scif5_send_and_wait_reply` (already named/known from an earlier
+session — the DSP's real synchronous command/reply API, 14 call sites project-wide) busy-waits
+on a "reply-ready" flag (`*(DAT_200b1c84+3)`) after arming a retry timer
+(`scif5_arm_retry_timer`). Not yet traced this session — the natural next step is the same
+playbook used throughout today: find what's supposed to clear that flag (a real SCIF5 RX
+event, per this function's own already-written comment) and confirm it live before building
+anything.
 
 ## Confirmed peripherals
 
@@ -278,12 +306,14 @@ spot-check.
    natural boot; `FUN_2002b29c`'s entire cold-boot branch gate now clears; the SCIF3
    front-panel handshake now genuinely completes; boot reaches real `itron_act_tsk` task
    activation; **`mtu2.c` (channels 3 and 4) and `dmac.c` together clear cold_boot_hw_init's
-   whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait, reaching
-   `dsp_cmd_table_init`/`dsp_param_sync_tick` — the furthest any session has reached**.
-   **Currently blocked on**: a generic RTOS job-queue overflow whose drain mechanism is a
-   pure in-RAM flag, not a peripheral — see "Active resume point" above. This is a genuinely
-   different class of problem (probable task-scheduling gap, not a missing device) and is
-   judged worth its own dedicated investigation. Once past it, the original question — does the
+   whole task-readiness-wait cluster and `dsp_boot_handshake`'s own wait**; a generic RTOS
+   job-queue overflow that followed turned out to be a self-inflicted timing artifact
+   (`mtu2.c`'s own tick rate outrunning an unrelated queue's real-hardware-paced consumer,
+   not a scheduler bug — see Status above), fixed by tuning that rate. Boot now reaches
+   `scif5_send_and_wait_reply` — a real synchronous DSP command/reply round-trip, the
+   furthest any session has reached. **Currently blocked on**: that function's own
+   "reply-ready" busy-wait, not yet traced this session — see "Active resume point" above.
+   Once past it, the original question — does the
    SD-card update flow reach MMCIF against a *properly* kernel-created task, and would the
    whole chain accept and boot custom firmware entirely offline — becomes directly retestable
    with the existing `force_call_fup.py`/`test_fup_scheduling.py` tooling.

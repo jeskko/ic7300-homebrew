@@ -180,11 +180,28 @@ struct RZA1HMtu2State {
 #define MTU2_TSTR_CST3   (1 << 6)
 #define MTU2_TSTR_CST4   (1 << 7)
 
-/* 500 MHz -- chosen only so the derived compare-match period (up to a full
- * 16-bit wraparound, see rza1h_mtu2_period_counts()) resolves in a
- * reasonable wall-clock testing time, same rationale as ostm.c's own
- * OSTM_FREQ_HZ; not real-clock-accurate regardless. */
-#define MTU2_FREQ_HZ 500000000
+/* 25 MHz -- deliberately NOT ostm.c's own 500 MHz "fast for testing"
+ * constant, and not arbitrary: lowered from an original 500 MHz choice,
+ * 2026-09-09, after live testing traced a real, reproducible RTOS
+ * job-queue overflow (see README-history.md's "MTU2 channel 4 built; a
+ * generic RTOS job-queue overflow" section) to this device's own tick
+ * rate outrunning a small, fixed-capacity software-timer-expiry queue
+ * elsewhere in the firmware -- confirmed via a breakpoint-based hit trace
+ * showing a single, steady, always-identical producer (never a genuine
+ * multi-source burst), and confirmed further that pausing execution on
+ * every one of that producer's calls (a breakpoint's own overhead) was
+ * enough to avoid the overflow entirely, pointing at a rate mismatch, not
+ * a scheduling bug. This project's own initial hypothesis after finding
+ * the overflow -- that it exposed a genuine emulator context-switch/
+ * multi-tasking defect -- was wrong; live testing corrected it before any
+ * code changed to "fix" a nonexistent scheduler bug. 25 MHz was chosen
+ * empirically (confirmed via 6 independent trials, up to 90s each, zero
+ * recurrences) as slow enough to avoid the overflow while still much
+ * faster than the SoC's real clock, matching this project's standing
+ * "not real-clock-accurate, just fast enough for practical testing"
+ * philosophy (same rationale as ostm.c's own constant) -- not a claim
+ * that 25 MHz is RZ/A1H's real Pφ. */
+#define MTU2_FREQ_HZ 25000000
 
 /* TGI4A's fixed one-shot period (in MTU2_FREQ_HZ counts) -- see file
  * comment's Simplifications paragraph for why this doesn't compute the
