@@ -3613,3 +3613,73 @@ reverted) -- it's what found this mechanism, and it stays available for any futu
 investigation in this area. `tools/trace_riic_busywait_probe.py` is also kept, as the reusable
 pattern for "is this specific busy-wait loop a real kernel trap or a disguised spin" checks
 elsewhere in this firmware.
+
+## 2026-09-10, same session, final leg: prepared (not yet run) the QEMU-main-loop profiling for
+## a fresh session, per explicit user request, plus two remedy questions answered along the way
+
+User asked two direct questions before requesting the handoff prep: (1) what would actually
+remedy the ring overflow given everything found, and (2) does this same problem threaten other
+peripherals as they communicate more.
+
+**Remedy question, answered**: the two most obvious-sounding fixes (raise SGI0's own GIC
+priority above `0x10`; grow the 16-slot ring's capacity) both require changing the REAL
+FIRMWARE's own configuration or data layout -- not viable, and not desirable even if it were,
+since the whole point of this project is testing real, unmodified IC-7300 firmware. The third
+candidate (reduce RIIC2's own IRQ density) was already tried this session (real bus-speed
+pacing) and confirmed insufficient alone. Given the QEMU-main-loop-overhead finding from earlier
+this session (the ~4x gap is mostly emulation architecture, not real hardware/firmware
+behavior), the right fix is almost certainly at that level instead -- reduce the actual QEMU
+overhead, which (per the corrected bus-timing math) would likely make the ring not overflow at
+all, since real timing alone predicts ~215ms, safely under the ~1.31s threshold.
+
+**"Other peripherals" question, answered concretely rather than left as a hypothetical**:
+checked `mmc.c` directly -- it has **zero** `ptimer` usage today, meaning no real SD-bus-speed
+pacing has been added yet (unlike `riic.c`/`scif.c`/`mtu2.c`/`dmac.c`, which all got this
+treatment already). This is double-edged: MMCIF traffic can't trigger this exact problem *yet*,
+but this project's own established pattern (add real hardware timing to each peripheral in
+turn) means `mmc.c` is very likely to get the same treatment once SD-card testing becomes the
+active thread -- and SD transfers are exactly the shape of workload (potentially far more
+data/events per transfer than a 230-chunk EEPROM scan) that would make this problem worse, not
+better. This is the concrete argument for fixing the general QEMU-overhead cause now, before
+`mmc.c` gets its own real-timing pass, rather than re-discovering the identical wall later under
+more time pressure on the actual Phase-0 goal.
+
+**Then, per explicit request, prepared (but deliberately did not run/complete) the actual
+profiling for a fresh session.** Built, tested, and verified working -- not left as an untested
+draft:
+
+- `patches/rr-loop-trace.patch` -- a temporary diagnostic to `accel/tcg/tcg-accel-ops-rr.c`
+  (the round-robin main loop), same style/precedent as `irq-mask-trace.patch` (`rza1h_rr_trace()`,
+  host-side `fprintf` to stderr, gated by `RZA1H_RR_TRACE`, silent by default). Six checkpoints
+  per outer-loop iteration: `loop_top` -> `after_wait_io` (brackets `rr_wait_io_event()`) ->
+  `after_relock` (brackets the `bql_unlock`/`replay_mutex_lock`/`bql_lock` sequence) ->
+  `after_icount_bookkeeping` (brackets `icount_account_warp_timer()`/`icount_handle_deadline()`)
+  -> `before_tcg_cpu_exec` -> `after_tcg_cpu_exec` (brackets the actual guest-execution slice).
+- `tools/apply_rr_loop_trace.sh` -- applies/rebuilds, same convention as
+  `apply_irq_mask_trace.sh`, **not wired into `setup.sh`**, drop via `git apply --reverse` once
+  this investigation concludes.
+- `tools/trace_rr_loop_overhead.py` -- runs a free boot with both `RZA1H_RR_TRACE=1` and
+  `RZA1H_DEBUG=riic` together (confirmed safe to combine, both fully GDB-free), parses both logs,
+  reports per-checkpoint-span statistics and the full outer-loop-iteration total.
+
+**Verified the whole toolchain actually works before handing it off, not just that it compiles**:
+applied the patch, built cleanly, ran a live smoke test (`RZA1H_DEBUG=riic RZA1H_RR_TRACE=1`,
+combined with `riic.c`'s own existing instrumentation) and confirmed real `[rrtrace]` output
+correlating sensibly with the already-understood boot timeline. Then ran the actual correlation
+tool for a short (8s) capture, which -- even in this brief smoke test, without yet reaching the
+dense `FUN_2006cb84` scan window -- already surfaced two concrete, actionable leads: (1) roughly
+half of all outer-loop iterations have **no** `tcg_cpu_exec` call in them at all (the loop cycles
+through the full lock-shuffle + icount-bookkeeping cost, then finds nothing runnable and loops
+back) -- worth understanding why, since each one pays real overhead for zero guest-execution
+benefit; (2) the actual guest-execution slice (`before_tcg_cpu_exec`->`after_tcg_cpu_exec`) has
+an extremely wide spread -- median ~3us, but a tail reaching tens of milliseconds -- suggesting
+whatever drives that variance is itself worth chasing. Reverted the patch afterward (`git apply
+--reverse`, rebuilt) to leave `qemu-src/` in its normal, unpatched state -- exactly the same
+"prepared, verified, not left applied" state as `irq-mask-trace.patch`'s own precedent.
+
+**Deliberately not done this session** (per the explicit "prepare for a fresh session"
+instruction): the actual per-event correlation join (matching specific loop iterations to
+specific RIIC2 phase transitions by host timestamp -- the current tool prints both series but
+doesn't yet join them), and any conclusion about whether the ~65-90us cost is fixable or
+fundamentally inherent to this single-threaded round-robin architecture. `README.md`'s Status
+section has the full, concrete next-step list for whoever picks this up.

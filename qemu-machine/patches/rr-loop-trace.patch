@@ -1,0 +1,70 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index cdaa3e1..43a076c 100644
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -38,6 +38,31 @@
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
+ 
++/*
++ * rza1h_rr_trace() -- TEMPORARY diagnostic instrumentation, not a permanent part of upstream
++ * QEMU. See qemu-machine/patches/rr-loop-trace.patch and qemu-machine/README.md's Status
++ * section for why this exists (finding where the real, measured ~65-90us-per-scheduled-device-
++ * event host wall-clock cost in this round-robin main loop actually goes -- confirmed real and
++ * event-type-independent via qemu-machine/src/riic.c's own icount_get_raw()/host-timestamp
++ * instrumentation, but not yet localized to one specific piece of this loop). Logs a host-side,
++ * GDB-free microsecond timestamp at each labeled checkpoint, silent unless RZA1H_RR_TRACE is set
++ * in the environment -- same style/precedent as irq-mask-trace.patch's rza1h_irq_trace().
++ */
++static void rza1h_rr_trace(const char *checkpoint)
++{
++    static int enabled = -1;
++
++    if (enabled < 0) {
++        const char *e = getenv("RZA1H_RR_TRACE");
++        enabled = (e && *e) ? 1 : 0;
++    }
++    if (!enabled) {
++        return;
++    }
++    fprintf(stderr, "[rrtrace] t=%" PRId64 "us %s\n",
++            (int64_t)g_get_monotonic_time(), checkpoint);
++}
++
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+ {
+@@ -233,12 +258,15 @@ static void *rr_cpu_thread_fn(void *arg)
+             qemu_notify_event();
+         }
+ 
++        rza1h_rr_trace("loop_top");
+         rr_wait_io_event();
+         rr_deal_with_unplugged_cpus();
++        rza1h_rr_trace("after_wait_io");
+ 
+         bql_unlock();
+         replay_mutex_lock();
+         bql_lock();
++        rza1h_rr_trace("after_relock");
+ 
+         if (icount_enabled()) {
+             int cpu_count = rr_cpu_count();
+@@ -253,6 +281,7 @@ static void *rr_cpu_thread_fn(void *arg)
+ 
+             cpu_budget = icount_percpu_budget(cpu_count);
+         }
++        rza1h_rr_trace("after_icount_bookkeeping");
+ 
+         replay_mutex_unlock();
+ 
+@@ -283,7 +312,9 @@ static void *rr_cpu_thread_fn(void *arg)
+                 if (icount_enabled()) {
+                     icount_prepare_for_run(cpu, cpu_budget);
+                 }
++                rza1h_rr_trace("before_tcg_cpu_exec");
+                 r = tcg_cpu_exec(cpu);
++                rza1h_rr_trace("after_tcg_cpu_exec");
+                 if (icount_enabled()) {
+                     icount_process_data(cpu);
+                 }

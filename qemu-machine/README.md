@@ -166,23 +166,75 @@ inferred. Explains, in hindsight, why the condition-timing fix barely moved the 
 duration: it reduced a *nominal* value that was never the dominant real cost to begin with. Full
 derivation, including the per-IRQ-type breakdown table, in README-history.md's newest section.
 
-**NEXT SESSION**: both items the prior handoff named are now closed (see above) — the old
-"NEXT SESSION, IN THIS ORDER" block a little further below is stale, superseded by this section,
-kept only for its own historical trail. Two real RIIC timing bugs got fixed this session (bit-rate
-formula, condition timing), and the general ring-overflow mechanism got freshly re-confirmed
-(not just assumed) against the current build — but no fix was attempted for the underlying
-ring-overflow trap itself (`0x200b93fc`, GIC-priority-starvation, mechanistically closed since
-the prior session — see "CLOSED, same day" below) — boot still stops there, same as before this
-session, since this session was pure investigation/tooling (one inert debug-log line in
-`riic.c`), not a mitigation attempt. **The concrete next step**: decide on and build an actual
-fix for that overflow so boot can progress toward the real Phase-0 payoff (the SD-card/VFS/MMCIF
-driver path, see "Extension roadmap" below) — candidates not yet weighed against each other:
-raise SGI 0's own GIC priority above `0x10` (risks masking something that currently relies on
-being preemptible), grow the 16-slot ring's capacity (a firmware-side struct-layout change, more
-invasive), or find a way to reduce/pace the RIIC2 scan's own IRQ density further (already tried
-once via real bus-speed pacing — confirmed insufficient alone, see "Added real I2C bus-speed
-pacing" below). Worth a real discussion of trade-offs with the user before picking one, not a
-unilateral pick.
+**Superseded pick-list, kept only for its own historical trail**: this section originally listed
+three unweighed candidate fixes for the ring overflow (raise SGI0's own GIC priority, grow the
+ring's capacity, reduce RIIC2's IRQ density). Two of those (raise SGI0 priority, grow the ring)
+are now understood to be the *wrong class* of fix entirely — both require changing the REAL
+FIRMWARE's own configuration/data layout, which this project can't do and wouldn't want to even
+if it could: the whole point is testing real, unmodified IC-7300 firmware, not a patched version
+of it. The third (reduce RIIC2's IRQ density) was tried (real bus-speed pacing, this session) and
+confirmed insufficient alone. **What actually explains most of the overflow, found this same
+session by directly measuring rather than assuming**: real, correctly-modeled RIIC2 bus timing
+predicts `FUN_2006cb84`'s scan takes ~215ms — safely under the ~1.31s (16 slots × ~82ms)
+threshold needed to overflow the ring. The *actual* measured ~830-910ms is ~4× longer, and that
+gap was traced (same session) to a real, ~65-90µs-per-scheduled-device-event cost inherent to
+QEMU's own round-robin TCG main loop — independent of the requested ptimer delay, confirmed via
+direct `icount`+host-timestamp correlation, not the device model or the real firmware. **This
+reframes the whole remedy question**: the ring overflow is very likely mostly (or entirely) an
+*emulation* artifact, not something the real IC-7300 would necessarily hit — so the real fix
+isn't a firmware-shaped workaround at all, it's finding and reducing that QEMU-architecture
+overhead directly.
+
+**NEXT SESSION — prepared and ready to run, not yet executed**: profile exactly where the
+~65-90µs/event cost goes inside QEMU's round-robin main loop (`accel/tcg/tcg-accel-ops-rr.c`'s
+`rr_cpu_thread_fn()`). This matters well beyond RIIC2: `mmc.c` (the actual Phase-0 target) has
+**zero** `ptimer` usage today — no real SD-bus-speed pacing yet — so this exact problem is
+currently dormant there, not fixed, and will very plausibly resurface (likely worse, given SD
+transfers can be far more event-dense than a 230-chunk EEPROM scan) the moment real MMCIF timing
+gets added, following this project's own established pattern of adding real timing to each
+peripheral in turn. Fixing the general QEMU-overhead cause now is much higher leverage than
+patching around RIIC2's own specific case.
+
+**What's ready to go, built and verified this session** (patch applies cleanly, builds cleanly,
+already smoke-tested and shown to produce real, useful data — see README-history.md's newest
+section for a first look at what it already revealed):
+1. `qemu-machine/tools/apply_rr_loop_trace.sh` — applies `patches/rr-loop-trace.patch` (a
+   temporary diagnostic to `accel/tcg/tcg-accel-ops-rr.c`, same style/precedent as
+   `irq-mask-trace.patch`) and rebuilds. **Not applied by default** — same convention as the
+   IRQ-mask patch, run this first. `git apply --reverse` to drop it once this investigation
+   concludes.
+2. Logs a host-side, GDB-free microsecond timestamp (`RZA1H_RR_TRACE=1`) at 6 checkpoints per
+   outer-loop iteration: `loop_top` → `after_wait_io` (brackets `rr_wait_io_event()`) →
+   `after_relock` (brackets the `bql_unlock`/`replay_mutex_lock`/`bql_lock` "lock shuffle") →
+   `after_icount_bookkeeping` (brackets `icount_account_warp_timer()`/`icount_handle_deadline()`)
+   → `before_tcg_cpu_exec` → `after_tcg_cpu_exec` (brackets the actual guest-execution slice).
+3. `qemu-machine/tools/trace_rr_loop_overhead.py` — runs a free boot with both `RZA1H_RR_TRACE=1`
+   and `RZA1H_DEBUG=riic` together (both GDB-free, safe to combine), parses both logs, and
+   reports per-checkpoint-span statistics plus the full outer-loop-iteration total.
+4. `riic.c`'s own permanent `icount_get_raw()`/host-microsecond-timestamp instrumentation (kept
+   from earlier this session) is the other half of the correlation — this new trace answers
+   *where in the QEMU loop* the time goes; `riic.c`'s own log answers *which RIIC2 phase
+   transition* each loop iteration corresponds to.
+
+**Concrete next steps for whoever picks this up**:
+1. Run `tools/apply_rr_loop_trace.sh`, then `tools/trace_rr_loop_overhead.py 15` (or longer — the
+   smoke test this session used only 8s and mostly missed the dense `FUN_2006cb84` scan window;
+   run long enough to cover it, `t≈4-7s` per `check_overflow_r0.py`'s own established timing).
+2. The smoke test already found two concrete leads worth chasing first: (a) a surprisingly large
+   fraction of outer-loop iterations have **no** `tcg_cpu_exec` call in them at all (roughly half,
+   in the smoke test) — worth understanding why, since each such "empty" iteration still pays the
+   full lock-shuffle + icount-bookkeeping cost for no guest-execution benefit; (b) the
+   `before_tcg_cpu_exec`→`after_tcg_cpu_exec` span (the actual guest-execution slice) has an
+   extremely wide spread (median ~3µs, but a tail up to tens of milliseconds) — understanding
+   what drives a slice long vs. short would directly explain a lot of the per-event variance.
+3. Actually correlate specific loop iterations (by host timestamp) against specific `riic.c`
+   "schedule irq=..." log lines — the current tool prints both but doesn't yet join them
+   per-event; that join is the concrete missing piece to attribute the ~65-90µs specifically to
+   RIIC2's own events rather than general boot activity.
+4. Once localized: decide whether it's fixable (e.g. unnecessary work happening on every
+   iteration regardless of whether anything's due) or fundamentally inherent to this
+   single-threaded round-robin architecture — that answer determines whether a real fix or a
+   documented, clearly-labeled compensation is the realistic path forward.
 
 ## Status, 2026-09-10 (updated same day) — DMAC completion race fixed; a real virtual DSP-ready
 ## signal built and confirmed (`scif5_wait_hsk1_ready`'s ~16-minute software timeout is gone, boot
