@@ -1,0 +1,66 @@
+diff --git a/target/arm/helper.c b/target/arm/helper.c
+index af45234..1e2a637 100644
+--- a/target/arm/helper.c
++++ b/target/arm/helper.c
+@@ -8266,6 +8266,45 @@ uint32_t cpsr_read(CPUARMState *env)
+         | (env->GE << 16) | (env->daif & CPSR_AIF);
+ }
+ 
++/*
++ * rza1h_irq_trace() -- TEMPORARY diagnostic instrumentation, not a permanent
++ * part of upstream QEMU. See qemu-machine/patches/irq-mask-trace.patch and
++ * qemu-machine/README.md's Status section for why this exists (chasing what
++ * holds CPSR.I=1 for ~10s during a specific IC-7300 firmware boot stall) and
++ * why it's a direct C-level hook rather than GDB/polling-based tracing
++ * (those were shown to suppress the exact effect being chased). Logs only on
++ * an actual 0->1/1->0 transition of the I bit -- both call sites below are
++ * the *only* two places in target/arm that ever change it (confirmed by
++ * grepping every env->daif writer), so this needs no per-instruction
++ * filtering. Silent unless RZA1H_IRQ_TRACE is set in the environment.
++ */
++static void rza1h_irq_trace(CPUARMState *env, const char *via)
++{
++    static int enabled = -1;
++    static uint32_t last_i = 0xffffffff; /* sentinel: not yet observed */
++
++    if (enabled < 0) {
++        const char *e = getenv("RZA1H_IRQ_TRACE");
++        enabled = (e && *e) ? 1 : 0;
++    }
++    if (!enabled) {
++        return;
++    }
++
++    uint32_t cur_i = env->daif & CPSR_I;
++    if (last_i == 0xffffffff) {
++        last_i = cur_i;
++        return; /* don't log the initial (arbitrary) state as a transition */
++    }
++    if (cur_i != last_i) {
++        fprintf(stderr,
++                "[irqtrace] t=%" PRId64 "us I %s pc=0x%08x mode=0x%02x via=%s\n",
++                (int64_t)g_get_monotonic_time(), cur_i ? "SET" : "CLR",
++                env->regs[15], env->uncached_cpsr & CPSR_M, via);
++        last_i = cur_i;
++    }
++}
++
+ void cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask,
+                 CPSRWriteType write_type)
+ {
+@@ -8355,6 +8394,7 @@ void cpsr_write(CPUARMState *env, uint32_t val, uint32_t mask,
+ 
+     env->daif &= ~(CPSR_AIF & mask);
+     env->daif |= val & CPSR_AIF & mask;
++    rza1h_irq_trace(env, "cpsr_write");
+ 
+     if (write_type != CPSRWriteRaw &&
+         ((env->uncached_cpsr ^ val) & mask & CPSR_M)) {
+@@ -8866,6 +8906,7 @@ static void take_aarch32_exception(CPUARMState *env, int new_mode,
+     /* J and IL must always be cleared for exception entry */
+     env->uncached_cpsr &= ~(CPSR_IL | CPSR_J);
+     env->daif |= mask;
++    rza1h_irq_trace(env, "exception_entry");
+ 
+     if (cpu_isar_feature(aa32_ssbs, env_archcpu(env))) {
+         if (env->cp15.sctlr_el[new_el] & SCTLR_DSSBS_32) {
