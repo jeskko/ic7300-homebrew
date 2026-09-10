@@ -3215,3 +3215,91 @@ been calling `IC351`/`GT24C128B` (RIIC2's real EEPROM) "the diode-matrix EEPROM"
 matrix" this project has extensively documented elsewhere is a completely separate mechanism -- a
 physical resistor/diode array read via GPIO port scanning (`FUN_2003bb88`), nothing to do with
 I2C or `IC351` at all. Fixed the table row's wording; don't reintroduce the conflation.
+
+## 2026-09-10, new session: read QEMU's own gdbstub/icount internals directly -- the working
+## "GDB pause distorts icount" theory is confirmed on one half, refuted on the other, and a
+## natural follow-on hypothesis is refuted too; the empirical suppression pattern is now a
+## sharper, still-unresolved tension rather than a plausible-sounding guess
+
+Per the explicit prior-session handoff (see `README.md`'s Status section), read
+`qemu-src/gdbstub/gdbstub.c`, `qemu-src/system/cpu-timers.c`,
+`qemu-src/accel/tcg/icount-common.c`, and `qemu-src/accel/tcg/tcg-accel-ops-rr.c` directly
+(the actual round-robin vCPU main loop turned out to be the load-bearing file, more than
+`cpu-exec.c` itself) to either confirm or correct the standing theory from update #11/#12: "GDB
+needs the vCPU stopped to service requests; under `-icount`, stopping freezes virtual time, so
+pending `ptimer` deadlines queue up and release in a burst (or altered order) at resume."
+
+**Confirmed, directly, first half**: `gdb_read_byte()` in `gdbstub.c` calls
+`vm_stop(RUN_STATE_PAUSED)` unconditionally whenever a byte arrives on the socket while
+`runstate_is_running()` -- a **full VM stop** (every vCPU, via `pause_all_vcpus()`), not a
+per-CPU pause, confirming the "any GDB request needs the vCPU stopped" half exactly. (Also
+confirmed the *register/memory-read* path itself, `cpu_synchronize_state()`, is a no-op for TCG
+-- `cpus_accel->synchronize_state` is only populated by KVM/HVF/WHPX/etc., which have real
+kernel-side state to pull back; TCG's `CPUArchState` is always already resident, so this call
+contributes nothing extra here. The *pause*, not the *read*, is what changes anything.)
+
+**Confirmed, directly, second half's core claim**: under `-icount`, `QEMU_CLOCK_VIRTUAL` really
+does freeze bit-for-bit while a GDB pause holds `RUN_STATE_PAUSED`. Two independent, explicit
+guards in `accel/tcg/icount-common.c` both read literally "Nothing to do if the VM is stopped:
+QEMU_CLOCK_VIRTUAL timers do not fire" and early-return whenever `!runstate_is_running()`:
+`icount_start_warp_timer()` (which would otherwise fast-forward virtual time across a real WFI/
+idle gap) and `icount_account_warp_timer()` (which reconciles that warp on wake). Separately,
+`cpu_thread_is_idle()` (`system/cpus.c`) treats *any* non-running runstate as "idle" regardless of
+each CPU's real `halted` flag (`cpu_is_stopped(cpu)` returns true whenever
+`!runstate_is_running()`), so the TCG round-robin main loop (`rr_wait_io_event()` in
+`accel/tcg/tcg-accel-ops-rr.c`) simply parks the vCPU thread on a condition variable for the
+entire real-world pause -- zero instructions retire, and neither warp mechanism runs to compensate.
+
+**Refuted, directly, the "burst release" half**: there is no queue-and-release-on-resume
+mechanism anywhere in this path. Because virtual time is frozen with exactly zero drift (not
+corrected, not warped) for the pause's whole real-world duration, resuming afterward is -- for
+every `QEMU_CLOCK_VIRTUAL`-driven `ptimer` deadline (i.e. every peripheral this project's own
+`mtu2.c`/`dmac.c`/`riic.c`/`scif.c` models) -- indistinguishable from an uninterrupted run: no
+deadline that "would have fired during the freeze" needed to fire, because zero virtual time
+elapsed during the freeze. The original theory's mechanism was half right (the freeze) and half
+wrong (what happens because of it); this is a correction, not a full retraction.
+
+**A natural, well-motivated follow-on hypothesis, checked and also refuted**: given the freeze is
+real, the next candidate was `-icount shift=auto`'s own adaptive retuning (`icount_adjust()`,
+same file) -- it compares accumulated virtual icount against a reference wall clock
+(`cpu_get_clock()`, via `REPLAY_CLOCK_LOCKED(REPLAY_CLOCK_VIRTUAL_RT, ...)`, which with
+record/replay disabled -- this project's own config -- reduces to `cpu_get_clock_locked()`
+directly) and adjusts `icount_time_shift` up/down to keep them aligned. A real-duration GDB pause
+looked like an obvious way to desync those two, inflating `icount_time_shift` on resume (directly
+extending 2026-09-09 update #9's own "stateful adaptive tuner" hypothesis with exact source
+citations). **This turned out to be wrong, confirmed directly**: `cpu_get_clock()`'s reference
+value is *itself* frozen by `cpu_disable_ticks()` -- called from the exact same `do_vm_stop()`
+that pauses the vCPUs -- so both sides of `icount_adjust()`'s comparison freeze together. This is
+a deliberate QEMU design safeguard (a debugger pause must not count against the guest as "falling
+behind real time"), not an oversight, and it closes off this specific avenue cleanly.
+
+**Also checked and ruled out**: whether any of this project's own device models read a real
+(non-`QEMU_CLOCK_VIRTUAL`) clock somewhere that a pause *would* distort even though the generic
+icount plumbing doesn't -- a direct grep of `src/*.c` for any `g_get_monotonic_time`/
+`gettimeofday`/raw wall-clock read found none; every real-timing-derived value in this whole
+project's own peripherals goes through `qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)` or a `ptimer`
+(itself `QEMU_CLOCK_VIRTUAL`-backed). This project's own devices are not the leak.
+
+**Net result -- three specific, plausible icount-level mechanisms were checked directly against
+source this session, and all three predict a read-only GDB stop/inspect/resume cycle (no writes,
+no single-stepping) should be perfectly transparent to guest-visible virtual-time behavior.** Yet
+this project has repeatedly, empirically observed real suppression/alteration from GDB-based
+polling that QMP-based polling doesn't share (a direct breakpoint at `id0`'s entry preventing the
+original ring-overflow stall outright; `trace_sgi0_gic_state.py`'s GDB polling suppressing the
+faster, post-HSK1-fix overflow entirely while every QMP-only trace reproduced it). **Directly
+confirmed, structurally, why the QMP-side techniques never show this**: `hmp_physical_memory_dump`
+(`xp`) and `hmp_info_registers` (`monitor/hmp-cmds.c`) both read live guest state
+(`address_space_read()`, `cpu_dump_state()`) with no `vm_stop()` anywhere in either path -- the
+vCPU keeps running the entire time a QMP read happens, unlike every GDB request. That much is a
+clean, confirmed structural difference. **What it does NOT yet explain is why the GDB side
+distorts anything at all**, given the freeze/no-burst/no-shift-skew findings above. This is a
+genuinely sharper, still-open tension, not a solved mystery -- flagged honestly rather than
+papered over with the original plausible-sounding theory. Concrete, not-yet-chased candidates for
+whoever continues: (1) this pass never read `cpu-exec.c`'s single-step path specifically (only
+its breakpoint/`EXCP_DEBUG` handling) -- if any tool in this project's history ever used `s`
+rather than pure breakpoint-and-continue, that path is unexamined; (2) a real bug in
+`tools/gdbrsp.py`'s own software-breakpoint set/step/restore sequence (opcode-patch timing) is a
+tooling-correctness question, not a QEMU-internals one, and hasn't been audited against this
+finding; (3) the real ARM `arm_gic` device model's own state machine (not checked this pass at
+all) could have some `cpu_synchronize_state`-adjacent or interrupt-delivery-timing interaction
+specific to a stopped-CPU window that none of the three generic mechanisms above would surface.

@@ -14,6 +14,47 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, new session — read QEMU's own gdbstub/icount internals per the prior
+## session's explicit handoff order; the working "GDB pause distorts icount" theory is half
+## confirmed, half refuted, and a well-motivated follow-on hypothesis is refuted too
+
+**Step 1 of the prior handoff, done.** Read `gdbstub/gdbstub.c`, `system/cpu-timers.c`,
+`accel/tcg/icount-common.c`, `accel/tcg/tcg-accel-ops-rr.c` directly. Result, precisely:
+**confirmed** — any GDB request forces a full `vm_stop()` while running (`gdbstub.c`'s
+`gdb_read_byte()`), and `QEMU_CLOCK_VIRTUAL` genuinely freezes with exactly zero drift for the
+whole pause (`icount_start_warp_timer()`/`icount_account_warp_timer()` both explicitly no-op
+while `!runstate_is_running()`, and `cpu_thread_is_idle()` treats any non-running runstate as
+idle regardless of real CPU halted state, parking the TCG main loop entirely). **Refuted** — the
+"pending deadlines queue up and release in a burst at resume" half: with zero drift during the
+freeze, resuming is indistinguishable from an uninterrupted run for every `QEMU_CLOCK_VIRTUAL`-
+backed `ptimer` (i.e. every peripheral this project models) — no burst mechanism exists.
+**Also refuted**, a natural next hypothesis (shift=auto's adaptive retuning skewing on a
+real-duration pause): its own wall-clock reference (`cpu_get_clock()`) is frozen by the *same*
+`cpu_disable_ticks()` call `vm_stop()` already makes — a deliberate QEMU safeguard, not a gap.
+This project's own device models were also checked and ruled out (grep confirmed every real-
+timing value in `src/*.c` goes through `QEMU_CLOCK_VIRTUAL`/`ptimer`, no stray real-clock reads).
+
+**Net**: three specific, plausible icount-level mechanisms all predict a read-only GDB stop/
+inspect/resume cycle should be perfectly transparent to guest timing — yet this project has
+repeatedly, empirically observed real GDB-based suppression (id0 breakpoint preventing the
+original overflow outright; `trace_sgi0_gic_state.py`'s GDB polling suppressing the faster
+post-HSK1-fix overflow while QMP-only tracing reproduced it every time). **Directly confirmed**
+why QMP-based techniques never show this: `hmp_physical_memory_dump`/`hmp_info_registers`
+(`monitor/hmp-cmds.c`) both read live state with zero `vm_stop()` calls in either path — the vCPU
+never stops for a QMP read. **What remains genuinely open**: why the GDB side distorts anything
+at all, given the freeze/no-burst/no-shift-skew findings above all say it shouldn't. Sharper than
+before (three specific mechanisms eliminated with citations), not closed. Full derivation,
+including the exact functions/lines checked, in README-history.md's newest section.
+
+**Step 2 of the prior handoff, next**: resume tracing the EEPROM-scan caller with this corrected
+understanding in hand — since a GDB pause is now shown to add zero virtual-time distortion on its
+own (whatever the still-open remaining tension is, it isn't "the pause fabricates extra time"),
+`tools/trace_eeprom_scan_caller.py`'s ~83ms-cadence finding (cold_boot_hw_init repeatedly calling
+the EEPROM-read wrapper) leans more toward "genuine re-entry" than before, but isn't proven yet —
+get a second, GDB-free confirmation (the established discipline throughout this project) before
+trusting it, then find the still-unfound denser 557-transaction burst's own caller among the
+~23 other read-side call sites of `FUN_2001e484`.
+
 ## Status, 2026-09-10 (updated same day) — DMAC completion race fixed; a real virtual DSP-ready
 ## signal built and confirmed (`scif5_wait_hsk1_ready`'s ~16-minute software timeout is gone, boot
 ## now visibly exercises much more of `cold_boot_hw_init`); **the job-ring-overflow trap's GIC
