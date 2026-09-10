@@ -14,6 +14,83 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — real-world ground truth arrives: the user has
+## never observed the actual IC-7300 crashing from this suspected ring overflow. Chased the most
+## concrete testable divergence hypothesis (does our synthetic EEPROM image trigger a validation/
+## recovery scan a real, correctly-calibrated EEPROM wouldn't need) -- refuted directly by
+## decompile, but a real, separate documentation bug was caught and fixed along the way. The
+## user then asked whether attaching GDB changes IRQ behavior -- answered from already-established
+## source-level facts, and this session's own virtual-time-domain finding sharpens that tension
+## rather than resolving it.
+
+**This is decisive, load-bearing evidence, not a minor data point.** The ring-overflow trap fires
+during `cold_boot_hw_init`, on the path every single real cold boot takes -- if this were a real
+firmware/hardware fragility, the radio would need to crash/reboot on effectively every power-on, an
+extremely conspicuous symptom the user would certainly have already noticed. Combined with
+everything above (the mechanism doesn't respond to real-time compression, doesn't respond to icount
+shift changes, and the closed per-checkpoint diagnosis already pinned it to QEMU's own round-robin
+architecture) -- the balance of evidence now points squarely at **emulation/peripheral-modeling
+inaccuracy**, not real firmware fragility, for the "would real hardware overflow" question this
+whole thread has carried as its one remaining open item.
+
+**Chased the single most concrete, testable divergence candidate**: this project's virtual EEPROM
+image (`riic2_eeprom.img`) is synthetic, built by `tools/build_riic_eeprom_image.py`, not extracted
+from a real radio. If `FUN_2006cb84` (the dense-scan source, ~6700+ bytes across 7 chunked reads)
+were a checksum/validation-gated *recovery* scan -- reading more, or differently, when content
+looks corrupt -- our synthetic image could be tripping a "recovery" code path a real, factory-
+calibrated EEPROM's always-valid content would never reach, manufacturing a divergence that has
+nothing to do with real GIC/bus timing at all. **Checked directly via decompile, not assumed**:
+`FUN_2006cb84`'s own body is a flat, **unconditional** sequence of 7 fixed-size (well, 6 fixed +
+one bounded-but-selector-driven, never validation-driven) reads -- no checksum, no branch on
+content, nothing resembling "if invalid, read more." The one data-dependent piece is a "which of 8
+region-table entries" selector byte, not a retry/recovery gate. **This refutes the hypothesis
+cleanly**: a real, correctly-calibrated radio would generate the *identical* volume of I2C traffic
+here, every single boot -- this specific scan's size is not an emulation-specific artifact of our
+synthetic image.
+
+**A real, separate documentation bug caught (and already independently self-corrected) while
+checking this.** Working from this session's own recalled project-memory summary (not the README
+itself), decompiled the STI handler (`FUN_2001d9bc`) directly to confirm which higher-level wrapper
+pair (`FUN_2001e484`/`FUN_2001dcc4` vs. `FUN_2001e510`/`FUN_2001dd58`) is genuinely read vs. write
+-- and momentarily concluded `FUN_2006cb84` might be a *write*, seemingly contradicting its own
+established "settings-struct load" description. **Turned out to be chasing an already-fixed bug**:
+`README.md` already has this exact correction on record (`FUN_2001e484`/`FUN_2001dcc4` = write,
+`FUN_2001e510`/`FUN_2001dd58` = read -- confirmed again here, independently, via the same STI-
+handler logic: opcode `0` → `DRT=0xa0` write-address, opcode `≠0` → `DRT=0xa1` read-address) -- the
+actual bug was that **this project's own persistent memory file still carried the old, pre-
+correction (backwards) labeling**, with no forward pointer to the fix, which is exactly what caused
+this session's own momentary confusion. Fixed in memory directly (annotated in place, not silently
+rewritten). Doesn't change any device-model behavior (`riic.c` is keyed to the real `0xa0`/`0xa1`
+bus values observed, never to these function names) -- purely a documentation/memory-hygiene fix,
+but a real lesson: **a stale paraphrase in persistent memory can reintroduce an already-fixed
+mistake into a fresh session** -- worth a cross-check against the actual README/history when memory
+and a fresh decompile seem to disagree, exactly as happened here.
+
+**Per the user's own follow-up ("since connecting gdb makes it go away, does it somehow make the
+irq work in a different way")**: answered from what's already been directly established (three
+specific icount-level mechanisms checked against `gdbstub.c`/`cpu-timers.c`/`icount-common.c`
+source and all three refuted as the cause -- virtual time genuinely freezes with zero drift during
+a GDB pause, no burst-release mechanism exists, and `shift=auto`'s own adaptive tuner freezes both
+sides of its comparison together) -- so a read-only GDB poll/resume cycle *should* be virtual-time-
+transparent, yet empirically suppresses the overflow. **This session's own real-time-compression
+finding (above) sharpens this rather than resolving it**: since the overflow is virtual-time-domain
+and GDB's pause is *also* proven virtual-time-transparent, GDB shouldn't be able to touch this
+mechanism via any already-checked path -- yet it does. Two candidates remain genuinely unchecked:
+a bug in this project's own `gdbrsp.py` breakpoint set/step/restore sequence, or an unexamined
+`arm_gic.c` interaction with a stopped-CPU window. Not chased further this session (secondary to
+the hardware-fidelity question now that real-world evidence answers the main one) -- flagged for
+whoever wants to close out this specific QEMU/tooling curiosity.
+
+**Where this leaves the whole ring-overflow thread**: the "would real hardware overflow" question
+now has a real-world answer (no, not observed), and the most concrete "our synthetic data causes
+this" hypothesis is refuted. The residual mystery is now narrower and more specific: *something*
+about this emulation's own modeling (GIC priority values, ring capacity assumptions, bus-timing
+formula, or something not yet identified) makes the margin tighter here than on real silicon.
+Not chased further this session -- a real, well-scoped next step for whoever picks this up: audit
+the ring's own 16-slot capacity and the GIC priority values actually read live against real
+firmware/silicon documentation one more time, now motivated by real-world ground truth rather than
+a plausibility argument.
+
 ## Status, 2026-09-10, same session, continued — a decisive, direct test REFUTES the whole
 ## "QEMU's own round-robin real-wall-clock overhead is why SGI0 starves" theory. The ring overflow
 ## is a virtual-time-domain phenomenon, completely independent of how fast or slow the emulation
