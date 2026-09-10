@@ -14,6 +14,54 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — since the remaining ring-overflow question is now
+## hardware-access-gated (see the sections below), planned concrete live/JTAG tests for once real
+## hardware access exists, and identified candidate tooling already possibly on hand.
+
+**Per the user's own question ("what kind of JTAG/live testing would give a concrete lead")** --
+tiered by cost/risk vs. how decisive an answer it gives, sequenced 1→3→2 (cheapest/independent
+first):
+1. **Hardware breakpoint at `0x200b93fc`** (the trap's own `b .`) via the already-ordered
+   FT2232H-based JTAG adapter + OpenOCD, across many power cycles. This address is a RAM address
+   `body.bin` is decompressed to on real boot too (same documented `0x20005000` load point) -- no
+   translation needed. Zero perturbation risk in the hoped-for outcome (an unhit breakpoint costs
+   nothing); a single hit is decisive positive proof, many clean misses meaningfully strengthens
+   the user's own informal "never seen it crash" into something closer to measured confidence.
+2. **Non-halting background polling of the ring header** (`0x20420120`: write_idx/read_idx/
+   pending/capacity) at a few-ms cadence during a real cold boot, via the same JTAG adapter if its
+   ARM debug-port implementation supports memory access without halting the core (a standard
+   CoreSight/AHB-AP feature on many ARMv7-A implementations, not guaranteed on this specific
+   adapter/core combo -- worth testing feasibility early). This is the single most direct test of
+   the *specific* mechanism this thread derived (does `read_idx` really freeze ~30ms while
+   `write_idx` keeps pushing? does `pending` ever approach 16?), not just the symptom.
+3. **An external, JTAG-independent cross-check of the bus-timing formula itself** -- a logic
+   analyzer on RIIC2's SCL/SDA lines to the real EEPROM (`IC351`) during boot, directly measuring
+   real per-byte SCL timing against the derived ~340kHz/~26.4us-per-byte formula this whole
+   margin argument depends on. Doesn't need JTAG at all, so isn't gated on that hardware arriving.
+
+**Candidate tooling for #3, not yet confirmed in hand -- ask before assuming either way**: the user
+has an old Bus Pirate and possibly an old Dangerous Prototypes Openbench Logic Sniffer (OLS)
+somewhere, neither confirmed located yet. Checked both directly (not assumed) against our real
+~340kHz signal: the Bus Pirate's **text-mode I2C protocol sniffer is not viable at all** (software-
+polled, tops out ~70kHz, well under our real bus speed, regardless of burst density) -- but its
+separate **raw logic-analyzer/SUMP mode** (up to 1MHz sampling, 4096-sample buffer -- v3-class
+hardware) could work for the narrow goal of measuring per-byte timing directly (a ~4ms/~150-byte
+capture is plenty for that), with triggering-the-right-moment as the main practical risk given the
+scan's own onset timing has shifted by several seconds across this whole thread's boot-path
+history. **The OLS, if found, is meaningfully better-suited**: for a 2-channel (SCL/SDA) capture,
+16K-sample depth at up to 200Msps-class hardware, and -- if its firmware/sigrok driver supports
+run-length-encoded capture (worth checking once located, varies by firmware version) -- idle-time
+compression could let a single capture span from power-on through the whole dense scan without
+needing a precise trigger at all, since the bus sits idle almost all the time outside actual
+transactions. Either device is a candidate; a cheap ~$10 generic logic analyzer (sigrok/PulseView-
+compatible, buffer limited by USB streaming rather than onboard memory) remains the fallback if
+neither turns up or proves inadequate once tested.
+
+**Not yet built**: no OpenOCD/GDB script or Python polling-tool skeleton for #1/#2 exists yet --
+offered to prepare one, not yet requested. Queue this alongside the existing JTAG-hardware-arrival
+tracking (project memory) rather than building speculatively before the adapter is confirmed in
+hand.
+
 ## Status, 2026-09-10, same session, continued — the last flagged loose end (the RIIC2 bit-rate
 ## fix's "aggregate scan duration only measured 1.44x, not the full 2.19x" wrinkle) chased down and
 ## resolved. Also a real, honest correction to this same session's own earlier "shift=7 matches
