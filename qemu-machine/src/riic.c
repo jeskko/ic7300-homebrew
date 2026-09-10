@@ -95,6 +95,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -187,7 +188,58 @@ struct RZA1HRiicState {
 
     char *image_path;
     int image_fd; /* -1 if no image given / failed to open */
+
+    /* Real I2C bus-speed pacing (2026-09-10) -- see riic_byte_time_ns()'s own comment. Every
+     * `qemu_irq_raise()` above that represents a genuinely new real hardware event (STI/TI/TEI/
+     * RI/SPI becoming ready) goes through riic_schedule_irq() instead, which defers the actual
+     * raise by one real byte time. The state-machine bookkeeping (`phase`, `mem_addr`, the
+     * immediate `qemu_irq_lower()` calls) stays synchronous -- those are internal/superseded-
+     * signal transitions, not new events a real driver would need real time to observe. */
+    ptimer_state *event_timer;
+    int pending_irq; /* -1 = idle */
 };
+
+/* Real RZ/A1H RIIC bit-rate-generator formula: SCL low/high widths are (BRL[4:0]+1)/IICφ and
+ * (BRH[4:0]+1)/IICφ respectively (standard Renesas RIIC design, shared across the RX/RZ family).
+ * IICφ = PCLK / 2^CKS, where CKS is a prescaler field in MR1 -- its exact bit position isn't
+ * independently confirmed against this project's own SVD copy within this pass's scope, so it's
+ * treated as CKS=0 (IICφ=PCLK) here, an honestly-flagged simplification in the same spirit as
+ * scif.c's own "PCLK not independently re-derived for SCIF specifically" caveat. PCLK is P0φ =
+ * 32MHz, the same real clock already established project-wide. 9 SCL cycles per byte (8 data
+ * bits + 1 ACK) -- this is what's actually being paced: every phase transition below
+ * (STI/TI/TEI/RI/SPI) represents one such byte-shaped step in the real protocol. */
+#define RIIC_PCLK_HZ 32000000
+
+static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
+{
+    uint64_t low_ns = ((s->brl & 0x1f) + 1) * 1000000000ULL / RIIC_PCLK_HZ;
+    uint64_t high_ns = ((s->brh & 0x1f) + 1) * 1000000000ULL / RIIC_PCLK_HZ;
+
+    return (low_ns + high_ns) * 9;
+}
+
+/* Defers the actual qemu_irq_raise() for `irq_idx` by one real byte time -- see this file's own
+ * struct comment. Only one such event is ever in flight at a time in this strictly-sequential
+ * state machine; a fresh request simply restarts the timer for whatever's newest. */
+static void riic_schedule_irq(RZA1HRiicState *s, int irq_idx)
+{
+    s->pending_irq = irq_idx;
+    ptimer_transaction_begin(s->event_timer);
+    ptimer_set_count(s->event_timer, riic_byte_time_ns(s));
+    ptimer_run(s->event_timer, 1); /* oneshot */
+    ptimer_transaction_commit(s->event_timer);
+}
+
+static void riic_event_fire(void *opaque)
+{
+    RZA1HRiicState *s = RZA1H_RIIC(opaque);
+    int idx = s->pending_irq;
+
+    s->pending_irq = -1;
+    if (idx >= 0) {
+        qemu_irq_raise(s->irq[idx]);
+    }
+}
 
 static uint8_t riic_eeprom_read(RZA1HRiicState *s, uint16_t addr)
 {
@@ -235,9 +287,9 @@ static uint64_t rza1h_riic_read(void *opaque, hwaddr offset, unsigned size)
                 s->sp_pending = false;
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
-                qemu_irq_raise(s->irq[IRQ_SPI]);
+                riic_schedule_irq(s, IRQ_SPI);
             } else {
-                qemu_irq_raise(s->irq[IRQ_RI]); /* next byte */
+                riic_schedule_irq(s, IRQ_RI); /* next byte */
             }
             return byte;
         }
@@ -261,7 +313,7 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             s->phase = RIIC_WAIT_ADDR;
             s->sp_pending = false;
             s->sr2 |= SR2_START;
-            qemu_irq_raise(s->irq[IRQ_STI]);
+            riic_schedule_irq(s, IRQ_STI);
         } else if ((value & CR2_RS) && s->phase == RIIC_WAIT_RESTART) {
             rza1h_debug("riic", "riic%u: RESTART condition", s->channel);
             qemu_irq_lower(s->irq[IRQ_TEI]); /* real hardware: the next
@@ -269,10 +321,10 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                                * auto-clears it */
             s->phase = RIIC_WAIT_READ_ADDR;
             s->sr2 |= SR2_START;
-            qemu_irq_raise(s->irq[IRQ_STI]); /* restart re-triggers the
-                                               * same start-condition
-                                               * source as the initial
-                                               * start, per real hardware */
+            riic_schedule_irq(s, IRQ_STI); /* restart re-triggers the
+                                             * same start-condition
+                                             * source as the initial
+                                             * start, per real hardware */
         } else if (value & CR2_SP) {
             rza1h_debug("riic", "riic%u: STOP requested (phase %u)",
                        s->channel, (unsigned)s->phase);
@@ -287,7 +339,7 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             } else {
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
-                qemu_irq_raise(s->irq[IRQ_SPI]);
+                riic_schedule_irq(s, IRQ_SPI);
             }
         }
         break;
@@ -340,10 +392,10 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                            * through a write-address +
                                            * restart first), but handle
                                            * it rather than wedge */
-                qemu_irq_raise(s->irq[IRQ_RI]);
+                riic_schedule_irq(s, IRQ_RI);
             } else {
                 s->phase = RIIC_WAIT_MEM_HI;
-                qemu_irq_raise(s->irq[IRQ_TI]);
+                riic_schedule_irq(s, IRQ_TI);
             }
             break;
         case RIIC_WAIT_MEM_HI:
@@ -351,24 +403,24 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                               * auto-clears TDRE */
             s->mem_addr = (uint16_t)(value << 8);
             s->phase = RIIC_WAIT_MEM_LO;
-            qemu_irq_raise(s->irq[IRQ_TI]);
+            riic_schedule_irq(s, IRQ_TI);
             break;
         case RIIC_WAIT_MEM_LO:
             qemu_irq_lower(s->irq[IRQ_TI]);
             s->mem_addr |= (uint8_t)value;
             s->phase = RIIC_WAIT_RESTART;
-            qemu_irq_raise(s->irq[IRQ_TEI]);
+            riic_schedule_irq(s, IRQ_TEI);
             break;
         case RIIC_WAIT_READ_ADDR:
             /* STI already lowered via the SR2 START-flag clear, same as
              * the RIIC_WAIT_ADDR case above. */
             s->phase = RIIC_READING;
-            qemu_irq_raise(s->irq[IRQ_RI]); /* arm step -- see file
-                                              * comment on why this
-                                              * naturally re-triggers a
-                                              * second time on its own,
-                                              * no explicit chaining
-                                              * needed for a level line */
+            riic_schedule_irq(s, IRQ_RI); /* arm step -- see file
+                                            * comment on why this
+                                            * naturally re-triggers a
+                                            * second time on its own,
+                                            * no explicit chaining
+                                            * needed for a level line */
             break;
         default:
             rza1h_debug("riic", "riic%u: unexpected DRT write %#x in phase %u",
@@ -407,6 +459,10 @@ static void rza1h_riic_reset(DeviceState *dev)
     s->phase = RIIC_IDLE;
     s->mem_addr = 0;
     s->sp_pending = false;
+    s->pending_irq = -1;
+    ptimer_transaction_begin(s->event_timer);
+    ptimer_stop(s->event_timer);
+    ptimer_transaction_commit(s->event_timer);
     for (i = 0; i < RIIC_NUM_IRQ; i++) {
         qemu_irq_lower(s->irq[i]);
     }
@@ -426,6 +482,13 @@ static void rza1h_riic_realize(DeviceState *dev, Error **errp)
                          s->channel, s->image_path, strerror(errno));
         }
     }
+
+    s->event_timer = ptimer_init(riic_event_fire, s,
+                                 PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                 PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->event_timer);
+    ptimer_set_freq(s->event_timer, 1000000000); /* 1 tick = 1ns */
+    ptimer_transaction_commit(s->event_timer);
 }
 
 static void rza1h_riic_init(Object *obj)
