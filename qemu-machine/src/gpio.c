@@ -235,6 +235,17 @@ static void rza1h_gpio_reset(DeviceState *dev)
      * boot ever observes -- so this one pin gets a real, justified
      * exception rather than staying at the generic default. */
     s->pin_level[1] |= 0x40;
+
+    /* P8_9 ("HSK1") is the DSP's real hardware ready/handshake line, polled by
+     * `scif5_wait_hsk1_ready` right after `scif5_dsp_link_driver_init` during cold boot, and
+     * separately by the firmware-update DSP/Front-CPU chunk-transfer path
+     * (`notes/ic7300-signal-chain.md`'s 27th session traced both) -- two independent call sites
+     * agreeing this is a real ready signal, not a guess. A real DSP is presumably already
+     * powered and asserting this line well before the main CPU's boot reaches either check, so
+     * (like `P1_6` above) this pin gets a justified exception instead of the generic all-zero
+     * default -- without it, `scif5_wait_hsk1_ready` never sees it ready and busy-waits its full
+     * ~16-minute software timeout instead (see qemu-machine/README.md's Status section). */
+    s->pin_level[8] |= 0x200;
 }
 
 static void rza1h_gpio_init(Object *obj)
