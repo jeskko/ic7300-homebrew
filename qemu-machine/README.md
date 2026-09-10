@@ -14,6 +14,64 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — per the user's own "keep going on that" request:
+## audited the ring's 16-slot capacity (confirmed genuinely real) and the GIC priority values
+## (found and fixed a real, confirmed-against-Renesas'-own-driver-source model inaccuracy: wrong
+## priority-register bit-width) — the fix is real, validated, kept, but empirically does NOT
+## change the overflow outcome, exactly as the mechanism predicted before testing.
+
+**Ring capacity, checked not assumed**: traced the producer's own bounds check (`FUN_20187bb4`)
+directly -- the "16" isn't a hardcoded immediate in that function at all, it's read from the ring
+header's own byte 3 at runtime. Followed that byte back to its real init code (`0x20187f8c`-
+`0x20187f96`, real disassembly) which copies it from a **separate static data byte at `0x20336058`**
+-- read directly from the image: **`0x10` = 16**. Genuinely real, firmware-compiled, not an
+assumption this project made or a value inferred indirectly.
+
+**GIC priority values -- a real, confirmed-against-real-Renesas-source inaccuracy found and
+fixed.** This machine's GIC (`rz_a1h.c`) never set `num-priority-bits`, leaving QEMU `arm_gic`'s
+own default of **8** significant priority bits. Checked directly against Renesas' own sample
+driver already vendored in this repo (`scratch/r01an5093ej0170-rza1-swpkg/.../
+r_intc_configure.c`, `R_INTC_SetPriority()`): its own `priority` argument is documented range
+**0-31** and gets shifted left by 3 before the real `ICDIPRn` write, with the driver's own comment
+stating outright *"Priority[7:3] of ICDIPRn is valid bit"* -- real RZ/A1H silicon implements only
+**5** priority bits, not 8. Confirmed `arm_gic.c`'s own `gic_fullprio_mask()`/
+`gic_dist_set_priority()` already implement the correct "mask off unimplemented low bits" behavior
+generically -- this machine just never enabled it. **Fixed**: `qdev_prop_set_uint32(gic,
+"num-priority-bits", 5)` in `rz_a1h.c`.
+
+**Live-verified the fix actually changes what's stored, via a one-off QMP `xp` read of
+`GICD_IPRIORITYRn` before/after** (not assumed from the source alone): pre-fix, SGI 0 reads `0xfe`
+and nearly every unconfigured interrupt in the system defaults to `0x7f` (a real, previously-
+unremarked fact on its own -- almost everything shares one default priority, only RIIC2 (`0x10`),
+SGI 0, and OSTM0 (both `0xfe`) are explicitly configured away from it). Post-fix: SGI 0 reads
+`0xf0`, defaults read `0x78`, RIIC2 stays `0x10` (already a multiple of 8, unaffected by the
+narrower mask). **The relative ordering among all of these is identical before and after** -- RIIC2
+highest, defaults in the middle, SGI 0/OSTM0 lowest, in both the 8-bit and 5-bit view -- so this
+fix, while real and now silicon-accurate, was never going to be able to change which side wins
+GIC arbitration.
+
+**Tested the overflow outcome anyway, per this project's own "test, don't assume" discipline** --
+predicting no change is not the same as confirming it. 10 trials of `check_overflow_r0.py`:
+**`r0=2` overflow in all 10, no exceptions.** Timing showed some spread (7/10 at the usual ~6.0s
+mark, 3/10 at ~9.0s) but with no clean before/after split across the two batches run -- consistent
+with this machine's already-documented ordinary `-icount shift=auto` run-to-run jitter, not a new
+effect from this fix. Also confirmed no regression in the RIIC2 event stream itself
+(`RZA1H_DEBUG=riic`: same ~10,500-event count, same `delay_ns=26433` real byte timing, same log
+format as every prior capture). **Kept the fix regardless of the null result on the overflow
+question** -- it's a real, validated, now-silicon-accurate correction with zero downside, exactly
+the kind of "worth fixing on its own merits even without a big payoff" change this project has
+made before (e.g. the RIIC2 START/RESTART/STOP condition-timing fix).
+
+**Where this leaves the audit**: both concrete candidates from the "keep going on that" request are
+now checked. Ring capacity: confirmed real, not a divergence source. GIC priority bit-width: found
+a real inaccuracy, fixed it, confirmed it doesn't explain the overflow (as predicted, since it
+couldn't change relative ordering for these specific values). **Neither of the two most obvious
+"is our GIC modeling subtly wrong" candidates explains the emulation/real-hardware divergence** --
+the residual mystery narrows further. Remaining un-audited candidates for a future session: the
+precise bus-timing formula's own remaining honest wrinkles (the ~1.44x-vs-2.19x aggregate-duration
+gap flagged earlier this thread and never fully chased down), or something structural not yet
+considered at all.
+
 ## Status, 2026-09-10, same session, continued — real-world ground truth arrives: the user has
 ## never observed the actual IC-7300 crashing from this suspected ring overflow. Chased the most
 ## concrete testable divergence hypothesis (does our synthetic EEPROM image trigger a validation/

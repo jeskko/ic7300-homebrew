@@ -149,6 +149,22 @@ static void rza1h_init(MachineState *machine)
     gic = qdev_new(TYPE_ARM_GIC);
     qdev_prop_set_uint32(gic, "num-cpu", 1);
     qdev_prop_set_uint32(gic, "num-irq", RZA1H_GIC_NUM_IRQ);
+    /* Real RZ/A1H silicon implements only 5 priority bits (ICDIPRn[7:3]), not QEMU arm_gic's
+     * own default of 8 -- confirmed directly against Renesas' own sample driver
+     * (scratch/r01an5093ej0170-rza1-swpkg/.../r_intc_configure.c, R_INTC_SetPriority()): its
+     * own `priority` argument is documented range 0-31 and gets shifted left by 3 before the
+     * real ICDIPRn write, with the driver's own comment stating outright "Priority[7:3] of
+     * ICDIPRn is valid bit". Without this, arm_gic's own gic_fullprio_mask() (hw/intc/
+     * arm_gic.c, read directly) leaves all 8 bits significant, so a firmware priority write
+     * with nonzero low 3 bits (this project's own live capture found GICD_IPRIORITYR values
+     * like SCIF5-TXI's 0x7f, whose low 3 bits are 0b111) is stored and compared verbatim here,
+     * where real hardware would mask those bits to write-ignored on arrival (storing/reading
+     * back 0x78, not 0x7f) -- confirmed correct behavior is already implemented in
+     * gic_fullprio_mask()/gic_dist_set_priority(), just never enabled by this machine before
+     * now. 2026-09-10, prompted by the user's own real-world fact (never observed the ring
+     * overflow on real hardware) -- see README.md's Status section for the full derivation and
+     * whether this changes the observed overflow (checked, not assumed). */
+    qdev_prop_set_uint32(gic, "num-priority-bits", 5);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(gic), &error_fatal);
     sysbus_mmio_map(SYS_BUS_DEVICE(gic), 0, RZA1H_GIC_DIST_BASE);
     sysbus_mmio_map(SYS_BUS_DEVICE(gic), 1, RZA1H_GIC_CPU_BASE);
