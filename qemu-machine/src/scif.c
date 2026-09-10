@@ -195,6 +195,7 @@
 #include "qemu/osdep.h"
 #include "chardev/char-fe.h"
 #include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -228,6 +229,20 @@ struct RZA1HScifState {
 
     uint8_t  frdr;
     bool     rx_pending;
+
+    /* Real baud-rate-accurate TX pacing (2026-09-10) -- see this file's own
+     * module comment ("no baud-rate-accurate transmit pacing") and
+     * scif_byte_time_ns()'s own comment for the formula/assumptions.
+     * tx_busy mirrors real hardware's TDFE/TEND=0 window; tx_timer fires
+     * once the real byte time elapses and puts it back to the ready state,
+     * re-raising TXI if TIE is still enabled (level-triggered, matching
+     * this file's own already-established TXI semantics). */
+    ptimer_state *tx_timer;
+    bool     tx_busy;
+
+    /* Real pacing for the virtual DSP-link responder's own ack (channel 5
+     * only) -- see rza1h_scif5_dsp_retry_arm_write's own comment. */
+    ptimer_state *dsp_ack_timer;
 
     /* Virtual front-panel responder state (channel 3 only) -- see this
      * file's own comment for the full derivation. Tracks the outbound
@@ -293,6 +308,25 @@ struct RZA1HScifState {
  * word scif5_classify_reply reads. */
 #define SCIF5_STRUCT_PTR_ADDR    0x200b1c84
 
+/* Real RZ/A1H SCIF asynchronous-mode bit-rate formula -- the standard Renesas SCI/SCIF BRG
+ * design shared across this whole chip family (H8/SH/RX/RZ all use the identical formula):
+ *   B = PCLK / (64 * 2^(2n-1) * (N+1))
+ * where n = SMR.CKS[1:0] (0-3, selecting PCLK/PCLK4/PCLK16/PCLK64) and N = BRR (0-255). PCLK is
+ * taken as P0φ = 32MHz here -- the same real, schematic-confirmed clock already established for
+ * OSTM/MTU2 (see ostm.c/mtu2.c's own comments); SCIF shares the same P0φ domain per the RZ/A1H
+ * clock tree, not independently re-derived against a second schematic reference. 10 bits/byte
+ * (start + 8 data + stop, no parity) -- every SCIF driver traced in this project uses 8N1. */
+#define SCIF_PCLK_HZ 32000000
+
+static uint64_t scif_byte_time_ns(RZA1HScifState *s)
+{
+    int n = s->smr & 0x3;
+    uint64_t divisor = 32ULL << (2 * n); /* 64 * 2^(2n-1), integer-safe form */
+    uint64_t bit_ns = divisor * (s->brr + 1) * 1000000000ULL / SCIF_PCLK_HZ;
+
+    return bit_ns * 10;
+}
+
 static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HScifState *s = RZA1H_SCIF(opaque);
@@ -307,10 +341,17 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
     case REG_FTDR:
         return 0; /* write-only on real hardware */
     case REG_FSR:
-        /* TDFE/TEND always set -- see module comment; DR/RDF reflect
-         * whether a real received byte (from the chardev backend, or the
-         * front-panel responder below) is waiting in frdr. */
-        return FSR_TDFE | FSR_TEND | (s->rx_pending ? (FSR_DR | FSR_RDF) : 0);
+        /* TDFE/TEND now real (2026-09-10) -- 0 while `tx_timer` is counting
+         * down a genuine, baud-rate-derived byte time (see
+         * scif_byte_time_ns()), same as real hardware between writing
+         * FTDR and the byte actually finishing transmission. Any driver
+         * that correctly polls TDFE/TEND before its next FTDR write (every
+         * traced SCIF driver in this project does) is now genuinely paced;
+         * DR/RDF reflect whether a real received byte (from the chardev
+         * backend, or the front-panel responder below) is waiting in
+         * frdr. */
+        return (s->tx_busy ? 0 : (FSR_TDFE | FSR_TEND)) |
+               (s->rx_pending ? (FSR_DR | FSR_RDF) : 0);
     case REG_FRDR: {
         uint8_t val = s->frdr;
         s->rx_pending = false; /* reading consumes the byte, real hardware too */
@@ -488,13 +529,34 @@ static uint64_t rza1h_scif5_dsp_retry_arm_read(void *opaque, hwaddr offset,
     return 0;
 }
 
+/* Real pacing for the virtual DSP-link ack (2026-09-10) -- `dsp_boot_handshake`'s own two
+ * busy-waits (`*DAT_200b6378`, see this file's own module comment) block on real forward
+ * progress here, so an instant ack was itself a piece of the same "no timing realism" gap
+ * flagged for classic SCIF TX above, just on this DSP-link-specific path instead. No real DSP
+ * datasheet exists to derive an exact round-trip time from (this is a virtual responder, not a
+ * modeled physical chip) -- `DSP_ACK_DELAY_NS` is a deliberately modest, honestly-labeled
+ * placeholder, the same order of magnitude as `dmac.c`'s own `DMAC_COMPLETE_DELAY_NS`, not a
+ * datasheet-derived value. This does NOT pace `scif5_ring_pop_and_send`'s own burst path (the
+ * `0xa0000000` sentinel, deliberately still ignored below) -- that path's own re-invocation rate
+ * isn't gated by anything this device model's read/write handlers can see (see README.md's
+ * Status section for why a peripheral-side delay alone can't throttle it). */
+#define DSP_ACK_DELAY_NS 50000
+
+static void rza1h_scif5_dsp_ack_timer_fire(void *opaque)
+{
+    rza1h_scif5_dsp_ack(RZA1H_SCIF(opaque));
+}
+
 static void rza1h_scif5_dsp_retry_arm_write(void *opaque, hwaddr offset,
                                             uint64_t value, unsigned size)
 {
     RZA1HScifState *s = RZA1H_SCIF(opaque);
 
     if (value == 0x10000000 || value == 0x40000000) {
-        rza1h_scif5_dsp_ack(s);
+        ptimer_transaction_begin(s->dsp_ack_timer);
+        ptimer_set_count(s->dsp_ack_timer, DSP_ACK_DELAY_NS);
+        ptimer_run(s->dsp_ack_timer, 1); /* oneshot */
+        ptimer_transaction_commit(s->dsp_ack_timer);
     }
 }
 
@@ -558,13 +620,24 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
         if (qemu_chr_fe_backend_connected(&s->chr)) {
             qemu_chr_fe_write_all(&s->chr, &byte, 1);
         }
-        /* Covers the other write ordering (TIE already enabled before this
-         * byte, as every byte after a frame's first will be) -- explicit
-         * lower+raise for the same reason as the REG_SCR case above. */
-        if (s->scr & SCR_TIE) {
-            qemu_irq_lower(s->irq_tx);
-            qemu_irq_raise(s->irq_tx);
-        }
+        /* Real baud-rate pacing (2026-09-10): TDFE/TEND genuinely go low
+         * now and only come back (re-raising TXI, if TIE is enabled, from
+         * rza1h_scif_tx_complete()) once a real byte time has elapsed --
+         * see scif_byte_time_ns(). This is now a genuine transition, not
+         * the old "already true, force an edge" workaround the SCR case
+         * above still needs (TDFE really was already 1 there if nothing's
+         * in flight). A write that lands while a previous byte is still
+         * "in flight" (a driver that doesn't poll TDFE first, e.g. the
+         * DSP-link's own arm-sequence path -- see this file's own comment
+         * on scope) just restarts the timer for a fresh byte time, the
+         * simplest reasonable behavior given this model's no-FIFO-depth
+         * convention (matching FDR always reporting empty). */
+        qemu_irq_lower(s->irq_tx);
+        s->tx_busy = true;
+        ptimer_transaction_begin(s->tx_timer);
+        ptimer_set_count(s->tx_timer, scif_byte_time_ns(s));
+        ptimer_run(s->tx_timer, 1); /* oneshot */
+        ptimer_transaction_commit(s->tx_timer);
         /* Virtual front-panel responder (channel 3 only) -- see this
          * file's own comment. Tracks byte position within the outbound
          * frame just enough to capture the type byte and recognize the
@@ -677,6 +750,20 @@ static void rza1h_scif_receive(void *opaque, const uint8_t *buf, int size)
     s->rx_pending = true;
 }
 
+/* ptimer callback for the real baud-rate pacing above -- fires once a real byte time has
+ * elapsed since the triggering REG_FTDR write, putting TDFE/TEND back to the ready state and
+ * re-raising TXI (level-triggered, same as every other TXI transition in this file) if TIE is
+ * still enabled. */
+static void rza1h_scif_tx_complete(void *opaque)
+{
+    RZA1HScifState *s = RZA1H_SCIF(opaque);
+
+    s->tx_busy = false;
+    if (s->scr & SCR_TIE) {
+        qemu_irq_raise(s->irq_tx);
+    }
+}
+
 static void rza1h_scif_reset(DeviceState *dev)
 {
     RZA1HScifState *s = RZA1H_SCIF(dev);
@@ -692,6 +779,13 @@ static void rza1h_scif_reset(DeviceState *dev)
     s->rx_pending = false;
     s->tx_frame_pos = -1;
     s->tx_frame_type = 0;
+    s->tx_busy = false;
+    ptimer_transaction_begin(s->tx_timer);
+    ptimer_stop(s->tx_timer);
+    ptimer_transaction_commit(s->tx_timer);
+    ptimer_transaction_begin(s->dsp_ack_timer);
+    ptimer_stop(s->dsp_ack_timer);
+    ptimer_transaction_commit(s->dsp_ack_timer);
 }
 
 static void rza1h_scif_realize(DeviceState *dev, Error **errp)
@@ -700,6 +794,22 @@ static void rza1h_scif_realize(DeviceState *dev, Error **errp)
 
     qemu_chr_fe_set_handlers(&s->chr, rza1h_scif_can_receive,
                              rza1h_scif_receive, NULL, NULL, s, NULL, true);
+
+    s->tx_timer = ptimer_init(rza1h_scif_tx_complete, s,
+                              PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                              PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->tx_timer);
+    ptimer_set_freq(s->tx_timer, 1000000000); /* 1 tick = 1ns, matching dmac.c's own idiom */
+    ptimer_transaction_commit(s->tx_timer);
+
+    /* Harmless to create on every instance (like iomem_dsp_retry above) -- only ever armed via
+     * the channel-5-only MMIO region's write handler. */
+    s->dsp_ack_timer = ptimer_init(rza1h_scif5_dsp_ack_timer_fire, s,
+                                   PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                   PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->dsp_ack_timer);
+    ptimer_set_freq(s->dsp_ack_timer, 1000000000);
+    ptimer_transaction_commit(s->dsp_ack_timer);
 }
 
 static void rza1h_scif_init(Object *obj)
