@@ -2747,3 +2747,471 @@ is *not* more live polling -- it's static: read `cold_boot_hw_init`'s (or whatev
 this boot depth) own `disableIRQinterrupts()`/`cpsid i` call sites directly in Ghidra and look
 for one whose matching re-enable is conditional, looped, or otherwise not guaranteed to run
 promptly, rather than trying to catch the CPU in the act live again.
+
+## 2026-09-10, same day: a host-side `CPSR.I`-transition trace hook, and what it caught
+
+Before chasing `cpsid`/`cpsie` call sites blind, per the user's own question: how hard would it
+actually be to hook interrupt enable/disable directly in QEMU and get a log pointing straight at
+the answer? Turned out easy — a single grep of every `env->daif` writer across `target/arm`
+found exactly two chokepoints, no more: `cpsr_write()` (`target/arm/helper.c:8269`, the actual
+bit assignment at what's now line ~8356) and `take_aarch32_exception()` (`helper.c:8838`, the
+automatic masking on exception entry). Confirmed by tracing every path that could plausibly
+change `CPSR.I` back to one of these two: `MSR CPSR` and `CPSID`/`CPSIE` both compile to
+`trans_CPS`/`gen_set_psr_im` → `gen_set_cpsr` → `HELPER(cpsr_write)` (`translate.c`); exception
+return (`movs pc,lr`/RFE/ERET) goes through `cpsr_write_eret` → `cpsr_write`; GDB-stub writes and
+`take_aarch32_exception` are the only other two callers. No per-instruction filtering needed.
+
+Added `rza1h_irq_trace()`, a ~30-line static helper right before `cpsr_write()` in
+`target/arm/helper.c`: silent unless `RZA1H_IRQ_TRACE` is set, and even then only fires on an
+actual 0→1/1→0 transition (not every write), logging a host monotonic timestamp
+(`g_get_monotonic_time()`), the transition direction, `env->regs[15]` (confirmed, by reading the
+surrounding code, to still hold the *pre-exception* PC at the `take_aarch32_exception` call site
+— `newpc`/`elr_el[2]` get assigned only after), the CPU mode, and which of the two call sites
+fired. Called once from each chokepoint. Built clean against the vendored `v11.1.1` checkout.
+
+**Deliberately kept out of `setup.sh`'s automatic patching.** `rza1h_debug.h`'s own header
+comment already lays out why this project avoids a second permanent patch against core QEMU
+source (`setup.sh` re-clones a fresh checkout, so a second patch is a second thing to rebase
+across future QEMU version bumps) — that reasoning holds here too, so this stays a separate,
+manually-applied patch (`patches/irq-mask-trace.patch`, applied/rebuilt via the new
+`tools/apply_irq_mask_trace.sh`, mirroring `setup.sh`'s own idempotent `git apply --reverse
+--check` pattern) rather than being folded into `hw-arm-build.patch`. This is squarely in
+precedent with how the *original* version of this technique was used, per `rza1h_debug.h`'s own
+comment: "a one-off, temporary `fprintf` added to `dmac.c` and reverted after use" — a core-QEMU
+edit for one specific live investigation, not a permanent device-model feature.
+
+Considered and rejected a TCG-plugin-based alternative (per-instruction `qemu_plugin` callbacks
+reading a GDB-exposed `cpsr` register) — rejected because sampling CPSR before every single
+executed instruction is essentially single-step-level intrusion, and this project has already
+found that even non-breakpoint *extra memory-read polling* beyond 1-2 words suppresses this
+exact effect (see the immediately preceding section). A passive log inside an already-executing
+C helper, firing only on genuine transitions, is categorically lower-overhead and touches no
+guest-visible state at all — closer in kind to `rza1h_debug()`'s own device-model logging (never
+shown to perturb anything) than to any GDB-based technique tried on this thread so far.
+
+**First real run: `tools/trace_irq_mask.py`, 70s, fully GDB-free (no `-S`/`-gdb` at all).**
+370,067 real `CPSR.I` transitions logged within the first ~27.4s (host monotonic time) — squarely
+inside the previously-established 27-45s overflow window. Spot-checked a cluster of the tail
+addresses directly against Ghidra to confirm the hook reads real, sensible code, not noise:
+`0x20005248` decompiles to the literal single instruction `cpsid i`; the surrounding listing
+(`0x2000523c`-`0x20005254`) is the generic per-GIC-ID nested-dispatch routine already identified
+(and previously misattributed as "SVC dispatch" before being correctly re-identified as the
+generic IRQ vector) — bounds-checks an IRQ ID against a table size, looks up a function pointer,
+then wraps the actual handler call in `cpsie i` / `blx r2` / `cpsid i` so a higher-priority IRQ
+can still preempt a lower-priority handler mid-service (textbook nested-IRQ support, working as
+intended). `0x2001dd30` falls inside `FUN_2001dcc4`, a generic synchronous "post a job, wait for
+completion" IPC routine (busy-waits on a byte flag calling `FUN_20062c1c()` — itself just a thin
+wrapper around this same generic dispatcher — both before and after building the message).
+
+Then: **total silence for the remaining ~43 real seconds of the same 70s run** — no further
+`CPSR.I` transition logged at all, right up until the process was killed at the 70s mark. The
+very last logged event was a `CLR` (`I`→0, unmasked) at `0x2000523c` (the `cpsie i` in the
+dispatcher above), meaning the next instruction executed was `blx r2` — some GIC ID's handler,
+called with interrupts fully enabled, that evidently never returned normally (no matching
+`cpsid` ever got logged) — consistent with that specific call diverting straight into the
+already-known overflow trap (`0x200b93fc`, an unconditional `b .`) rather than returning.
+
+**Independent second check, fresh 40s run, zero GDB and zero relation to the new hook at all**
+(`RZA1H_IRQ_TRACE` unset this time): a single, one-shot QMP `human-monitor-command` →
+`info registers` call (the project's own established read-only spot-check, per README.md's
+"Inspecting live state" section) at t=40s landed the CPU squarely at `PC=0x200b93fc` — the known
+overflow trap — with `PSR=0x20000113`, decoding to **`CPSR.I=0`** (bit 7 clear — unmasked),
+`svc32` mode, ARM state. `ps` showed the process at ~135-140% CPU across the whole window,
+confirming it's genuinely still executing (spinning the trap's own `b .`), not idle in `WFI`.
+Two independently-launched runs, two structurally different observation methods, same answer.
+
+**Reconciling this with the earlier, still-standing "`CPSR.I=1` held long enough for a backlog to
+form" finding** (the immediately preceding section): these are not necessarily in conflict — that
+finding was about the moment the backlog first started forming (`pending` jumping from 0 to 6),
+not the moment of the actual overflow (`pending` reaching capacity, 16, and tripping the trap).
+The natural reading now: a masked window earlier lets the backlog build, then the mask lifts,
+ordinary nested-dispatch processing resumes (`CPSR.I=0`), and the 16th push still lands and trips
+the trap *during* that ordinary processing — because the consumer hasn't caught the backlog up
+yet, not because the CPU is still masked at that instant. So the "held masked" finding stands on
+its own trial, but no longer explains the trap moment itself; the open question shifts from "why
+is `CPSR.I` still 1 at the overflow" (contradicted by two direct observations now) to "why
+doesn't the consumer drain the backlog fast enough once the mask lifts" — a throughput/scheduling
+question at `irq_context_switch_id0`, not a CPU-mask one. See README.md's Status section for the
+concrete revised resume point, including a fresh, unconfirmed possibility this same run surfaced:
+43 seconds of total silence while `CPSR.I=0` and the CPU is actively executing is also consistent
+with a genuine QEMU/TCG+`-icount` artifact around a tight two-instruction self-branch loop never
+yielding back to the main loop's own pending-timer/IRQ check — worth ruling out independently of
+any firmware behavior before assuming this is purely a firmware scheduling bug.
+
+## 2026-09-10, same day: testing the "lazy consumer" hypothesis, and where it actually led
+
+User's next question, given the CPU-mask framing had just been complicated rather than settled:
+does the *consumer* maybe want to do something with the queued messages but can't? Decompiled
+the outer ring's drain body, `FUN_20187ae4` (called from `irq_context_switch_id0`), for the first
+time this project. It is genuinely not fire-and-forget: per dequeued entry it re-reads the job
+object's own live status byte (`*pcVar4`) and dispatches to one of three handlers —
+`FUN_201874a8` (type 0), `FUN_201877e4` (type 1), `FUN_20187e34` (else) — each real code, not a
+stub. `FUN_201877e4`'s type-1 branch is the interesting one: it forwards the payload into a
+*second*, per-job-object bounded buffer (its own write index/count/capacity at that object's own
+offsets `+8`/`+0xc`/`+0xe`), and if *that* buffer is already full, it calls the exact same trap
+function with a *different* argument — `FUN_200b93fc(3)` — a second, genuinely distinct way to
+reach the trap, previously noticed by an early session (documented in a comment at the trap's own
+prior investigation) and dismissed as "not otherwise relevant" without ever being checked live.
+
+This is a clean, checkable discriminator: `r0=2` (from the producer, `FUN_20187bb4`, whose own
+atomic capacity check fires when it finds the ring already full) means the ring simply filled
+because the producer outpaced the consumer; `r0=3` (from the consumer's own downstream-buffer-full
+check) would mean the consumer genuinely gets stuck trying to forward a specific message. Built
+`tools/check_overflow_r0.py`: launches N independent trials, each free-running (no GDB, no
+breakpoints) with only a coarse ~3s QMP `info registers` poll, and reports `r0` once `PC` reaches
+the known trap address. **Ran 5 trials. All 5 hit the trap at `t=24-27s` (tighter than the earlier
+27-45s estimate) with `r0=2`, never `3`.** Also traced the three handlers' shared helpers
+(`FUN_20187c8c`, a priority-ordered linked-list insert; `FUN_20187664`, a linked-list pop) — both
+fast, bounded, non-blocking, no busy-waits, no hardware polling anywhere in the drain path. So the
+direct "consumer gets stuck processing message N" hypothesis is ruled out with real repeated
+evidence (5/5), not a single trial — the ring genuinely fills because of a throughput/rate
+problem upstream of the drain, not a blockage inside it.
+
+**A real bonus, riding along on the exact same 5 trials**: at nearly every ~3s poll before the
+trap, on every single trial, the CPU was caught at the identical address, `0x200b48f4`. Decompiled
+the enclosing function — Ghidra already had it named: `scif5_wait_hsk1_ready`. This was flagged
+once before, in the 2026-09-09 icount-investigation session, as a busy-wait capable of stalling
+hard ("135 real seconds straight, 91% CPU") — but only under a non-default `-icount shift=1`,
+believed at the time not to recur under this machine's actual recommended default,
+`shift=auto`. Seeing it dominate CPU time this consistently, under the real default, on every one
+of 5 independent trials, right up to the overflow, was too striking a signal to leave alone.
+
+## 2026-09-10, same day: `scif5_wait_hsk1_ready` traced fully — the DSP really doesn't reply
+
+Full decompile: `scif5_wait_hsk1_ready` clears a RAM counter (`DAT_2039077a`), then loops testing
+bit 9 (`0x200`) of a 16-bit hardware register read from `DAT_200b49a0 + 0x20` — returning
+immediately if that bit is set, otherwise looping while the same RAM counter stays below `0x1e`
+(30). Nothing in this function itself increments that counter — it must come from elsewhere.
+
+The hardware address resolved cleanly: `DAT_200b49a0 = 0xFCFE3200`. Cross-checked against
+`rz_a1h.h`: `RZA1H_GPIO_BASE = 0xFCFE3000`, so this is `GPIO_BASE + 0x200`, and `gpio.c`'s own
+`gpio_group_table[]` puts `PPR` (the port pin-read register array) at exactly that base-relative
+offset, 4 bytes per port. `+0x20` more (`0xFCFE3220 - 0xFCFE3200 = 0x20 = 32`, `32/4 = 8`) lands on
+port index 8 — so the polled bit is **`PPR8` bit 9, physical pin `P8_9`**.
+
+This pin is not a new discovery — cross-checked against `notes/ic7300-signal-chain.md` and found
+it already independently confirmed there, 27th session, via a *completely different* code path:
+the firmware-update "3 extra chunks" DSP/Front-CPU transfer mechanism (`FUN_20025044`,
+`chunk_transport_send_reload_cmd`) also polls `PPR8` bit 9, and that session's own schematic-level
+pin table names it `HSK1` — matching this function's own name, `scif5_wait_hsk1_ready`, exactly.
+Two unrelated call sites, found independently in two different sessions, agreeing this is a real
+DSP hardware ready/handshake line is about as convergent as confirmation gets in this project
+without a physical board.
+
+`gpio.c`'s `rza1h_gpio_reset()` never sets this bit — `pin_level[]` is zeroed at reset with
+exactly one pre-existing, documented exception (`P1_6`/`PDV`, the power-fail detector). So `P8_9`
+reads 0 forever in this emulation, and `scif5_wait_hsk1_ready` always takes its bounded fallback
+path. Traced the counter's real increment rate to close the loop: `references_to` on
+`DAT_2039077a` found a second function, `FUN_200b7910`, that also touches it — a classic
+tick-cascade pattern (a base counter increments every call; every other call does more work;
+every 4th call more still; and so on), incrementing `DAT_2039077a` only when its own inner counter
+hits exactly 200. `references_to` on `FUN_200b7910` itself found exactly one caller:
+`mtu2_ch3_periodic_housekeeping_tick` — the *same* already-well-confirmed ~82ms MTU2 ch3 tick that
+drives the job-ring producer — and even then, only conditionally (every other tick, gated on a
+bit-0 check). Working the real-time math: 200 sub-ticks × 2 MTU2 ticks/sub-tick × ~82ms/tick ≈
+32.8s per increment of `DAT_2039077a`; the wait needs 30 increments to give up — **≈16.4 minutes
+of continuous real-time busy-waiting** before `cold_boot_hw_init` can reach `dsp_boot_handshake()`.
+
+This reframes the whole thread. Every trial run to date (all ≤90s) was still deep inside this one
+wait for its entire duration — the ~24-27s ring-overflow window observed repeatedly this session
+is just an early slice of a ~16-minute foreground busy-loop, not something gated on that loop's
+own outcome. The ring overflow is driven independently and in parallel, by the same 82ms MTU2 IRQ,
+regardless of what `cold_boot_hw_init`'s foreground code is doing — a real, correctly-diagnosed
+mechanism, but never actually "the" blocker on its own, since the boot was never going to progress
+past the DSP handshake within any trial length tried so far.
+
+## 2026-09-10, same day: building the HSK1/P8_9 fix, and what it actually changed
+
+User: "let's build it." Added, in `gpio.c`'s `rza1h_gpio_reset()`, right after the existing
+`P1_6`/`PDV` exception: `s->pin_level[8] |= 0x200;` — same justified-default reasoning (a real DSP
+would already be powered and asserting this line well before the main CPU's boot reaches the
+check). Built clean, one line, no other changes needed.
+
+Built `tools/trace_post_hsk1_fix.py` (QMP-only PC + ring-header polling, no GDB) to check the
+real effect. **First trial, 120s at 5s cadence**: the trap now fires by the very first poll
+(`t=5s`) and stays there for the whole 120s — much sooner than the old ~27s, worth understanding
+precisely rather than assuming a regression. **Re-ran at 0.5s cadence for the first 10s**: `t=0.5s`
+through `t=3.0s` shows the CPU repeatedly inside a small, previously-unseen helper
+(`FUN_20005d88`, a tiny "has enough time elapsed" deadline-check utility — convert a tick count to
+float, scale, compare against a threshold), with the ring's `write`/`read` indices climbing in
+lockstep and `pending` back to 0 every single sample — a healthy, fully-drained, fast-cycling
+round-trip through the same generic job-ring mechanism, very likely `dsp_boot_handshake`'s own
+command/reply exchanges finally running for the first time this whole project. Then, at `t=3.5s`,
+`pending` jumps to 1, and by `t=4.0s` the ring has already fully overflowed (`write=9 read=9
+pending=16`) and trapped with the same `r0=2` as always — consistent with a much earlier session's
+own finding that the whole burst, once it starts, completes in well under a second.
+
+**Net result**: the fix does exactly what it was built to do — `scif5_wait_hsk1_ready` no longer
+burns its ~16-minute timeout, and boot demonstrably exercises meaningfully more real code than any
+previous trial (multiple healthy job-ring round-trips that never happened before). Kept as a
+permanent fix, not reverted. But the ring-overflow trap is still there, unresolved, now
+reproducing in ~4s instead of ~27s — the same open question (why the consumer doesn't keep the
+ring drained fast enough) as before, just roughly 7x cheaper to hit for whoever chases it next.
+
+## 2026-09-10, same day: the DSP-param-sync burst, decompiled and live-confirmed
+
+User's next hunch: probably the code wants to chat with some peripheral chip and, around that,
+causes the overflow. Decompiled the three functions `cold_boot_hw_init` calls right after
+`dsp_boot_handshake`: `dsp_cmd_table_init` builds a fresh 24-entry DSP parameter table then calls
+`dsp_param_sync_tick()` exactly once; that function diffs ~22 "current" values against shadow
+copies (stale/zero, since the table was just built) and calls `scif5_ring_push_word()` once per
+mismatch -- so ~20-22 of the 22 comparable slots mismatch on this first call. `scif5_ring_push_word`
+queues into a *separate*, 87-slot SCIF5 TX ring (`DAT_200b1ca8`, base `0x20414da0`) and only calls
+`shared_job_ring_dispatch(0)` -- the bridge into the same generic job-ring machinery this whole
+thread has been tracing -- on the empty-to-nonempty transition. `dsp_cmd_table_init` then
+busy-waits, genuinely unbounded (no timeout at all, unlike `scif5_wait_hsk1_ready`), for
+`DAT_200b1cac` (the SCIF5-ring-active flag) to clear. Draining is `scif5_ring_pop_and_send`, one
+word per call, already noted by an even earlier (2026-08-29) session's own comment as "MTU2-paced".
+
+Read that pacing claim wrong at first -- reasoned it'd take ~1.6s (200 sub-ticks x 2 x ~82ms) to
+drain the whole burst, matching the observed ~3s-then-overflow shape closely enough to look
+right. Built `tools/trace_dsp_param_burst.py` (QMP `xp` only, no GDB, polling the outer ring
+header and the SCIF5 ring's active flag + write/read indices together, every 0.15s) to check it
+properly rather than leave the guess untested. **The 1.6s guess was wrong**: the whole ~23-word
+burst showed up already fully written *and* fully drained (`write=read=23`) within a single 0.15s
+poll gap -- much faster than predicted, so the write side isn't MTU2-tick-paced at all, it's
+synchronous and back-to-back, and the drain keeps up fine on its own. Corrected here rather than
+left standing. But the real payoff held up: right in the same ~0.6s window the SCIF5 burst
+appears, the outer ring -- previously rock-steady, always fully drained for 2.6+ seconds straight
+-- goes to a real backlog and then straight to full overflow (`pending=16`). A live, direct
+temporal correlation, not just a static-analysis inference.
+
+## 2026-09-10, same day: the mechanism closed -- a real GIC priority-starvation effect
+
+Tried the obvious next step first, the already-built `trace_sgi0_gic_state.py` (GDB
+`interrupt()`+`read_memory()` polling, the same technique that caught the *original*
+`CPSR.I=1`/SGI0-pending correlation pre-fix). This time it suppressed the overflow outright: 15
+real seconds of GDB polling, the ring stayed rock-steady the whole time, zero overflows -- while
+every GDB-free QMP trial this session overflowed reliably by `t=3-4s`. Consistent with this
+project's own repeated, hard-won lesson (GDB interaction perturbs this whole class of race) but a
+useful reminder it applies here too, post-fix, at the new faster timescale.
+
+Rebuilt the exact same check GDB-free (`tools/trace_sgi0_gic_state_qmp.py`: QMP `xp` for
+`GICD_ISPENDR0`/`GICD_ISACTIVER0`/`GICC_PMR`/`GICC_RPR`, QMP `info registers` for `PC`/`PSR`, no
+GDB, no breakpoints, no `interrupt()` at all) and it reproduced immediately, catching the whole
+thing directly in one trial:
+- `t=3.005s`: `pending=1` (backlog just starting), `GICC_RPR=0x10` -- something is actively
+  running, at GIC priority `0x10`, right at this moment.
+- `t=3.109s`: `pending=0` again (briefly recovers) but **`GICD_ISPENDR0` now shows SGI 0
+  genuinely latched pending** for the first time, while `RPR` has dropped back to idle (`0xff`).
+- `t=3.316s` (207ms later): **`*** OVERFLOW TRAP ***`**, `pending=16`. SGI 0 is *still*
+  `SGI0_pend=1`, `SGI0_active=0` -- never even started running -- while `RPR=0x10` again,
+  meaning something else is once more occupying that same priority level instead.
+
+Then read the actual GIC priority configuration directly -- a one-shot QMP `xp` sweep of
+`GICD_IPRIORITYR` for SGI 0 and every candidate competing hardware source, no live trace needed
+at all, taken a few seconds into a fresh boot (this is static firmware configuration, not
+something that changes at runtime):
+
+| Source | GIC ID | `IPRIORITYR` |
+|---|---|---|
+| SGI 0 (`irq_context_switch_id0`'s own trigger) | 0 | **`0xFE`** |
+| OSTM0 | 134 | `0xFE` |
+| MTU2 ch3 TGI3A / ch4 TGI4A / ch4 TGI4C | 154 / 159 / 161 | `0x10` |
+| DMAC0 | 41 | `0x10` |
+| SCIF5 RXI / BRI / ERI | 243 / 241 / 242 | `0x10` |
+| SCIF5 TXI | 244 | `0x7f` |
+
+This closes it completely. SGI 0 -- the ring's own drain signal -- is configured at `0xFE`, the
+*lowest* priority anywhere in this system (ARM GIC: lower numeric value = higher priority). Every
+real hardware peripheral IRQ that matters to this scenario sits at `0x10`, dramatically higher.
+This is real, deliberate firmware configuration, not an emulation quirk: SGI 0 is meant to be a
+pure background "get to it when nothing else needs the CPU" signal. Standard GIC semantics: a
+currently-running interrupt is never preempted by one of equal-or-lower priority. During
+`dsp_param_sync_tick`'s ~22 rapid SCIF5 transmits, a dense burst of genuine priority-`0x10`
+hardware interrupt activity (real SCIF5 TX-related IRQs, one attempt per transmitted word) keeps
+occupying the CPU at a priority SGI 0 can never preempt, for long enough that the ~82ms MTU2
+doorbell producer piles up past the ring's fixed 16-slot capacity before SGI 0 ever gets serviced.
+Mechanism fully closed, no further mystery in *why* the overflow happens.
+
+One more layer surfaced immediately, worth flagging rather than calling this settled as "just how
+the real hardware behaves": `scif.c`'s own module-level comment already documents, as a
+deliberate original-scope decision for this roadmap item ("SCIF UART output", not "a fully
+interrupt-driven SCIF driver"), that there is **no baud-rate-accurate transmit pacing -- bytes go
+out immediately**. Real SCIF hardware would spread the same 22-transmit burst out over genuine,
+baud-rate-limited transmission time, very plausibly giving SGI 0 real gaps to run in that this
+emulation's current SCIF5 model simply doesn't offer by construction. So the priority-starvation
+mechanism itself is correctly diagnosed and real, but whether a physical IC-7300 would ever
+actually reach this exact overflow is still an open question -- this may be substantially (or
+entirely) a timing-realism gap in `scif.c`, the same *class* of issue the OSTM/MTU2 clock-realism
+fix and the DMAC completion-delay fix both turned out to be earlier in this same project. Adding
+real baud-rate-paced SCIF5 TX timing would be a genuine scope expansion, not attempted this
+session. The earlier open "tight `b .` loop / icount artifact" question from the `CPSR.I`-trace
+session is now moot -- the real mechanism was always this GIC priority effect, not a QEMU
+internals bug.
+
+## 2026-09-10, same day: implementing "proper timing" -- one more correction first
+
+User: "we could look at implementing the proper timing" (in reply to the `scif.c` "no baud-rate
+pacing" caveat above). Before writing anything, traced exactly what gates `dsp_param_sync_tick`'s
+own burst, since the whole point of a timing fix is that it has to sit on a path the firmware
+actually waits on.
+
+Decompiled `shared_job_ring_dispatch` for the first time this session and found a real
+correction to make: it is NOT a bridge into the outer 16-slot ring at all (despite its name, and
+despite `scif5_ring_push_word`'s own call reading like one) -- it operates entirely on the
+SCIF5-specific ring's own fields (`DAT_200b1ca8+0x570/0x571`, `DAT_200b1cac`), dispatching each
+entry by a type byte at offset `0xc` to one of five cases (0: generic event-flag set via
+`FUN_200b8308`; 1: DSP command, pairs with `scif5_classify_reply`/`scif5_arm_retry_timer`; 2:
+DMAC trigger, `FUN_200b5cdc`/`FUN_200b5dc0`; 3: `rspi2_transmit`; 4: another). Crucially, every
+entry `scif5_ring_push_word` ever creates has that type byte explicitly zeroed -- so
+`dsp_param_sync_tick`'s whole ~22-word burst dispatches only to case 0, a bare event-flag set,
+never touching the DSP-command path at all.
+
+Traced `FUN_200b8308(0xa1)` (the event it sets, ID 161) forward and found it's exactly the
+registration target of `scif5_ring_pop_and_send` itself (`adr r1,0x200b2a14` into a
+`register_event_handler`-shaped call, same pattern already confirmed for `irq_context_switch_id0`
+at event 0) -- so posting event 161 is what wakes the real transmit side. Decompiled
+`scif5_bitrev_transmit_word` (what actually sends) and found it is not a classic FTDR/FSR
+byte-at-a-time UART transmit at all: it manipulates the same `0xFCFE3120` DSP-link "arm" register
+this project's virtual responder already intercepts, but ends with a *third*, distinct sentinel
+(`0xa0000000`) that `rza1h_scif5_dsp_retry_arm_write` deliberately does NOT ack (already called
+out, by name, in that function's own pre-existing comment: "the TX helper's own
+differently-sentineled `0xa0000000` completion" is one of the writes "deliberately ignored"). No
+register poll of any kind follows the arm-sequence write. The two busy-waits at the very top of
+`scif5_bitrev_transmit_word` (`DAT_200b1c84+2`/`+3`) are a different, DSP-command-specific pair
+that just happen to sit at 0 throughout this scenario (nothing in this burst ever sets them),
+so they resolve instantly every call -- there is, right now, zero real gating anywhere in this
+specific call chain, hardware or software.
+
+**Conclusion, stated plainly before writing code**: classic SCIF FTDR/FSR pacing (what the
+"no baud-rate pacing" comment is actually about) sits on a completely different code path than
+this burst uses. Adding it would be real, valuable hardware realism for every *other* SCIF driver
+this project has already built (CI-V/SCIF0, front-panel/SCIF3, the DSP-link's own boot handshake
+on SCIF5), but it provably cannot change this specific overflow's timing, since nothing in
+`dsp_param_sync_tick`'s own burst path ever polls a hardware-ready bit at all. Told the user this
+directly rather than silently implement something that wouldn't do what "implementing proper
+timing" was meant to accomplish for this overflow specifically -- user said "let's do both"
+(the general SCIF fix, worth doing regardless; and whatever real pacing *is* achievable on the
+DSP-link's own paths).
+
+## 2026-09-10, same day: both timing fixes built
+
+**`scif.c`, real baud-rate-accurate TX pacing.** Added a `ptimer` per instance (matching
+`dmac.c`'s own established idiom: `PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+PTIMER_POLICY_NO_IMMEDIATE_RELOAD`, 1GHz tick rate, `ptimer_set_count`+`ptimer_run(t,1)` oneshot
+per real byte). `scif_byte_time_ns()` implements the standard Renesas SCI/SCIF BRG formula
+(`B = PCLK / (64 * 2^(2n-1) * (N+1))`, `n`=`SMR.CKS[1:0]`, `N`=`BRR`, 10 bits/byte for 8N1) with
+`PCLK` taken as the same real, schematic-confirmed P0φ=32MHz already established for OSTM/MTU2 --
+not independently re-derived for SCIF specifically, stated as such in the code comment. `FSR`
+read now returns `TDFE`/`TEND`=0 while a `tx_busy` flag is set (cleared by the ptimer callback,
+which also re-raises TXI if `TIE` is still enabled -- same level-triggered semantics this file
+already established). `REG_FTDR`'s write handler now lowers TXI and arms the timer instead of the
+old unconditional synchronous lower+raise; the SCR-write case's own defensive lower+raise (for
+the "TIE enabled while TDFE already true" edge case) is untouched, since that's a genuinely
+different scenario (no byte in flight) than the FTDR case's now-real transition.
+
+**`scif.c`, DSP-link ack pacing.** The virtual responder's own ack (`rza1h_scif5_dsp_ack`,
+previously fired synchronously from `rza1h_scif5_dsp_retry_arm_write` on seeing the
+`0x10000000`/`0x40000000` arm-sequence sentinels) now fires from a second per-instance `ptimer`
+after `DSP_ACK_DELAY_NS` (50µs) -- an honestly-labeled placeholder, not a datasheet-derived value
+(no real DSP datasheet exists for this virtual responder to be checked against), same spirit as
+`dmac.c`'s own `DMAC_COMPLETE_DELAY_NS`. This paces `dsp_boot_handshake`'s own two busy-waits
+(`*DAT_200b6378`) for the first time -- but deliberately does NOT touch the `0xa0000000` sentinel
+path (`scif5_ring_pop_and_send`'s own burst), which stays exactly as fast/unthrottled as before,
+consistent with the conclusion above.
+
+Both built clean, first try. **Confirmed live** (`tools/trace_dsp_param_burst.py`, QMP-only, no
+GDB): boot still completes the SCIF3 front-panel and SCIF5 DSP-link handshakes correctly, no
+regression anywhere. The ring-overflow trap still fires, now at `t≈4.6-5.7s` instead of `~3-4s`
+(a small, expected shift from the two new real delays elsewhere in the same boot path) with the
+identical `write=read=23`-within-one-poll-gap burst signature as before the fixes. Exactly the
+outcome predicted before writing either fix -- both are kept as genuine, permanent hardening of
+this machine's timing fidelity, not reverted, but neither was ever going to (and didn't) change
+this specific overflow. Actually pacing the `0xa0000000` burst path itself would require either a
+firmware-side polled hook this project hasn't found (if one exists) or a genuine CPU bus-stall on
+the arm-register write -- a materially riskier class of QEMU-internals change this project has
+deliberately avoided elsewhere (see the retracted tight-`b .`-loop/icount lead) -- not attempted.
+
+## 2026-09-10, same day: the real culprit was never SCIF5 -- it's RIIC2 (I2C/EEPROM)
+
+User's sharper follow-up: since the ring only overflows if the consumer genuinely doesn't run
+often enough, has anyone actually measured which IRQ dominates during the stall, or checked
+whether something gets newly enabled right before it? Built `tools/trace_irq_frequency.py`
+(QMP-only: `GICC_HPPIR`, read-only, no side effect unlike `GICC_IAR`; `GICD_ISENABLERn` for IDs
+0/1/4/5/7, covering every real ID this project has named). Ran it through the overflow window and
+got a clean, direct answer that overturned the session's own working assumption: **`GICC_HPPIR`
+shows ID 205 in 93.8% of backlog samples** -- not any SCIF5 ID at all. ID 205 resolves (per
+`rz_a1h.c`'s own `RZA1H_RIIC_IRQ_BASE0=189, RZA1H_RIIC_IRQ_STRIDE=8`, channel 2's `j=0`) to
+**RIIC2's TEI** (Transmit-End), and `IPRIORITYR` for that ID reads `0x10` -- confirmed the same
+high-priority tier as MTU2/DMAC/SCIF5 (RIIC0/RIIC1 sit at `0x7f`, notably lower -- only the
+channel actually in use got bumped up). Separately, the `ISENABLER` scan caught SCIF5-BRI/ERI/RXI
+and DMAC0 genuinely getting newly enabled around `t≈2.8s` (matching `scif5_dsp_link_driver_init`'s
+own bring-up) -- so both of the user's two hypotheses (a dominant IRQ; a freshly-enabled IRQ) were
+right, just for different IDs: RIIC2 dominates by rate (already enabled earlier), the SCIF5/DMAC
+cluster is freshly enabled around the same general window but isn't the dominant contributor.
+
+Traced the source next. `RZA1H_DEBUG=riic` is this project's own already-established host-side,
+GDB-free logging (`riic.c`'s own module comment covers its full protocol derivation). Built
+`tools/trace_riic2_burst_source.py`: launches with that env var, captures stderr to a log file,
+separately polls the outer ring via QMP on the *same* Python process -- and since `rza1h_debug()`
+timestamps with `g_get_monotonic_time()` and Python's `time.monotonic()` reads the identical
+underlying `CLOCK_MONOTONIC` source on Linux, the two timelines merge directly, no alignment
+needed. Result: **557 real I2C `START` conditions in a single ~6-second run**, each one a
+textbook random-address EEPROM read (`START` -> write `0xA0` -> 2 address bytes -> `RESTART` ->
+write `0xA1` -> `STOP`), scanning real, sequential regions of the physical EEPROM (`IC351`,
+`GT24C128B`) -- caught address bytes climbing steadily through `0x1a78..0x1a81` in one stretch and
+`0x3e00..0x3fc0` in another, the latter landing right next to fields `notes/eeprom-catalogue.md`
+already documents (`0x3e00`, `0x3e80`). The correlation with the ring backing up is direct and
+tight -- healthy `write==read` the whole time until this second burst starts, then backlog forms
+within the same fraction of a second.
+
+Found the exact call site with a single, deliberately minimal live intervention: a GDB write
+watchpoint (`Z2`) on RIIC2's real `DRT` register (`0xFCFEE83C`, computed from `rz_a1h.h`'s
+`RZA1H_RIIC0_BASE`/`STRIDE` and `riic.c`'s own `RIIC_REG_DRT=0x3c` offset), collected 60 hits'
+worth of `LR`, then released it (`tools/trace_riic2_scan_caller.py`) -- a bounded, one-shot probe
+rather than sustained polling, since this project has repeatedly found sustained GDB interaction
+perturbs exactly this class of race. **Every single hit shows the identical `LR`, `0x20005248`**
+-- the same address this whole thread already identified, sessions ago, as sitting right after
+the `blx r2` in the generic per-GIC-ID nested-dispatch routine (`cpsie i`/`blx r2`/`cpsid i`).
+That means **this entire 557-transaction scan runs from inside an interrupt handler, not a
+foreground polling loop** -- each transaction's own completion interrupt (TEI, RI, ...) directly
+triggers the next step, a fully IRQ-chained state machine that never yields back to normal
+scheduling between individual EEPROM bytes. Tried to read the actual driver code
+(`riic2_driver_init`'s own registered ISRs, entry around `0x2001d9bc`) to see *why* it scans this
+many bytes one at a time -- found a genuine, already-known-class Ghidra gap: raw, undisassembled
+bytes (plus a 14-entry jump table just before, at `0x2001d980-0x2001d9b8`, itself presumably a
+real dispatch table for the driver's own phase handlers). No MCP tool can set ARM/Thumb
+disassembly context (confirmed, repeatedly, project-wide) -- queued a fix request in `scratch/
+armthumb_fix_requests.txt` for the user to run via `FixArmThumbMode.java` in Ghidra's Script
+Manager, following this project's own already-established workflow exactly. *Why* the scan is
+this large stays open until that's applied and the real code can be read.
+
+## 2026-09-10, same day: real I2C bus-speed pacing added to `riic.c` -- works, but isn't enough
+
+Added it anyway, since it's real, independently-justified missing realism regardless of whether
+it alone resolves this specific overflow (same reasoning as building the `scif.c` fix even after
+tracing showed it wouldn't touch the SCIF5 burst). Every `qemu_irq_raise()` in `riic.c`'s state
+machine that represents a genuinely new real event (`STI`/`TI`/`TEI`/`RI`/`SPI` becoming ready)
+now goes through a new `ptimer`-backed `riic_schedule_irq()` instead of firing synchronously --
+the phase-transition bookkeeping and `qemu_irq_lower()` calls stay immediate (internal/superseded-
+signal transitions, not new events a real driver needs real time to observe), matching exactly
+the same split `scif.c`'s own TX-pacing fix already established. `riic_byte_time_ns()` implements
+the real RZ/A1H RIIC bit-rate-generator formula from `BRL`/`BRH` (`(low+1)/IICφ` and
+`(high+1)/IICφ`, 9 SCL cycles per byte for 8 data bits + ACK); the `CKS` prescaler bit position in
+`MR1` isn't independently confirmed against this project's own SVD copy within this pass's scope,
+so it's treated as `/1` (`IICφ=PCLK`) -- an honestly-flagged simplification in the same spirit as
+`scif.c`'s own unconfirmed-for-SCIF-specifically `PCLK` assumption. `PCLK`=32MHz, the same real
+P0φ established project-wide.
+
+Built clean, confirmed live: re-ran `trace_riic2_burst_source.py` with the fix in place, and the
+same 557-transaction scan that used to complete within a couple of milliseconds now spans **~4.8
+real seconds** -- a genuine, verified, ~2500x change in realism, not a cosmetic one. **But the
+outer ring still overflows** (re-ran `trace_dsp_param_burst.py`, same signature, now around
+`t≈5.7s`). The honest read: 557 individual byte-reads is simply a lot of I2C traffic for this
+driver's own protocol shape (it re-does the full random-address sequence -- device address,
+2 address bytes, restart, read, stop -- for every single byte, never using I2C's own
+sequential/burst-read capability), so even genuinely paced at real bus speed, sustained
+priority-`0x10` traffic spread across several real seconds is still enough to intermittently
+starve `SGI 0` long enough to overflow a queue gated only by a periodic ~82ms doorbell. This
+reframes the question one more time: it's no longer really an I2C-timing-realism question (that
+part is now genuinely modeled) -- it's back to *why* the firmware performs a 557-entry,
+one-byte-at-a-time scan of this specific EEPROM region at cold boot at all, which needs the
+disassembly fix above before it can be read.
+
+One correction made along the way, worth carrying forward: `README.md`'s own peripheral table had
+been calling `IC351`/`GT24C128B` (RIIC2's real EEPROM) "the diode-matrix EEPROM" -- checking
+`notes/diode-matrix.md` directly while chasing this thread found that's wrong. The actual "diode
+matrix" this project has extensively documented elsewhere is a completely separate mechanism -- a
+physical resistor/diode array read via GPIO port scanning (`FUN_2003bb88`), nothing to do with
+I2C or `IC351` at all. Fixed the table row's wording; don't reintroduce the conflation.
