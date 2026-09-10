@@ -14,6 +14,58 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — the last flagged loose end (the RIIC2 bit-rate
+## fix's "aggregate scan duration only measured 1.44x, not the full 2.19x" wrinkle) chased down and
+## resolved. Also a real, honest correction to this same session's own earlier "shift=7 matches
+## shift=auto's ~6s" claim — that was a coarse-polling artifact, not a precise measurement.
+
+**Direct new evidence, fine-grained (0.25s poll, not the coarse 3s poll `check_overflow_r0.py`
+normally uses)**: with `sleep=off`, real time to the trap scales clearly and reproducibly with
+icount shift on this exact build -- **shift=3: ~4.4-4.7s, shift=7: ~2.0-2.1s, shift=10: ~1.4s**,
+consistent across repeated runs. This is the same mechanism this session's own earlier round-robin-
+overhead work already established (higher shift = more virtual ns per real instruction = fewer
+real round-robin passes needed to cross the same virtual-time span) -- now confirmed with a clean,
+monotonic, reproducible relationship rather than a single earlier `sleep=off` compression data
+point.
+
+**A real correction to this same session's own earlier claim, caught by this finer measurement**:
+this session earlier reported `shift=7` (with `sleep=on`, the default) hitting the trap "at the
+identical ~6s mark as `shift=auto`" -- that was measured with `check_overflow_r0.py`'s own coarse
+3-second poll granularity (which can only report "somewhere between the 3.0s and 6.0s checkpoints"),
+not a precise value. **Finer polling shows the real value is ~2.76s, highly reproducible (two
+separate runs: 2.762s, 2.763s)** -- genuinely different from `shift=auto`'s own real timing, not
+identical as the coarse tool's bucketing made it look. This doesn't change that session's actual
+conclusion (real-time compression via `sleep=off` still doesn't affect the overflow outcome, and
+that finding used a >10x effect size, robust to this granularity issue) -- but it's a real,
+worth-flagging correction: **a 3-second poll cadence is too coarse to distinguish real-time effects
+smaller than several seconds apart**, worth remembering before treating two coarse-tool readings as
+"identical" in any future session.
+
+**This resolves the original wrinkle, with a more defensible mechanism than the original guess.**
+The original hypothesis blamed `-icount shift=auto`'s *own adaptive retuning* specifically. This
+session's data shows something broader: real-time-per-unit-of-virtual-time is not a fixed ratio
+under `-icount` at all -- it depends on the current shift value, which itself varies (via
+auto's own adaptive tuning, responding to whatever the guest's workload looks like at the time) or
+is simply subject to ordinary run-to-run variation even when nominally fixed. **Practical
+consequence**: a "before/after" real-wall-clock-duration comparison of a single device's own
+per-event nominal delay change (like the RIIC2 byte-time formula fix) is fundamentally not a
+reliable proxy for the *size* of that nominal change, under `-icount`, regardless of the specific
+mechanism -- this is the same class of lesson this project has already hit from multiple other
+angles (GDB-pause perturbation, the hotblocks-plugin's own timer-shifting artifact), now confirmed
+for real-time/nominal-delay comparisons specifically too. **Not a mystery, not device-model-
+specific, and -- per this same session's earlier decisive finding -- of no consequence to the
+ring-overflow question itself**, since that mechanism has already been shown to be entirely
+virtual-time-domain and insensitive to real-time effects of any kind. This closes out the last
+concretely-flagged loose end from the bus-timing-fix thread.
+
+**Where the ring-overflow/GIC-audit thread now stands, overall**: every concretely-testable
+candidate raised this session (round-robin batching, icount shift tuning, ring capacity, GIC
+priority bit-width, and now this real-time/nominal-delay wrinkle) has been checked and either fixed
+(GIC bit-width) or ruled out as an explanation for the emulation/real-hardware divergence. No
+further concrete, testable candidate is currently queued -- closing this out as a real, hardware-
+access-gated open question (whether real IC-7300 silicon would also overflow this ring) rather than
+continuing to search for more emulator-side explanations without a new concrete lead to test.
+
 ## Status, 2026-09-10, same session, continued — per the user's own "keep going on that" request:
 ## audited the ring's 16-slot capacity (confirmed genuinely real) and the GIC priority values
 ## (found and fixed a real, confirmed-against-Renesas'-own-driver-source model inaccuracy: wrong
