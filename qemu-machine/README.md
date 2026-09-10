@@ -14,6 +14,254 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, continued once more, same day — checked whether QEMU has pre-existing
+## SCIF/UART code worth reusing the way `eeprom_at24c.c` was for RIIC2; found a striking
+## register-offset match but a real, well-reasoned decision not to swap
+
+**Per the user's follow-up ("does qemu provide pre-existing code for the serial/uart
+peripherals... reasonable to use existing code if applicable")**: checked `qemu-src/hw/char/
+sh_serial.c` (QEMU's SH-3/SH-4 SCI/SCIF model) against `scif.c`'s own real RZ/A1H register map.
+`scif.c`'s own header comment already ruled out `hw/char/renesas_sci.c` (RX62N's non-FIFO SCI,
+wrong register map entirely) in an earlier session, but never checked `sh_serial.c` — a real gap
+in that prior check. **Found**: in its SCIF feature mode, `sh_serial.c`'s register offsets
+(SMR/BRR/SCR/FTDR/FSR/FRDR/FCR/SPTR/LSR) match `scif.c`'s own real, SVD-confirmed RZ/A1H offsets
+*exactly* — unsurprising in hindsight (RZ/A1 was designed as SuperH's ARM successor, keeping
+peripheral register compatibility for easy software porting) but a genuine, valuable independent
+cross-check that this project's own register map is correct, not previously available.
+
+**Decided not to swap it in, for reasons specific to why this differs from the RIIC case**:
+RIIC's swap target (`eeprom_at24c.c`) was a separable *slave* device, orthogonal to the master
+controller's own protocol/IRQ timing — the controller needed no behavior change to plug into it.
+`sh_serial.c` isn't separable that way; adopting it would mean replacing exactly the parts that
+were hard-won here. Concretely: (1) **the IRQ line count itself doesn't match** — RZ/A1H's real
+GIC grouping is 4 lines/channel (BRI/ERI/RXI/TXI, confirmed in `rz_a1h.h`), `sh_serial.c` models
+5 (adds a separate `tei`, inherited from SH-4's own SCIF); (2) **`sh_serial.c`'s TXI logic is
+simpler than what this firmware needs** — it ties the IRQ directly to the enable bit
+(`qemu_set_irq(s->txi, val & (1<<7))`) rather than a real completion condition, where `scif.c`
+needed three specific, empirically-found fixes (level-vs-edge, a redundant-raise no-op, a
+lost-edge artifact) to get a *reliable* signal for this exact firmware — a generic model isn't
+validated against that and could easily reintroduce the same class of wedge bug; (3) **no real
+baud-rate-accurate TX pacing** in `sh_serial.c` (sends instantly, with its own `// XXX this
+blocks entire thread` comment) — `scif.c` is actually more advanced here already (this session's
+own earlier fix); (4) the IC-7300-specific virtual responders (front-panel on channel 3, DSP-link
+on channel 5) would need to sit on top of whichever base model is used regardless. **One thing
+worth remembering for later, not acted on**: `sh_serial.c`'s real 16-byte RX FIFO + receive-
+timeout timer is a nicer RX model than what `scif.c` has — nothing currently traced depends on
+that behavior, so not an active need, but worth a look if real host-driven RX timeout behavior
+ever becomes relevant.
+
+**Process note, worth keeping permanently**: do a quick check of `qemu-src/hw/<category>/` for a
+pre-existing model before hand-rolling a new peripheral from scratch — not to default to reusing
+it (as this exact check just showed, register-offset compatibility alone doesn't make a swap
+worthwhile once IRQ-timing correctness and this project's own already-validated fixes are
+weighed), but because it's cheap, sometimes finds a genuinely reusable component (`eeprom_at24c.c`
+did turn out worth adopting for RIIC2), and even a "not worth swapping" result is still useful:
+an independent cross-check of the register map, and a map of what upstream already gets right or
+wrong for the same IP family.
+
+## Status, 2026-09-10, continued once more, same day — the real Tier-2 fix: `riic.c` rewired
+## onto a real `I2CBus`/`eeprom_at24c.c` slave device, a genuinely new write-data-loop protocol
+## state machine added (decompiled from real firmware, not guessed), a real live regression found
+## and fixed along the way, and the fix end-to-end validated live (write, then read back, over a
+## fresh transaction) — not just built and hoped for.
+
+**Scope turned out bigger than "swap the backend"**: decompiling the real write driver
+(`FUN_2001dcc4`/`FUN_2001da80`/`FUN_2001db50`) found firmware drives a genuine multi-byte TI/TEI
+producer-consumer loop for write-data bytes that `riic.c`'s controller state machine never
+modeled at all (it only ever chained through the 2 address bytes, then assumed a restart-to-read)
+— wiring in a real EEPROM backend alone wouldn't have fixed the write bug on its own. Built it
+anyway, per explicit direction to do both the backend swap and the protocol fix in one pass.
+
+**What's real, now**: `riic.c`'s DRT/DRR handlers now drive a real `I2CBus` via
+`i2c_start_transfer()`/`i2c_send()`/`i2c_recv()`/`i2c_end_transfer()`, with a real
+`hw/nvram/eeprom_at24c.c` slave (`at24c_eeprom_init_rom()`, 16KB, 2-byte addressing, address 0x50
+— confirmed via decompile: `FUN_2001d9bc` writes `DRT=0xa0`/`0xa1`) seeded from the same
+`-global rza1h-riic.image=` file as before. A new write-data-loop state (reusing
+`RIIC_WAIT_RESTART`) accepts further DRT writes as real write-data bytes, chained via a new
+TEI-then-conditional-TI mechanism (`riic_schedule_irq_conditional()`/`riic_event_fire()`'s own
+comments have the full derivation) that discretely approximates real TDRE/TEND per-byte hardware
+semantics without this device needing to know firmware's own byte count in advance.
+
+**Two real bugs found live while building this, neither purely theoretical**:
+1. `ptimer_transaction_begin: Assertion '!s->in_transaction' failed` — the ptimer callback
+   (`riic_event_fire()`) can't itself call `ptimer_transaction_begin` on the same timer (it's
+   already mid-transaction when invoked). Fixed with a `QEMUBH` (`riic_ti_offer_bh`), deferring
+   the follow-up schedule outside the firing callback — exactly the pattern `ptimer_trigger()`'s
+   own upstream comment recommends ("Use a bottom-half routine to avoid reentrancy issues").
+2. **A real regression, caught by directly comparing a 60s trace against the pre-session
+   baseline, not assumed fixed just because it built and booted**: the BH itself is async and can
+   run *after* the guest has already responded to the same TEI with a real CR2=RS — since only
+   one event can be in flight at a time by this device's own design, an unconditional BH would
+   silently clobber the just-scheduled, now-load-bearing restart STI with a stale TI offer.
+   Confirmed live: this parked every read transaction's restart, stalling the whole channel (and
+   the boot the ring-overflow trap itself depends on) in an idle WFE loop after well under a
+   second of activity, instead of the many further seconds of dense traffic the unmodified
+   baseline shows. Fixed by re-checking `phase == RIIC_WAIT_RESTART` inside the BH too, not just
+   at `riic_event_fire()`'s own raise-time check. **Re-verified against the baseline after the
+   fix**: 12,746 log lines / 1,260 distinct timestamps / zero anomalies over 40s, matching the
+   baseline's 12,491 lines / 1,299 timestamps almost exactly, and the known ring-overflow trap is
+   still reached at the same ~10-15s mark, confirmed unchanged over a full 70s window — this fix
+   doesn't touch that thread's own mechanism or timing at all.
+
+**The actual write path validated live, end-to-end, not just "builds and doesn't crash"**: built
+`tools/test_riic_eeprom_write.py` — since no traced boot path naturally reaches the one *known*
+real EEPROM write (it happens later in `cold_boot_hw_init` than the ring-overflow trap boot
+currently halts at), this drives RIIC2's real registers directly over GDB instead (same
+bypass-firmware spirit as `force_call_fup.py`), timed to run once the CPU is confirmed stuck at
+the trap (real time still advancing, firmware provably never touching RIIC2 again — confirmed the
+safest possible moment, not just assumed). Wrote 8 real bytes to a fresh offset, then read them
+back over a separate, fresh transaction: **PASS — genuinely persisted and read back correctly**.
+One test-harness-only gotcha hit and fixed along the way (not a `riic.c` bug): the trap is reached
+mid-transaction, not at a clean boundary, so the channel needs an explicit forced-to-idle
+(`CR2=SP`) before the test's own `CR2=ST` — without it, every test byte silently fed into
+whatever real transaction was already in flight instead of the test's own intended address.
+
+**Bonus, found by the same longer regression trace, not chased further this session**: a natural
+(un-injected) 40-55s free-running capture reached the *real*, previously-never-observed
+`0x3df0` EEPROM activity live for the first time (both a read and the start of a second
+transaction at that exact offset) — RIIC2 traffic keeps flowing from interrupt context long after
+the foreground CPU is stuck at the ring-overflow trap (consistent with, not contradicting, the
+already-closed GIC-priority mechanism: the trap doesn't disable IRQs). Genuinely new territory
+this project has never seen live before, but a fresh lead for a future session, not investigated
+further here — this session's own scope was the write-path fix.
+
+Full derivation, including the exact decompiled write-driver trace and every log excerpt, in
+README-history.md's newest section.
+
+## Status, 2026-09-10, continued once more, same day — user asked whether we can A/B-test our
+## own hand-rolled EEPROM model against QEMU's real, built-in one. Built and ran a differential
+## test; it immediately found a real bug (EEPROM writes are silently dropped, never persisted),
+## independent of anything about the round-robin-loop or GIC-priority threads above.
+
+**Scoped what "A/B test" can actually mean here first.** `riic.c` models the RIIC *host
+controller* register/IRQ protocol (CR2/SR2/DRT/DRR/STI/TI/TEI/RI/SPI) — Renesas-specific, no
+QEMU-built-in equivalent exists or could exist generically, so that half stays hand-written no
+matter what. What *is* comparable is the EEPROM *data-plane* underneath it (address counter,
+auto-increment/wrap, read, write) — currently a hand-rolled byte array baked directly into
+`riic.c`, versus QEMU's own real, generic 24Cxx slave model (`hw/nvram/eeprom_at24c.c`, already
+noted as unused-by-this-project in the prior Status section above). A full live A/B (rewiring
+`riic.c` to drive a real `I2CBus` + `at24c_eeprom_init_rom()` slave instead of its own array) is
+a genuine refactor — still not attempted, still "deserves its own session" per the prior note.
+**What's cheap and was actually done instead**: a pure-Python differential test
+(`tools/eeprom_ab_diff_test.py`, new) that ports both sides' real logic faithfully — QEMU's own
+`at24c_eeprom_send()`/`recv()`/`event()` (read directly from `qemu-src/hw/nvram/eeprom_at24c.c`)
+and `riic.c`'s own actual behavior (read directly from `src/riic.c`) — and runs the same scripted
+transactions against both, without touching the live boot or the working system at all.
+
+**Results, run directly, not just reasoned about:**
+- **Reads match exactly**, including the already-RE-derived "dummy read after switching to
+  receive mode" quirk (one discarded `recv()` before the real data) — a genuine, independent
+  confirmation that this project's own earlier reverse-engineering of that quirk (see the "Ghidra
+  fix applied" section further down) was real protocol behavior, not a misreading, since it falls
+  naturally out of driving a real reference EEPROM model the same way.
+- **Address wraparound differs beyond the real EEPROM's own 0x4000-byte size**: the reference
+  model wraps (`% rsize`, real 24Cxx hardware behavior) while `riic.c`'s `mem_addr` is a bare
+  `uint16_t` that only wraps at 0x10000 and reads 0 past the backing file's own EOF in between.
+  **Not currently consequential** — every traced real scan (`FUN_2006cb84`'s own ~0x0420-0x1fe0/
+  0x3ac0-0x3e80 ranges) stays well under 0x4000 — but a real, latent discrepancy if anything ever
+  addresses higher.
+- **Real bug found, not latent**: `riic.c` **silently drops every EEPROM write** — confirmed by
+  tracing the code, not just the test (`src/riic.c`'s DRT-write `switch` only ever consumes
+  address bytes; any DRT write once the address phase is done falls to the `default:` case, which
+  just logs "unexpected DRT write" and does nothing; separately, `s->image_fd` is opened
+  `O_RDONLY`, so persistence couldn't happen even if the state machine tried). **This directly
+  matters**: this project already traced a real EEPROM *write* during cold boot (`cold_boot_hw_
+  init` stamping `"SX3765 V0.9H-000"` at offset `0x3df0`, see "Ghidra fix applied" below) — on
+  real hardware or against QEMU's own reference model, a later read of that offset would see the
+  freshly-written string; against `riic.c` as it stands today, it would still see whatever the
+  static backing image already had there. No traced boot path currently reads that offset back
+  within the same session, so this hasn't caused an observed discrepancy yet — but it's a real,
+  confirmed correctness gap, not a hypothetical one.
+
+**FIXED, same day, later in this session — see the newer Status section above**: option (b), the
+fuller `I2CBus`/`eeprom_at24c.c` refactor, chosen and built, plus the write-data-loop protocol
+state machine that turned out to also be needed (not just a backend swap) — validated live, write
+then read-back over a fresh transaction, genuinely persisted. Full test output and methodology
+for *this* section's own findings (the ones that motivated the fix) still in README-history.md's
+relevant section from earlier in the day.
+
+## Status, 2026-09-10, continued in the same day — the QEMU round-robin-main-loop-overhead
+## investigation (prepared, not run, by the prior session) is CLOSED. Verdict: real mechanism
+## found and localized, but it's inherent to QEMU's own single-threaded TCG round-robin + icount
+## architecture, not a bug in this project's device models and not fixable at this project's
+## level without patching core QEMU. This reframes the whole ring-overflow thread's real-world
+## relevance one more notch: it's now understood, with real measured numbers (not a plausibility
+## argument), to be substantially an emulation-architecture artifact.
+
+**Ran the prepared tooling exactly as instructed** (`tools/apply_rr_loop_trace.sh`, then
+`tools/trace_rr_loop_overhead.py 15`) and did the actual per-event correlation join the prior
+session flagged as the missing piece. **Result**: every one of 10,261 RIIC schedule-irq events in
+a 15s capture happens inside an iteration that *does* call `tcg_cpu_exec` (never one of the
+~half of iterations with no exec at all) — but that exec slice's own duration (median ~28us) is
+much smaller than the real measured gap between consecutive same-type events (RI→RI, the dominant
+case: median ~178-181us). **The real answer**: a median of ~10 outer-loop iterations elapse
+between consecutive RI events, not one — and summing every checkpoint-to-checkpoint span across
+those ~10 in-between iterations (wait-io + relock + icount-bookkeeping + exec, each iteration
+paying its own 5-30us) reproduces the measured gap almost exactly (~168us predicted vs.
+~178-206us measured). **So the per-event cost isn't one fixed cost paid once — it's roughly a
+dozen small round-robin main-loop passes needed to advance virtual time by one RIIC byte-period.**
+
+**Chased why ~half the iterations are "empty" (no exec) — and the obvious first guess (genuine
+CPU halt/WFI, with icount's warp-to-next-deadline path not yet catching up) was checked directly
+and refuted**: added one line logging `cpu->halted`/`cpu_can_run()`/`cpu_work_list_empty()` to the
+same temporary patch — **`cpu->halted` reads 0 in 99.87% of samples** (298,582/298,960 in a fresh
+6s capture). The real explanation, found by reading `tcg-accel-ops-rr.c` itself: a
+`qatomic_load_acquire(&cpu->exit_request)` check can `break` the inner loop before
+`tcg_cpu_exec()` even when the CPU is fully runnable — `cpu_exit()` is the standard way a device
+model asks a running vCPU to stop promptly so a freshly-raised interrupt gets serviced without
+delay, and at RIIC2/MTU2's IRQ rate during this scan (~1 every 180us) that alone explains the
+observed alternating full/empty iteration pattern.
+
+**Verdict**: `cpu_exit()`-per-interrupt-raise is correct, standard QEMU behavior, and the
+lock-shuffle/icount-bookkeeping stages measured directly this session are each already lean
+(single-digit-to-tens of microseconds). The multiplier comes from *needing* ~10 such passes per
+device event during an IRQ-dense scan, not from any one pass being slow — this is inherent to
+this accelerator's architecture, not a project-level bug. **One real, not-yet-attempted idea for
+whoever wants to actually claw this back** (a genuine design change, not a same-session tack-on):
+since RIIC2's byte-at-a-time reads are already known to be one driver-level "chunk" transaction,
+a model-side optimization that pre-computes a whole chunk's worth of byte events as fewer, larger
+`ptimer` waits (while still landing each byte's own nominal virtual-time cost and IRQ correctly)
+could reduce the number of real round-robin re-dispatches without changing anything the firmware
+itself observes. Not attempted, not even sketched in code — flagged as an idea. Full derivation,
+including the exact join methodology and numbers, in README-history.md's newest section.
+
+**`qemu-src/` reverted clean** (`git -C qemu-src checkout -- accel/tcg/tcg-accel-ops-rr.c`,
+rebuilt, confirmed pristine) — same "investigated, then left unpatched" convention as
+`irq-mask-trace.patch`. `patches/rr-loop-trace.patch` itself is untouched and reusable via
+`tools/apply_rr_loop_trace.sh` for a future re-run if this thread gets picked back up.
+
+**Also this session, per the user's own question: how does `riic.c` compare to how other QEMU
+projects build I2C emulation?** Checked both the vendored `qemu-src/` tree already in this repo
+and external sources. **Real finding**: QEMU has a generic, standard I2C bus framework
+(`hw/i2c/core.c`'s `I2CBus`/`i2c_slave_send()`/`recv()`) plus an existing, ready-made 24Cxx-family
+EEPROM slave model (`hw/nvram/eeprom_at24c.c`, with real address/page-rollover handling, optional
+`BlockBackend` persistence, and an `init_rom` property for exactly the "seed with a fixed ROM
+image" role `tools/build_riic_eeprom_image.py` was built from scratch to fill) — every real
+in-tree I2C controller (`aspeed_i2c.c`, `designware_i2c.c`, `imx_i2c.c`, confirmed via external
+search too) plugs into that same bus/slave split; `riic.c` doesn't use any of it, keeping the
+virtual EEPROM as a hand-rolled byte array baked directly into the host-controller model. **Not a
+one-sided miss, though**: none of those real in-tree controllers checked model real bit-rate-
+accurate SCL timing via `ptimer` the way `riic.c` now does — most are instant-transfer FIFO
+models, so this project's own timing realism is ahead of the QEMU-mainline norm, not behind it.
+**Practical takeaway, not acted on**: adopting the real `I2CBus`/`eeprom_at24c.c` framework would
+be a genuine, worthwhile architectural cleanup (free persistence/init-ROM handling, standard
+idiom) but is optional, not blocking, and deserves its own deliberate session — a real refactor,
+not a drive-by change. Full detail and sources in README-history.md's newest section.
+
+**Actual next step for whoever picks this up**: the round-robin-overhead thread is closed and the
+ring-overflow trap's mechanism was already fully closed earlier this same day (GIC-priority-
+starvation, see the next Status section down) — there is no further open sub-question on *why*
+the trap fires. The real choice now is strategic, not diagnostic: (1) treat the overflow as an
+accepted, understood emulation-timing limitation and find some way past it that doesn't touch
+real firmware (the not-yet-attempted RIIC2-chunk-batching idea above is the most concrete lever on
+the table, but is a real design task, not a quick fix); or (2) set this specific trap aside for
+now and reassess whether `body.bin`'s own MMCIF driver — this whole `qemu-machine/` effort's
+actual Phase-0 payoff, still never reached by any traced boot path — could be approached
+differently (e.g. a targeted `force_call_fup.py`-style direct call into SD-card code, bypassing
+the parts of cold boot that don't matter for validating `mmc.c` itself, rather than insisting on
+a fully organic boot through this trap first). Neither has been decided yet — a real conversation
+with the user, not a foregone conclusion from this session's own findings.
+
 ## Status, 2026-09-10, new session — read QEMU's own gdbstub/icount internals per the prior
 ## session's explicit handoff order; the working "GDB pause distorts icount" theory is half
 ## confirmed, half refuted, and a well-motivated follow-on hypothesis is refuted too
@@ -185,7 +433,12 @@ reframes the whole remedy question**: the ring overflow is very likely mostly (o
 isn't a firmware-shaped workaround at all, it's finding and reducing that QEMU-architecture
 overhead directly.
 
-**NEXT SESSION — prepared and ready to run, not yet executed**: profile exactly where the
+**RESOLVED, same day (continued session) — see the new Status section at the top of this file**:
+this profiling was run, the ~65-90us/event cost was localized and its fixability verdict decided
+(inherent to QEMU's round-robin+icount architecture). The paragraphs below are kept for their own
+derivation trail (what was prepared and why) but are no longer the active next step.
+
+~~**NEXT SESSION — prepared and ready to run, not yet executed**~~: profile exactly where the
 ~65-90µs/event cost goes inside QEMU's round-robin main loop (`accel/tcg/tcg-accel-ops-rr.c`'s
 `rr_cpu_thread_fn()`). This matters well beyond RIIC2: `mmc.c` (the actual Phase-0 target) has
 **zero** `ptimer` usage today — no real SD-bus-speed pacing yet — so this exact problem is
@@ -702,7 +955,7 @@ section for a first look at what it already revealed):
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
 | MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait — see `mtu2_ch3_periodic_housekeeping_tick` in Status above — ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine). Every other channel/register/event still plain storage (`regs[]` passthrough). **`MTU2_FREQ_HZ` confirmed real at 32MHz** (P0φ/1, same real clock as OSTM — the original 25MHz was an empirical placeholder, corrected once `-icount` made a real-clock re-check necessary) |
-| RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM, real bit-rate-generator-paced timing — **formula corrected 2026-09-10 (new session)** to implement all 5 real SCLE/NFE/CKS-dependent variants (manual §18.3.12/13), not just the SCLE=0 case, and to reset `FER`/`BRL`/`BRH`/`MR1` to their real hardware power-on defaults; confirmed against the real firmware-programmed register values (`CKS=1`⇒IICφ=16MHz, `FER` left at its real `SCLE=1,NFE=1` reset default) — real rate ≈340kHz, comfortably inside the GT24C128B datasheet's own min/max windows at either supported voltage; START/RESTART/STOP conditions also corrected (`riic_condition_time_ns()`) to their real, much-shorter §18.12 timing instead of a full byte time (see README-history.md's newest two sections) — only RIIC2 exercised by any traced boot path so far, the real physical EEPROM `IC351`/`GT24C128B` (note: not the same thing as the diode matrix in `notes/diode-matrix.md`, which is a separate, GPIO-scanned resistor array — an earlier session's own label here conflated the two) |
+| RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR/STI/TI/TEI/RI/SPI protocol, real bit-rate-generator-paced timing — **formula corrected 2026-09-10** to implement all 5 real SCLE/NFE/CKS-dependent variants (manual §18.3.12/13), not just the SCLE=0 case, and to reset `FER`/`BRL`/`BRH`/`MR1` to their real hardware power-on defaults; confirmed against the real firmware-programmed register values (`CKS=1`⇒IICφ=16MHz, `FER` left at its real `SCLE=1,NFE=1` reset default) — real rate ≈340kHz, comfortably inside the GT24C128B datasheet's own min/max windows at either supported voltage; START/RESTART/STOP conditions also corrected (`riic_condition_time_ns()`) to their real, much-shorter §18.12 timing instead of a full byte time. **EEPROM data-plane rebuilt 2026-09-10 (same day, later)**: replaced a hand-rolled, read-only byte array (found via this project's own A/B differential test to silently drop every write and wrap at the wrong address-space size) with a real `hw/i2c/core.c` `I2CBus` + `hw/nvram/eeprom_at24c.c` slave (16KB, 2-byte addressing, real 7-bit address 0x50 — confirmed via decompile), plus a genuinely new write-data-loop protocol state machine (decompiled from the real firmware write driver, `FUN_2001dcc4`/`FUN_2001da80`/`FUN_2001db50`) that the old model never had at all — live-validated end to end (write then read-back over a fresh transaction, `tools/test_riic_eeprom_write.py`). See README.md's Status section and README-history.md for the full derivation (including a live regression found and fixed along the way) — only RIIC2 exercised by any traced boot path so far, the real physical EEPROM `IC351`/`GT24C128B` (note: not the same thing as the diode matrix in `notes/diode-matrix.md`, which is a separate, GPIO-scanned resistor array — an earlier session's own label here conflated the two) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel, now real baud-rate-accurate pacing (`FSR.TDFE`/`TEND`, `PCLK`=32MHz, see Status above — 2026-09-10). Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers, and now paced by a real (placeholder) delay too — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
@@ -777,9 +1030,26 @@ section for a first look at what it already revealed):
   `hw-arm-build.patch`) — it's a one-investigation diagnostic against core `target/arm/helper.c`,
   not a permanent part of this machine; apply/rebuild manually via the script, drop it
   (`git apply --reverse` in `qemu-src/`) once this resume point is resolved.
+- **`patches/rr-loop-trace.patch`** / **`tools/apply_rr_loop_trace.sh`** / **`tools/
+  trace_rr_loop_overhead.py`** (2026-09-10) — the round-robin-main-loop diagnostic that localized
+  the ring-overflow's own ~4x real-time-inflation gap to QEMU's `cpu_exit()`-per-interrupt +
+  round-robin-pass overhead (see Status above — investigation now CLOSED, verdict "inherent, not
+  fixable at this project's level"). Same NOT-applied-by-default convention as
+  `irq-mask-trace.patch`; reusable for a future re-run via the script, currently reverted
+  (`qemu-src/` is clean).
 - **`tools/check_overflow_r0.py`** (2026-09-10) — 5-trial, QMP-only (no GDB) check of the
   overflow trap's own `r0` argument; found it's always `2` (producer-side), never `3`
   (consumer-side), ruling out the "consumer gets stuck forwarding a message" hypothesis directly.
+- **`tools/eeprom_ab_diff_test.py`** (2026-09-10) — HISTORICAL/regression-reference now, not a
+  live comparison: the pure-Python differential test that found `riic.c`'s old hand-rolled EEPROM
+  model silently dropped every write and wrapped at the wrong address-space size, motivating the
+  real `I2CBus`/`eeprom_at24c.c` rewrite below. Its `OurRiicModel` intentionally models the OLD,
+  now-replaced behavior — kept as the record of the bug, not a check against today's `riic.c`.
+- **`tools/test_riic_eeprom_write.py`** (2026-09-10) — the live validation for the new write-data-
+  loop protocol: drives RIIC2's real registers directly over GDB (bypassing firmware, same spirit
+  as `force_call_fup.py`) once the CPU is confirmed stuck at the known ring-overflow trap (real
+  time still advancing, firmware provably done touching RIIC2), writes 8 bytes, reads them back
+  over a fresh transaction, and checks they match. Confirmed PASS — see Status above.
 - **`tools/trace_post_hsk1_fix.py`** (2026-09-10) — QMP-only PC + ring-header polling, built to
   check the real effect of the `HSK1`/`P8_9` `gpio.c` fix; found the fix works (the ~16-minute
   wait is gone) but the ring still overflows, now much sooner (~4s instead of ~27s).

@@ -104,7 +104,10 @@
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/i2c/i2c.h"
+#include "hw/nvram/eeprom_at24c.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h" /* QEMUBH -- see riic_ti_offer_bh()'s own comment */
 #include "qemu/module.h"
 #include "qom/object.h"
 
@@ -191,8 +194,20 @@ struct RZA1HRiicState {
                           * completes, not immediately -- see file
                           * comment's RI/SPI ordering note. */
 
-    char *image_path;
-    int image_fd; /* -1 if no image given / failed to open */
+    char *image_path;   /* QOM property, unchanged CLI usage (-global rza1h-riic.image=...) --
+                          * read once, at realize() time, only to seed the real EEPROM slave's
+                          * initial content (see rza1h_riic_realize()); no longer kept open or
+                          * read from directly at runtime. */
+    I2CBus *eeprom_bus; /* 2026-09-10: a real generic I2C bus + a real hw/nvram/eeprom_at24c.c
+                          * slave device replace this file's own former hand-rolled byte-array
+                          * EEPROM model -- see README.md's Status section (the differential A/B
+                          * test that found the old model silently dropped every write and wrapped
+                          * at the wrong address-space size, 16-bit instead of the real 0x4000).
+                          * This device's own CR2/SR2/DRT/DRR/STI/TI/TEI/RI/SPI protocol state
+                          * machine below (unchanged in spirit -- still Renesas-specific, no
+                          * generic QEMU equivalent) now drives this real bus via
+                          * i2c_start_transfer()/i2c_send()/i2c_recv()/i2c_end_transfer() instead
+                          * of touching a private array directly. */
 
     /* Real I2C bus-speed pacing (2026-09-10) -- see riic_byte_time_ns()'s own comment. Every
      * `qemu_irq_raise()` above that represents a genuinely new real hardware event (STI/TI/TEI/
@@ -201,7 +216,15 @@ struct RZA1HRiicState {
      * immediate `qemu_irq_lower()` calls) stays synchronous -- those are internal/superseded-
      * signal transitions, not new events a real driver would need real time to observe. */
     ptimer_state *event_timer;
+    QEMUBH *ti_offer_bh; /* see riic_ti_offer_bh()'s own comment */
     int pending_irq; /* -1 = idle */
+    bool pending_irq_conditional; /* see riic_schedule_irq_conditional()'s own comment -- governs
+                                    * the write-data-loop's TEI-then-conditional-TI chaining in
+                                    * riic_event_fire() (2026-09-10, the real write-data-loop
+                                    * protocol this project's own EEPROM differential test found
+                                    * was never implemented -- see README.md's Status section and
+                                    * the decompiled FUN_2001dcc4/FUN_2001da80/FUN_2001db50 trace
+                                    * behind this design). */
 };
 
 /* Real RZ/A1H RIIC bit-rate-generator formula (2026-09-10, corrected -- confirmed against the
@@ -229,6 +252,13 @@ struct RZA1HRiicState {
  * actually being paced: every phase transition below (STI/TI/TEI/RI/SPI) represents one such
  * byte-shaped step in the real protocol. */
 #define RIIC_PCLK_HZ 32000000
+
+/* Real GT24C128B parameters (2026-09-10) -- 16KB, 2-byte addressing (via
+ * hw/nvram/eeprom_at24c.c's own asize>256-bytes rule), at the real 7-bit I2C address firmware
+ * always uses: decompiled `FUN_2001d9bc` (the real STI handler) writes DRT=0xa0 (write) or 0xa1
+ * (read) -- 0x50<<1 | R/W -- confirmed directly, not assumed from a datasheet default. */
+#define RIIC2_EEPROM_I2C_ADDR 0x50
+#define RIIC2_EEPROM_ROM_SIZE 16384
 
 /* Computes the real SCL low/high periods (RIICnBRL/RIICnBRH's own real-time meaning) in ns,
  * shared by riic_byte_time_ns() and riic_condition_time_ns() below -- both need the same
@@ -335,6 +365,9 @@ static void riic_schedule_irq_delay(RZA1HRiicState *s, int irq_idx, uint64_t del
                 s->channel, irq_idx, delay_ns, icount_get_raw(), g_get_monotonic_time());
 
     s->pending_irq = irq_idx;
+    s->pending_irq_conditional = false; /* any plain (non-conditional) schedule call clears a
+                                          * stale conditional flag from an earlier chain -- see
+                                          * riic_schedule_irq_conditional()'s own comment. */
     ptimer_transaction_begin(s->event_timer);
     ptimer_set_count(s->event_timer, delay_ns);
     ptimer_run(s->event_timer, 1); /* oneshot */
@@ -349,29 +382,79 @@ static void riic_schedule_irq(RZA1HRiicState *s, int irq_idx)
     riic_schedule_irq_delay(s, irq_idx, riic_byte_time_ns(s));
 }
 
+/* Schedules `irq_idx` exactly like riic_schedule_irq(), but marks it "conditional": when the
+ * timer fires, riic_event_fire() only actually raises it if the channel is still in
+ * RIIC_WAIT_RESTART at that moment. This is the real hardware TDRE/TEND relationship, discretely
+ * approximated (2026-09-10, decompiled from FUN_2001dcc4/FUN_2001da80/FUN_2001db50 -- the real
+ * write-data-loop protocol this project's own EEPROM differential test found was never
+ * implemented, see README.md's Status section): after any byte finishes clocking out with
+ * nothing new queued, real hardware asserts both "transmit ended" (TEI) and, an instant later,
+ * "ready for a new byte" (TI) again -- offering one more chance to continue. A real read has
+ * already (synchronously, in guest virtual time -- essentially instant relative to this
+ * real-time-paced schedule) written CR2=RS by the time this fires, moving `phase` away from
+ * RIIC_WAIT_RESTART, so the conditional check safely suppresses this offer for reads. A real
+ * write responds by writing DRT again (see the RIIC_WAIT_RESTART case in rza1h_riic_write()),
+ * which re-arms the exact same TEI-then-conditional-TI chain for the next byte -- this is what
+ * lets a write of any length (0 or more data bytes) drain correctly without this device needing
+ * to know the real byte count firmware itself is tracking. */
+static void riic_schedule_irq_conditional(RZA1HRiicState *s, int irq_idx)
+{
+    riic_schedule_irq(s, irq_idx);
+    s->pending_irq_conditional = true;
+}
+
+/* Bottom half that actually arms the conditional-TI follow-up (see
+ * riic_schedule_irq_conditional()'s own comment). Required, not just style: riic_event_fire()
+ * (below) is itself `s->event_timer`'s ptimer callback, invoked by ptimer.c's own internals
+ * while that ptimer is already mid-transaction (confirmed live, 2026-09-10 -- calling
+ * riic_schedule_irq_conditional() directly from riic_event_fire() hit
+ * `ptimer_transaction_begin: Assertion '!s->in_transaction' failed` immediately on a real boot).
+ * ptimer.c's own `ptimer_trigger()` comment says exactly this: "Use a bottom-half routine to
+ * avoid reentrancy issues." Scheduling here instead runs the follow-up after the current
+ * callback (and its transaction) has fully unwound. */
+static void riic_ti_offer_bh(void *opaque)
+{
+    RZA1HRiicState *s = RZA1H_RIIC(opaque);
+
+    /* Real, live-confirmed bug (2026-09-10): a BH runs asynchronously, at some indeterminate
+     * later point relative to the guest -- by the time this actually executes, the guest may
+     * have ALREADY responded to the TEI that scheduled it (e.g. a genuine CR2=RS for a real
+     * read, which itself calls riic_schedule_irq_delay() for the real restart's own STI). Since
+     * this device has only one pending-timer slot in flight at a time (by design, see
+     * riic_schedule_irq_delay()'s own comment), an unconditional schedule here would silently
+     * clobber that already-in-flight, now-load-bearing STI request with a stale, no-longer-
+     * relevant TI offer -- confirmed live: this exact race stalled every read transaction's own
+     * restart, parking the whole channel (and, transitively, the boot the ring-overflow trap
+     * itself depends on) in an idle WFE loop within under a second of dense scan activity,
+     * instead of the many further seconds of normal traffic every prior session observed. Fixed
+     * by re-checking phase here too, not just at riic_event_fire()'s own raise-time check. */
+    if (s->phase != RIIC_WAIT_RESTART) {
+        return;
+    }
+    riic_schedule_irq_conditional(s, IRQ_TI);
+}
+
 static void riic_event_fire(void *opaque)
 {
     RZA1HRiicState *s = RZA1H_RIIC(opaque);
     int idx = s->pending_irq;
+    bool conditional = s->pending_irq_conditional;
 
     s->pending_irq = -1;
-    if (idx >= 0) {
-        qemu_irq_raise(s->irq[idx]);
+    s->pending_irq_conditional = false;
+    if (idx < 0) {
+        return;
     }
-}
-
-static uint8_t riic_eeprom_read(RZA1HRiicState *s, uint16_t addr)
-{
-    uint8_t byte = 0;
-
-    if (s->image_fd >= 0) {
-        ssize_t n = pread(s->image_fd, &byte, 1, addr);
-        if (n == 1) {
-            return byte;
-        }
+    if (conditional && s->phase != RIIC_WAIT_RESTART) {
+        return; /* the offer this event represents is moot -- the guest has already moved the
+                 * transaction on (a real CR2=RS/SP write), see this function's own doc comment
+                 * on riic_schedule_irq_conditional() above. */
     }
-    return 0; /* no image, short/failed read, or past end -- see file
-               * comment on why 0x00 is a safe, real, documented value. */
+    qemu_irq_raise(s->irq[idx]);
+    if (idx == IRQ_TEI && s->phase == RIIC_WAIT_RESTART) {
+        qemu_bh_schedule(s->ti_offer_bh); /* see riic_ti_offer_bh()'s own comment on why this
+                                            * can't be a direct call from here. */
+    }
 }
 
 static uint64_t rza1h_riic_read(void *opaque, hwaddr offset, unsigned size)
@@ -397,15 +480,18 @@ static uint64_t rza1h_riic_read(void *opaque, hwaddr offset, unsigned size)
     case RIIC_REG_DRT: return s->drt; /* write-only on real hardware; harmless */
     case RIIC_REG_DRR:
         if (s->phase == RIIC_READING) {
-            uint8_t byte = riic_eeprom_read(s, s->mem_addr);
+            uint8_t byte = i2c_recv(s->eeprom_bus); /* real device's own address-counter/
+                                                       * wraparound/dummy-read handling -- see
+                                                       * the struct's own comment on why this
+                                                       * replaced riic_eeprom_read(). */
 
-            s->mem_addr++;
             qemu_irq_lower(s->irq[IRQ_RI]); /* real hardware: reading DRR
                                               * auto-clears RDRF */
             if (s->sp_pending) {
                 s->sp_pending = false;
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
+                i2c_end_transfer(s->eeprom_bus);
                 riic_schedule_irq_delay(s, IRQ_SPI,
                                         riic_condition_time_ns(s, RIIC_COND_STOP));
             } else {
@@ -440,6 +526,14 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             qemu_irq_lower(s->irq[IRQ_TEI]); /* real hardware: the next
                                                * CR2 write after TEND
                                                * auto-clears it */
+            qemu_irq_lower(s->irq[IRQ_TI]); /* 2026-09-10: a conditional TI offer (see
+                                              * riic_schedule_irq_conditional()) may currently be
+                                              * asserted too -- the guest chose to respond with
+                                              * this restart instead of another DRT write, so
+                                              * clear it defensively; riic_event_fire()'s own
+                                              * phase check would suppress the *next* one anyway,
+                                              * but the line itself needs an explicit lower like
+                                              * every other source in this file. */
             s->phase = RIIC_WAIT_READ_ADDR;
             s->sr2 |= SR2_START;
             riic_schedule_irq_delay(s, IRQ_STI, /* restart re-triggers the
@@ -463,6 +557,17 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             if (s->phase == RIIC_READING) {
                 s->sp_pending = true;
             } else {
+                /* 2026-09-10: reached directly from RIIC_WAIT_RESTART now, for both a genuine
+                 * zero-data "just set the address" stop and (new) a real write's own completion
+                 * stop after 1+ data bytes -- see the RIIC_WAIT_RESTART DRT-write case above.
+                 * Real hardware: this STOP also auto-clears TDRE/TEND, same reasoning as the
+                 * CR2=RS branch above; ends the real bus transaction so the connected EEPROM
+                 * slave sees its own real I2C_FINISH event (hw/nvram/eeprom_at24c.c uses this to
+                 * decide whether to flush to a backing store -- inert here since this device has
+                 * none, but the correct real-protocol action regardless). */
+                qemu_irq_lower(s->irq[IRQ_TI]);
+                qemu_irq_lower(s->irq[IRQ_TEI]);
+                i2c_end_transfer(s->eeprom_bus);
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
                 riic_schedule_irq_delay(s, IRQ_SPI,
@@ -511,7 +616,19 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
              * comment). STI itself is already lowered by then -- the
              * real STI handler clears SR2's START flag (see the SR2
              * write case above) as its very first action, before this
-             * DRT write. */
+             * DRT write. This is also the real START condition on the
+             * bus (2026-09-10) -- tell the real I2C core so the connected
+             * EEPROM slave actually matches/ACKs it; this project's own
+             * virtual EEPROM is the only device on this bus at the fixed
+             * address firmware always sends (RIIC2_EEPROM_I2C_ADDR,
+             * confirmed via decompile, see that macro's own comment), so
+             * this is not expected to ever fail in practice -- logged,
+             * not raised as NAKI, to keep this change bounded to what's
+             * actually been observed live. */
+            if (i2c_start_transfer(s->eeprom_bus, value >> 1, (value & 1) != 0)) {
+                rza1h_debug("riic", "riic%u: i2c_start_transfer(%#x) unexpectedly NACKed",
+                           s->channel, (unsigned)(value >> 1));
+            }
             if (value & 1) {
                 s->phase = RIIC_READING; /* shouldn't normally happen on
                                            * the very first address byte
@@ -529,24 +646,64 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             qemu_irq_lower(s->irq[IRQ_TI]); /* real hardware: writing DRT
                                               * auto-clears TDRE */
             s->mem_addr = (uint16_t)(value << 8);
+            i2c_send(s->eeprom_bus, value); /* address byte 1/2 -- the real EEPROM slave's own
+                                              * send() accumulates this into its address counter
+                                              * (see hw/nvram/eeprom_at24c.c's own haveaddr/asize
+                                              * logic), not our own mem_addr (kept only for the
+                                              * debug log below -- see the struct comment). */
             s->phase = RIIC_WAIT_MEM_LO;
             riic_schedule_irq(s, IRQ_TI);
             break;
         case RIIC_WAIT_MEM_LO:
             qemu_irq_lower(s->irq[IRQ_TI]);
             s->mem_addr |= (uint8_t)value;
+            i2c_send(s->eeprom_bus, value); /* address byte 2/2 -- completes the real slave's own
+                                              * address counter. */
             s->phase = RIIC_WAIT_RESTART;
             /* Log the resolved EEPROM address once both bytes are known (2026-09-10) -- a real
              * boundary event (this project's own protocol-handler log lines above only ever see
              * one address byte at a time), added specifically to let host-side, GDB-free log
              * correlation distinguish *which* address a given transaction targets -- see
-             * README.md's Status section (tracing the EEPROM-scan caller). */
+             * README.md's Status section (tracing the EEPROM-scan caller). `mem_addr` is now
+             * logging-only -- see the struct comment on why the real slave's own address counter
+             * (not this field) is authoritative for what's actually served. */
             rza1h_debug("riic", "riic%u: EEPROM addr=%#06x resolved", s->channel, s->mem_addr);
+            /* Real hardware genuinely asserts TEND (TEI) here for both reads and writes -- a
+             * read's own TEI handler acts on it (issues CR2=RS, unchanged, existing behavior);
+             * a write's own TEI handler is a real no-op at this exact point (no data sent yet),
+             * but riic_event_fire() above always chains a conditional TI right after any TEI
+             * fired from this phase -- that's what lets a genuine write see its own first
+             * "ready for data" offer without this device needing to know in advance whether a
+             * restart or write-data is coming next (2026-09-10 addition -- see
+             * riic_schedule_irq_conditional()'s own comment for the full derivation). */
             riic_schedule_irq(s, IRQ_TEI);
+            break;
+        case RIIC_WAIT_RESTART:
+            /* A further DRT write here (not CR2=RS/SP) is a genuine write-data byte -- see
+             * riic_schedule_irq_conditional()'s own comment and README.md's Status section
+             * (decompiled FUN_2001dcc4/FUN_2001da80/FUN_2001db50, 2026-09-10: the real write-
+             * data-loop protocol this project's own EEPROM differential test found was never
+             * implemented -- every write silently dropped its data before this). Lower both TI
+             * and TEI defensively (real hardware: writing DRT auto-clears TDRE, and starting a
+             * new byte's shift naturally supersedes any still-pending TEND from the previous
+             * one) -- either or both may currently be asserted depending on which offer the
+             * guest actually responded to. */
+            qemu_irq_lower(s->irq[IRQ_TI]);
+            qemu_irq_lower(s->irq[IRQ_TEI]);
+            i2c_send(s->eeprom_bus, value);
+            riic_schedule_irq(s, IRQ_TEI); /* re-arm the same TEI-then-conditional-TI chain for
+                                             * the next byte (or, if the guest is actually done,
+                                             * this offer is simply never acted on -- see the
+                                             * CR2=RS/SP write handlers' own explicit lowers). */
             break;
         case RIIC_WAIT_READ_ADDR:
             /* STI already lowered via the SR2 START-flag clear, same as
-             * the RIIC_WAIT_ADDR case above. */
+             * the RIIC_WAIT_ADDR case above. This is also the real REPEATED START condition on
+             * the bus (2026-09-10) -- i2c_start_transfer() on an already-busy bus (current_devs
+             * non-empty) is explicitly documented (hw/i2c/core.c) to skip re-scanning and just
+             * re-fire the start event on the same already-matched device, exactly matching real
+             * repeated-start semantics. */
+            i2c_start_transfer(s->eeprom_bus, value >> 1, true);
             s->phase = RIIC_READING;
             riic_schedule_irq(s, IRQ_RI); /* arm step -- see file
                                             * comment on why this
@@ -584,8 +741,9 @@ static void rza1h_riic_reset(DeviceState *dev)
     RZA1HRiicState *s = RZA1H_RIIC(dev);
     int i;
 
-    /* image_path/image_fd deliberately untouched, same reasoning as
-     * mmc.c's own reset -- realize()'s job, not a per-reset concern. */
+    /* image_path/eeprom_bus deliberately untouched, same reasoning as
+     * mmc.c's own reset -- realize()'s job, not a per-reset concern. Real hardware's own EEPROM
+     * content likewise survives an RIIC channel reset -- it's a separate physical chip. */
     s->cr1 = s->mr1 = s->mr2 = s->mr3 = s->ser = s->ier = 0;
     s->sr1 = s->sar0 = s->sar1 = s->sar2 = 0;
     /* FER/BRL/BRH/MR1's real hardware power-on-reset defaults (2026-09-10, corrected -- per the
@@ -607,6 +765,7 @@ static void rza1h_riic_reset(DeviceState *dev)
     s->mem_addr = 0;
     s->sp_pending = false;
     s->pending_irq = -1;
+    s->pending_irq_conditional = false;
     ptimer_transaction_begin(s->event_timer);
     ptimer_stop(s->event_timer);
     ptimer_transaction_commit(s->event_timer);
@@ -618,17 +777,40 @@ static void rza1h_riic_reset(DeviceState *dev)
 static void rza1h_riic_realize(DeviceState *dev, Error **errp)
 {
     RZA1HRiicState *s = RZA1H_RIIC(dev);
+    g_autofree uint8_t *rom = NULL;
+    gsize rom_len = 0;
 
-    s->image_fd = -1;
+    /* 2026-09-10: read the image once, here, only to seed the real EEPROM slave's initial
+     * content below -- replaces the former open()+pread()-per-access approach entirely (see the
+     * struct's own comment on why: the old approach was read-only by construction and wrapped
+     * at the wrong address-space size, both confirmed by this project's own EEPROM differential
+     * test, see README.md's Status section). */
     if (s->image_path && s->image_path[0]) {
-        s->image_fd = open(s->image_path, O_RDONLY);
-        if (s->image_fd < 0) {
+        GError *gerr = NULL;
+
+        if (!g_file_get_contents(s->image_path, (gchar **)&rom, &rom_len, &gerr)) {
             qemu_log_mask(LOG_UNIMP,
-                         "rza1h-riic%u: could not open image '%s' (%s) -- "
-                         "reads will synthesize 0x00 bytes\n",
-                         s->channel, s->image_path, strerror(errno));
+                         "rza1h-riic%u: could not read image '%s' (%s) -- "
+                         "virtual EEPROM will start blank\n",
+                         s->channel, s->image_path,
+                         gerr ? gerr->message : "unknown error");
+            g_clear_error(&gerr);
+            rom = NULL;
+            rom_len = 0;
         }
     }
+
+    s->eeprom_bus = i2c_init_bus(dev, "eeprom");
+    /* Real GT24C128B (16KB, 2-byte addressing) at the real 7-bit address firmware always uses
+     * (RIIC2_EEPROM_I2C_ADDR, confirmed via decompile -- see that macro's own comment). No
+     * backing `-drive` is given, so `writable` defaults true in-memory-only (see
+     * at24c_eeprom_realize()/at24c_eeprom_props in qemu-src/hw/nvram/eeprom_at24c.c) -- matches
+     * this project's existing, non-cross-boot-persistent usage exactly; writes now genuinely
+     * take effect for the rest of this run instead of being silently dropped. */
+    at24c_eeprom_init_rom(s->eeprom_bus, RIIC2_EEPROM_I2C_ADDR, RIIC2_EEPROM_ROM_SIZE,
+                          rom, (uint32_t)rom_len);
+
+    s->ti_offer_bh = qemu_bh_new(riic_ti_offer_bh, s);
 
     s->event_timer = ptimer_init(riic_event_fire, s,
                                  PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
