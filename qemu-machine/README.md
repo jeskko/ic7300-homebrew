@@ -14,6 +14,40 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-11, continued — the live RIIC2 bus-timing capture attempt hit real physical
+## limits: both the EEPROM's own SOIC pins AND its pull-up resistors turned out too small for
+## clip probes without support gear this session didn't have, and an attempt at the pull-ups
+## caused real PCB damage (a lifted pad/trace, now being repaired with a wire-wrap-wire jumper).
+## Full physical-probing finding recorded in `notes/ic7300-hardware.md`'s `IC351` entry.
+
+**Also, while trying to empirically resolve the OLS's physical-pin-to-sigrok-channel mapping
+(channels 0-7 showed zero transitions across two capture attempts despite active tapping) --
+genuinely inconclusive, not because the technique was wrong, but because the OLS itself dropped
+off USB entirely mid-session** (`/dev/ttyACM1` vanished, `lsusb` showed no trace of it) -- most
+likely connector/cable flakiness on the analyzer's own USB side, consistent with this exact unit's
+already-known age and the separately-reported "dodgy connector" on one probe. Never re-connected
+this session to finish that specific check.
+
+**Given both concrete physical obstacles hit in immediate succession (probe-point size, then the
+analyzer's own USB connection), paused rather than push further on this specific live-capture
+path this session.** Per the user's own explicit tradeoff question, this bus-timing check was
+always the "nice to have" cross-check in the JTAG/live-testing plan, not the load-bearing one --
+the two JTAG-based tests (breakpoint at the overflow trap; non-halting ring-header poll, if the
+debug port supports it) don't touch any SMD component at all, only the already-populated,
+board-confirmed debug connector, and carry none of this risk.
+
+**Concrete next steps for whoever picks this up**: (1) once the PCB repair is done and verified
+(continuity restored, no bridge to an adjacent net -- see `notes/ic7300-hardware.md`'s own repair
+guidance), the two capture/analysis tools (`tools/live_riic2_capture.sh`/`tools/
+analyze_riic2_capture.py`) are still fully built and verified, ready to use as-is; (2) before
+relying on the OLS again, re-check it's still enumerating cleanly (`lsusb`, `sigrok-cli --scan`)
+given the mid-session USB dropout here; (3) the pin-to-channel mapping is still not empirically
+confirmed -- redo that check (a wide, all-32-channel low-rate capture while tapping a known
+reference is the natural next attempt) once the analyzer's own connection is confirmed stable
+again; (4) the JTAG-only tests remain available and lower-risk if the live-capture path continues
+to prove difficult -- worth prioritizing once the FT2232H adapter itself arrives, independent of
+how this specific thread resolves.
+
 ## Status, 2026-09-10, same session, continued — prepared the actual live RIIC2 capture while the
 ## user checks physical hookup feasibility. Pinned a precise, fresh timing estimate for the scan's
 ## real onset, bench-characterized the OLS's real RLE/sample-count limits empirically (not
