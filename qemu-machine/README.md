@@ -14,6 +14,67 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, continued once more, same day — user asked for a firmware CPU-time "heat
+## map" (which code churns the most CPU, to spot anything suspiciously hot). Feasibility checked
+## and confirmed high-value; a working tool built and verified end-to-end; the actual analysis
+## deliberately deferred to a fresh session, per explicit request.
+
+**Feasibility, checked rather than assumed**: QEMU ships a built-in TCG plugin,
+`contrib/plugins/hotblocks.c` (not part of the default build, but builds cleanly with one
+`ninja` invocation), that counts real per-translation-block execution counts and each block's own
+instruction count at the TCG level. This is a genuinely *better* signal than a real-time sampling
+profiler for this project's own purposes: under `-icount` (this machine's own default), it counts
+actual ARM instructions retired — completely orthogonal to the round-robin-main-loop-overhead/
+icount-shift confounds the earlier session in this same day spent real effort untangling (a
+wall-clock sampling profiler would inherit exactly those confounds; this doesn't). It also runs
+fully inline with normal TCG execution — no `vm_stop()`, no GDB, none of this project's own
+long-documented GDB-perturbation risk. It does slow down *host* wall time noticeably (real
+per-block bookkeeping overhead), but since `-icount` ties virtual time to instructions retired
+rather than wall clock, that shouldn't change any device-visible *behavior*, only how long a run
+takes in real terms — not yet stress-tested for a long run, a fair thing for the fresh session to
+keep an eye on.
+
+**Built and verified end-to-end**: `tools/hotblocks_profile.py` runs a boot with the plugin
+attached, parses its `pc, tcount, icount, ecount` report, computes each block's total retired
+instructions (`icount * ecount`), and reports a sorted top-N with each block's % share of the
+run — plus the full data to a CSV for later correlation. **One real, reproducible gotcha found
+and fixed, not left to bite the fresh session**: without `-d plugin` (or any `-d <category>`)
+present on the command line, the plugin's own exit report is silently lost on shutdown — confirmed
+0/3 trials produced it without that flag, 3/3 did with it. Not root-caused (a stdio-buffering
+interaction is the leading guess) but now a required, hardcoded flag in the tool, not a "nice to
+have."
+
+**A real first result already, from the verification run itself, that shapes how the fresh
+session should approach this**: in an 8s smoke test, the already-known ring-overflow trap
+(`0x200b93fc`, the project's own long-tracked `b .`) accounts for **78.89%** of all retired
+instructions — expected, not a new finding (it's a tight, 1-instruction self-branch executed
+hundreds of millions of times once boot gets stuck there), but it means a useful heat map needs
+to either (a) run for a window short enough that the trap hasn't yet dominated the totals, or
+(b) explicitly exclude/expect the already-documented hot spots (the trap, and any of the several
+already-named busy-waits like `scif5_wait_hsk1_ready` if reached) and look at what's hot
+*besides* them — that's where a genuine surprise would actually show up.
+
+**Deliberately not done this session, per explicit request ("prepare to try it in a new fresh
+session")**: resolving any of the smoke test's own top hot addresses to named functions, and any
+real, longer analysis run. **Concrete next steps for whoever picks this up**:
+1. `ninja -C qemu-src/build contrib/plugins/libhotblocks.so` (once per session, not part of the
+   default build).
+2. `tools/hotblocks_profile.py <seconds> <top_n>` — pick a duration that's either short enough to
+   stay ahead of the known trap (~10-15s), or long enough to get a stable post-trap picture with
+   the trap itself excluded from consideration.
+3. Resolve the resulting top-N addresses to functions via Ghidra — **one call per address**
+   (`mcp__ghidra__inspect`, action=decompile), **not a full function-table export**: this was
+   tried and abandoned this session as needlessly expensive (the program has 8,000+ functions;
+   the resource-based export alone consumed a large, disproportionate amount of context for a
+   task that only ever needs a small number of specific addresses resolved).
+4. Aggregate multiple hot addresses mapping to the same function; flag anything genuinely
+   surprising — a small/trivial-seeming function eating an outsized share, or a hot spot that
+   isn't one of the already-known, already-explained busy-waits this project has documented
+   extensively (`scif5_wait_hsk1_ready`, the ring-overflow trap itself, `FUN_2001dcc4`/
+   `FUN_2001dd58`'s own busy-wait, etc. — check README-history.md before treating something as
+   novel).
+Full detail in README-history.md's newest section.
+
 ## Status, 2026-09-10, continued once more, same day — checked whether QEMU has pre-existing
 ## SCIF/UART code worth reusing the way `eeprom_at24c.c` was for RIIC2; found a striking
 ## register-offset match but a real, well-reasoned decision not to swap
@@ -1050,6 +1111,14 @@ section for a first look at what it already revealed):
   as `force_call_fup.py`) once the CPU is confirmed stuck at the known ring-overflow trap (real
   time still advancing, firmware provably done touching RIIC2), writes 8 bytes, reads them back
   over a fresh transaction, and checks they match. Confirmed PASS — see Status above.
+- **`tools/hotblocks_profile.py`** (2026-09-10) — CPU "heat map" profiler using QEMU's own
+  built-in `contrib/plugins/hotblocks.c` TCG plugin (not part of the default build — run `ninja
+  -C qemu-src/build contrib/plugins/libhotblocks.so` first). Reports each translation block's
+  total retired instructions (`icount * ecount`), sorted, with % share of the run. Requires
+  `-d plugin` on the command line or the plugin's own exit report is silently lost (confirmed
+  live, 0/3 vs 3/3 trials) — already baked into the tool. Built and verified end-to-end this
+  session; the actual analysis (resolving hot addresses to functions, looking for surprises) is
+  deliberately deferred to a fresh session — see Status above for the concrete next steps.
 - **`tools/trace_post_hsk1_fix.py`** (2026-09-10) — QMP-only PC + ring-header polling, built to
   check the real effect of the `HSK1`/`P8_9` `gpio.c` fix; found the fix works (the ~16-minute
   wait is gone) but the ring still overflows, now much sooner (~4s instead of ~27s).

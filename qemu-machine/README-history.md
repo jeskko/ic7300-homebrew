@@ -4040,3 +4040,78 @@ reconfirmed: PC still pins at `0x200b93fc` through a full 70s window). Worth a d
 a future session -- is this the real cold-boot write finally reachable via interrupt-context churn
 even though the foreground task is stuck, and if so what (if anything) reads it back -- but out of
 scope for this session's own write-path-fix goal.
+
+## 2026-09-10, fresh session, continued once more -- user asked for a firmware CPU-time "heat
+## map"; feasibility confirmed, a working tool built and verified end to end, real analysis
+## deliberately deferred to a fresh session
+
+**What was actually asked**: a way to see which parts of the real firmware consume the most CPU
+time, to spot anything suspiciously hot (an unexpectedly expensive function, a spin nobody's
+noticed, etc.) -- and, if feasible, prepare the tooling for a fresh session rather than run the
+full analysis in this already-long session.
+
+**Checked QEMU's own facilities before building anything new** (matching the same "check
+upstream first" habit the SCIF/`sh_serial.c` check just re-affirmed as worth keeping permanently
+-- see this file's own prior section and the new `[[qemu-machine-check-upstream-peripherals]]`
+memory). Found `contrib/plugins/hotblocks.c` -- a real, already-maintained QEMU TCG plugin that
+counts per-translation-block execution counts and instruction counts at the TCG level, dumping a
+sorted report on exit. Not part of this project's default build (needed one explicit `ninja`
+invocation to produce `libhotblocks.so`), but otherwise usable completely as-is -- zero new C
+code needed, unlike everything else built in this project so far.
+
+**Why this is a genuinely better signal than the obvious alternative (real-time PC sampling via
+QMP, this project's own established technique elsewhere)**: under `-icount` (this machine's own
+default), the plugin counts real ARM instructions retired, not wall-clock samples --
+*completely orthogonal* to the round-robin-main-loop-overhead and icount-shift-timing confounds
+this very session's earlier thread spent substantial effort untangling. A wall-clock sampling
+profiler would inherit exactly those confounds (more samples landing wherever the round-robin
+loop happens to spend more *real* time, not necessarily wherever the *guest* is doing the most
+real work); this plugin-based approach can't be distorted that way. It also runs fully inline
+with normal TCG execution -- no `vm_stop()`, no GDB, none of this project's long-documented
+GDB-perturbation risk (the plugin is not a debugger attachment; it's a compiled-in instrumentation
+hook QEMU calls as part of normal block translation/execution).
+
+**Built `tools/hotblocks_profile.py`** and verified it end to end, not just written and assumed to
+work: runs a boot with the plugin attached (`-plugin file=...,limit=0` -- `limit=0` deliberately,
+not the plugin's own default top-20-by-ecount cutoff, since that could silently drop a
+low-execution-count-but-huge-instruction-count block that actually ranks higher by *total*
+retired instructions, the metric this tool actually cares about), terminates it the same way
+every other tool in this project already does (`proc.terminate()`), parses the resulting
+`pc, tcount, icount, ecount` lines, computes `icount * ecount` per block, and reports a sorted
+top-N with each block's % share of the run's total retired instructions, plus the full data to a
+CSV.
+
+**A real, reproducible gotcha found live, not left for the fresh session to hit blind**: the
+plugin's own exit report (`qemu_plugin_outs()`, flushed via a libc `atexit()` hook registered at
+plugin install time, itself only reachable through QEMU's *normal* `main_loop_should_exit()` ->
+`qemu_cleanup()` -> `exit()` shutdown path -- confirmed by reading `system/runstate.c` and
+`plugins/core.c` directly, not guessed) was **silently lost on shutdown without any `-d
+<category>` flag present on the command line** -- confirmed via repeated trials: 0/3 without any
+`-d` flag produced a report, 3/3 with `-d plugin` did, using otherwise byte-for-byte identical
+invocations. Not root-caused (a stdio-buffering-mode difference triggered by QEMU's own `-d`
+logging setup is the leading guess, since the actual shutdown call chain is otherwise identical
+either way) -- but confirmed reproducible enough (3/3 each way, twice over) to treat as a real,
+required flag rather than a coincidence, and it's now hardcoded into the tool with a comment
+explaining exactly this.
+
+**First real result, from the verification run itself (an 8s smoke test), that reframes how the
+real analysis should be approached**: the already-known ring-overflow trap (`0x200b93fc`)
+accounted for **78.89% of all retired instructions** in just 8 seconds -- 288 million executions
+of a single 1-instruction self-branch block. This is *expected*, not a new finding (this project
+has tracked this exact trap since 2026-09-09) -- but it means a heat map aimed at finding genuine
+surprises needs to either run for a window short enough that the trap hasn't yet dominated the
+totals, or explicitly discount/exclude the trap (and any other already-documented busy-wait, e.g.
+`scif5_wait_hsk1_ready`) and look at what's hot *besides* those known quantities.
+
+**Deliberately not done this session, per the user's own explicit framing ("if it seems feasible,
+prepare to try it in a new fresh session")**: resolving any of the smoke test's own hot addresses
+to named functions, and any longer/real analysis run. One efficiency lesson worth recording:
+a first attempt at pre-exporting Ghidra's *entire* function table (for offline address-to-
+function correlation, so the fresh session wouldn't need live Ghidra round-trips) was abandoned
+partway through -- body.bin has 8,000+ functions, and even a single unpaginated resource read
+returned 200KB+/1,000 entries per call, clearly disproportionate for a task that will only ever
+need a handful of specific hot addresses resolved. The right design, used in the tool's own
+"next step" instructions instead: resolve only the top-N addresses the profiler actually reports,
+one Ghidra `inspect`/`decompile`-by-address call each, aggregating by containing function --
+cheap, targeted, no wasted context. `qemu-machine/README.md`'s Status section has the concrete
+next-step list.
