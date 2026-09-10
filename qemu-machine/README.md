@@ -14,6 +14,36 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — side quest per the user's own request: the
+## Openbench Logic Sniffer (OLS) mentioned as candidate tooling was found and bench-tested.
+## CONFIRMED WORKING, on its best possible firmware already -- no update needed or even available.
+## Ready to use for the planned RIIC2 bus-timing capture whenever that's next picked up.
+
+**Installed `sigrok-cli`/`pulseview` (Arch/CachyOS official repos, `libsigrok` 0.5.2), connected the
+device, confirmed clean USB enumeration** (`Microchip Technology, Inc. Open Bench Logic Sniffer`,
+VID:PID `04d8:fc92`, `/dev/ttyACM1`) **and a successful protocol identify**: `sigrok-cli --scan`
+reports `Open Logic Sniffer v1.01 FPGA version 3.07 with 32 channels`. **Ran a real end-to-end
+capture** (2 channels, 1MHz, 1000 samples) -- armed, sampled, transferred over USB, decoded cleanly,
+zero errors (flat output expected/correct, nothing was connected to the probes for this test --
+this only verifies the pipeline itself, not any real signal).
+
+**Checked directly whether firmware 3.07 is actually current, not assumed**: cross-referenced
+against the official `GadgetFactory/OpenBench-Logic-Sniffer` GitHub repo's own `FPGAROM/` directory
+-- **3.07 "Demon Core" (released 3/1/2011) is the highest version ever released, nothing
+supersedes it** (the project's own upstream changelog stops at 3.06, but the dedicated 3.07 release
+blog post and the `.bit` file itself in the repo confirm it exists and is final -- a genuine, if
+minor, upstream documentation gap, not evidence 3.07 is unofficial or risky). Per the same release's
+own notes, 3.07 is specifically where **"RLE works correctly for all memory depths"** was fixed --
+exactly the feature this device was identified as a candidate for. **Confirmed RLE is exposed and
+selectable through sigrok's driver right now** (`--show` lists `rle: on, off (current)`).
+
+**Conclusion: no firmware update needed, none exists to update to, don't touch it.** The unit is
+already on the best/final firmware for this hardware platform (the OLS project itself has been
+dormant since ~2011), already has the RLE capability the planned bus-timing capture needs, and
+flashing 15-year-old hardware carries real, avoidable risk for zero possible benefit here. **Ready
+to use as-is** for the RIIC2 SCL/SDA capture (candidate test #3 in the section below) whenever
+that's next picked up -- no further bring-up work needed.
+
 ## Status, 2026-09-10, same session, continued — since the remaining ring-overflow question is now
 ## hardware-access-gated (see the sections below), planned concrete live/JTAG tests for once real
 ## hardware access exists, and identified candidate tooling already possibly on hand.
