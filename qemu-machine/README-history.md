@@ -3449,3 +3449,69 @@ changes the guest's own effective instruction throughput during this exact windo
 regression, and the trap now takes consistently ~1-1.5s longer to reach (`t≈6.0s` vs the
 previously-established `t≈4.6-5.7s`), the expected direction given RIIC2 is now genuinely paced
 closer to real hardware speed.
+
+## 2026-09-10, same session: user pushed back with real skepticism ("would I2C really be slow
+## enough to cause this? shouldn't the CPU only get interrupted when data's actually ready?") --
+## checked directly against the manual, found and fixed a second, distinct pacing bug, then
+## traced a bigger, narrative-relevant discrepancy to ground
+
+The user's structural intuition (interrupt-per-milestone, not per-bit) is exactly right and
+directly confirmed: manual section 18.4 lists the RIIC's 8 real interrupt sources as genuinely
+autonomous, peripheral-generated events (start/stop detected, transmit-empty, receive-full,
+transmit-complete, etc.) -- `riic.c`'s basic architecture (one deferred IRQ per protocol
+milestone, not per SCL edge) already matches this. But checking section 18.12 ("Start
+Condition/Restart Condition/Stop Condition Issuing Function") directly against `riic.c` found a
+real, second, distinct bug: **STI/SPI (start/stop condition detection) were being charged a full
+9-cycle byte time, same as TI/TEI/RI, when the manual's own Figures 18.37/18.38 show these
+conditions cost only 1-3 SCL periods** (~1x for START, ~2x for STOP, ~3x for RESTART -- read
+directly off the diagrams' own labeled `BRL`/`BRH` segments, not guessed), independent of (and
+compounding) the bit-rate-value bug fixed earlier the same session.
+
+**Fixed**: split `riic_byte_time_ns()`'s shared low/high-period computation into a helper
+(`riic_scl_periods_ns()`), added `riic_condition_time_ns()` implementing the three real
+condition timings, and rewired the four START/RESTART/STOP `riic_schedule_irq()` call sites to
+use it instead of the full byte time. Confirmed no regression (`check_overflow_r0.py`, 5/5
+trials, same trap/`r0`/PC). **Honest, expected result on remeasurement**: this fix has only a
+small effect on the currently-dominant `FUN_2006cb84` scan specifically, because that scan is
+**RI-dominated** (32 real byte-transfers per 32-byte chunk, vs. only 2 condition events per
+chunk) -- the mean inter-chunk gap barely moved (3238ns->~3.5-3.8us, within normal run-to-run
+noise). This fix matters far more for a transaction-heavy access pattern (many small, separate
+transactions) than a bulk sequential read -- which turned out to be the actual point worth
+chasing next.
+
+**The bigger question, worth chasing properly rather than assuming the earlier fix explained
+the multi-second durations**: back-of-envelope math on the *historically documented* "557 real
+I2C transactions... ~4.8 real seconds" finding (2026-09-10, earlier same-day session, before this
+one) doesn't remotely add up -- even a generous 7-delays-per-transaction estimate at this
+session's own corrected byte time (~26.4us) predicts ~100ms total for 557 transactions, not
+~4.8s. Rather than paper over a ~50x-100x gap, went and checked directly: **the specific
+557-transaction, one-byte-at-a-time, random-address scan that finding described does not appear
+anywhere in this session's own fresh 60-second GDB-free capture** (`tools/
+trace_eeprom_addr_gdbfree.py`) -- only 279 total address-resolution events total, and every one
+of them matches either the small early cluster (`0x1a78-0x1a81` etc.) or the already-traced
+`FUN_2006cb84` scan's own sequential, +0x20-stride chunk pattern. Nothing resembling 557 distinct,
+non-sequential "random-address" transactions shows up at all. Given how much has changed in this
+whole `qemu-machine/` boot path since that measurement (DMAC completion-race fix, HSK1/P8_9 fix,
+SCIF/RIIC pacing all landed since) -- boot genuinely reaches a different point, on a different
+timeline, than when that scan was last directly observed. That specific historical
+characterization looks stale, not still-accurate for the current build.
+
+**Re-checked the general finding from scratch rather than assuming it also went stale**:
+re-ran `tools/trace_irq_frequency.py` fresh. **RIIC2's TEI (GIC ID 205) still dominates 86.7% of
+HPPIR samples during the backlog/overflow window** -- matching the original finding's magnitude
+closely, not a coincidence. So the *general* conclusion (RIIC2/I2C traffic is what starves SGI0
+and causes the overflow) is freshly re-confirmed, independent of and more current than the old
+557-transaction measurement -- what's changed is *which* RIIC2 activity is responsible: not a
+separate, still-unidentified dense scan, but the already-traced `FUN_2006cb84` settings-struct
+load (this same session's own earlier finding), now understood to be doing double duty as both
+"the denser burst's caller" and "the ring-overflow's real proximate cause" in the current build.
+
+**Answering the user's actual question, with real numbers instead of a hand-wave**: is a ~340kHz
+I2C bus genuinely slow enough, at real speed, to matter here? Yes, plausibly, without needing an
+implausibly slow protocol: `FUN_2006cb84`'s own scan takes ~0.8-0.9 real seconds at the corrected
+bus speed (confirmed measured, not estimated) -- comparable in order of magnitude to the ~1.3
+real seconds a 16-slot queue fed by an ~82ms periodic MTU2 doorbell can absorb before overflowing
+(16 x 82ms), especially since the backlog doesn't need one single uninterrupted stretch that
+long, just intermittent priority-0x10 interference of that rough scale spread across boot. The
+mechanism holds up under real, checked arithmetic -- it just isn't the specific 557-transaction
+scan previously credited with it.

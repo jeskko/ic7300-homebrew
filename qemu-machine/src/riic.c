@@ -225,7 +225,10 @@ struct RZA1HRiicState {
  * byte-shaped step in the real protocol. */
 #define RIIC_PCLK_HZ 32000000
 
-static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
+/* Computes the real SCL low/high periods (RIICnBRL/RIICnBRH's own real-time meaning) in ns,
+ * shared by riic_byte_time_ns() and riic_condition_time_ns() below -- both need the same
+ * low_ns/high_ns, just combine them differently for a full byte transfer vs. a bare condition. */
+static void riic_scl_periods_ns(RZA1HRiicState *s, uint64_t *low_ns, uint64_t *high_ns)
 {
     bool scle = (s->fer >> 6) & 1;
     bool nfe = (s->fer >> 5) & 1;
@@ -233,7 +236,6 @@ static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
     unsigned nf = (s->mr3 & 0x3) + 1; /* NF[1:0]: 0->1 stage, 1->2, 2->3, 3->4 */
     uint64_t iicphi_hz = (uint64_t)RIIC_PCLK_HZ >> cks;
     unsigned extra;
-    uint64_t low_ns, high_ns;
 
     if (!scle) {
         extra = 1;
@@ -244,22 +246,76 @@ static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
         }
     }
 
-    low_ns = ((s->brl & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
-    high_ns = ((s->brh & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
+    *low_ns = ((s->brl & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
+    *high_ns = ((s->brh & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
+}
 
+static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
+{
+    uint64_t low_ns, high_ns;
+
+    riic_scl_periods_ns(s, &low_ns, &high_ns);
     return (low_ns + high_ns) * 9;
 }
 
-/* Defers the actual qemu_irq_raise() for `irq_idx` by one real byte time -- see this file's own
- * struct comment. Only one such event is ever in flight at a time in this strictly-sequential
- * state machine; a fresh request simply restarts the timer for whatever's newest. */
-static void riic_schedule_irq(RZA1HRiicState *s, int irq_idx)
+/* Real START/RESTART/STOP condition timing (2026-09-10, added -- confirmed against the manual's
+ * own §18.12 "Start Condition/Restart Condition/Stop Condition Issuing Function" timing
+ * diagrams, Figures 18.37/18.38). Each condition is a short, bounded sequence of SCL/SDA edges
+ * gated by RIICnBRL/RIICnBRH directly -- NOT a full 9-cycle byte time, unlike TI/TEI/RI which
+ * genuinely clock a real byte + ACK. Before this fix, every phase transition in this file
+ * (including these three) was charged one full riic_byte_time_ns(), a real, distinct overcount
+ * (roughly 4-9x too long for these specifically) independent of (and compounding) the bit-rate
+ * *value* bug fixed earlier the same session. Cycle counts below are read directly off the
+ * manual's own labeled BRL/BRH segments per condition (its separately-named "setup"/"hold"/
+ * "bus free" times are not given as independent numeric specs beyond "at least one BRL/BRH
+ * period", so each such segment is counted as one more BRL/BRH period, not an extra unmodeled
+ * margin):
+ *   - START:   1 x high (BRH) + 1 x low (BRL)                    -- Figure 18.37, left half
+ *   - RESTART: 1 x low + 1 x low(setup) + 1 x high(hold) + 1 x low = 3 x low + 1 x high
+ *                                                                  -- Figure 18.37, right half
+ *   - STOP:    1 x low + 1 x high(setup) + 1 x low(bus-free) = 2 x low + 1 x high
+ *                                                                  -- Figure 18.38 */
+enum {
+    RIIC_COND_START,
+    RIIC_COND_RESTART,
+    RIIC_COND_STOP,
+};
+
+static uint64_t riic_condition_time_ns(RZA1HRiicState *s, int kind)
+{
+    uint64_t low_ns, high_ns;
+
+    riic_scl_periods_ns(s, &low_ns, &high_ns);
+    switch (kind) {
+    case RIIC_COND_START:
+        return high_ns + low_ns;
+    case RIIC_COND_RESTART:
+        return 3 * low_ns + high_ns;
+    case RIIC_COND_STOP:
+        return 2 * low_ns + high_ns;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+/* Defers the actual qemu_irq_raise() for `irq_idx` by `delay_ns` -- see this file's own struct
+ * comment. Only one such event is ever in flight at a time in this strictly-sequential state
+ * machine; a fresh request simply restarts the timer for whatever's newest. */
+static void riic_schedule_irq_delay(RZA1HRiicState *s, int irq_idx, uint64_t delay_ns)
 {
     s->pending_irq = irq_idx;
     ptimer_transaction_begin(s->event_timer);
-    ptimer_set_count(s->event_timer, riic_byte_time_ns(s));
+    ptimer_set_count(s->event_timer, delay_ns);
     ptimer_run(s->event_timer, 1); /* oneshot */
     ptimer_transaction_commit(s->event_timer);
+}
+
+/* The common case: a real byte time (TI/TEI/RI -- an actual byte + ACK genuinely being clocked
+ * over SCL). START/RESTART/STOP go through riic_schedule_irq_delay() directly with
+ * riic_condition_time_ns() instead -- see that function's own comment for why they're shorter. */
+static void riic_schedule_irq(RZA1HRiicState *s, int irq_idx)
+{
+    riic_schedule_irq_delay(s, irq_idx, riic_byte_time_ns(s));
 }
 
 static void riic_event_fire(void *opaque)
@@ -319,7 +375,8 @@ static uint64_t rza1h_riic_read(void *opaque, hwaddr offset, unsigned size)
                 s->sp_pending = false;
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
-                riic_schedule_irq(s, IRQ_SPI);
+                riic_schedule_irq_delay(s, IRQ_SPI,
+                                        riic_condition_time_ns(s, RIIC_COND_STOP));
             } else {
                 riic_schedule_irq(s, IRQ_RI); /* next byte */
             }
@@ -345,7 +402,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             s->phase = RIIC_WAIT_ADDR;
             s->sp_pending = false;
             s->sr2 |= SR2_START;
-            riic_schedule_irq(s, IRQ_STI);
+            riic_schedule_irq_delay(s, IRQ_STI,
+                                    riic_condition_time_ns(s, RIIC_COND_START));
         } else if ((value & CR2_RS) && s->phase == RIIC_WAIT_RESTART) {
             rza1h_debug("riic", "riic%u: RESTART condition", s->channel);
             qemu_irq_lower(s->irq[IRQ_TEI]); /* real hardware: the next
@@ -353,10 +411,15 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                                                * auto-clears it */
             s->phase = RIIC_WAIT_READ_ADDR;
             s->sr2 |= SR2_START;
-            riic_schedule_irq(s, IRQ_STI); /* restart re-triggers the
+            riic_schedule_irq_delay(s, IRQ_STI, /* restart re-triggers the
                                              * same start-condition
                                              * source as the initial
-                                             * start, per real hardware */
+                                             * start, per real hardware,
+                                             * but with its own (longer)
+                                             * real timing -- see
+                                             * riic_condition_time_ns()'s
+                                             * own comment */
+                                    riic_condition_time_ns(s, RIIC_COND_RESTART));
         } else if (value & CR2_SP) {
             rza1h_debug("riic", "riic%u: STOP requested (phase %u)",
                        s->channel, (unsigned)s->phase);
@@ -371,7 +434,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             } else {
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
-                riic_schedule_irq(s, IRQ_SPI);
+                riic_schedule_irq_delay(s, IRQ_SPI,
+                                        riic_condition_time_ns(s, RIIC_COND_STOP));
             }
         }
         break;

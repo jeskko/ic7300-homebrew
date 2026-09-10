@@ -106,9 +106,38 @@ full 2.19× the per-event formula change implies — likely `-icount shift=auto`
 retuning absorbing part of it (see the still-open GDB/icount tension above), not fully chased
 down. Full derivation in README-history.md's newest section.
 
+**Second RIIC timing bug, per real user pushback ("would I2C really be slow enough to cause
+this?")**: checked directly against the manual's own start/restart/stop condition timing diagrams
+(§18.12) — `STI`/`SPI` were charged the *same full 9-cycle byte time* as `TI`/`TEI`/`RI`, when the
+manual's own diagrams show these conditions cost only 1-3 SCL periods, not 9. Fixed
+(`riic_condition_time_ns()`, new); confirmed no regression (5/5 trials, same trap). Honestly
+small effect on the *currently* dominant scan specifically (it's RI-dominated — 32 real
+byte-transfers per chunk vs. 2 condition events), but a real, distinct, now-corrected bug in its
+own right.
+
+**Bigger finding, worth its own flag**: back-of-envelope math on the *previously-documented*
+"557 transactions, ~4.8 real seconds" measurement (an earlier, prior-day session) doesn't add
+up — even generously, corrected per-event timing predicts ~100ms for that many transactions, not
+~4.8s. Checked directly rather than assumed: that specific scan **does not appear anywhere in a
+fresh 60-second GDB-free capture** of the current build — only 279 total address-resolution
+events total, none resembling 557 distinct random-address transactions. Boot has changed too
+much since that measurement (DMAC/HSK1/SCIF-RIIC fixes all landed after) for it to still
+describe today's build. **But the general finding survives, freshly re-confirmed, not just
+assumed**: re-ran `tools/trace_irq_frequency.py` — RIIC2's TEI still dominates 86.7% of HPPIR
+samples during the backlog window, matching the original magnitude. What's changed is *which*
+RIIC2 activity is responsible: the already-traced `FUN_2006cb84` settings-struct load (found
+earlier this same session), not a separate, still-unidentified dense scan. Real numbers, not a
+hand-wave, on whether ~340kHz I2C is "slow enough": `FUN_2006cb84`'s own scan measures ~0.8-0.9
+real seconds at the corrected bus speed — comparable in order of magnitude to the ~1.3 real
+seconds (16 slots × ~82ms) a queue this size can absorb before overflowing. The mechanism holds
+up under checked arithmetic; it just isn't the specific scan previously credited with it. Full
+derivation in README-history.md's newest section.
+
 **NEXT SESSION**: both items the prior handoff named are now closed (see above) — the old
 "NEXT SESSION, IN THIS ORDER" block a little further below is stale, superseded by this section,
-kept only for its own historical trail. No fix was attempted this session for the underlying
+kept only for its own historical trail. Two real RIIC timing bugs got fixed this session (bit-rate
+formula, condition timing), and the general ring-overflow mechanism got freshly re-confirmed
+(not just assumed) against the current build — but no fix was attempted for the underlying
 ring-overflow trap itself (`0x200b93fc`, GIC-priority-starvation, mechanistically closed since
 the prior session — see "CLOSED, same day" below) — boot still stops there, same as before this
 session, since this session was pure investigation/tooling (one inert debug-log line in
@@ -588,7 +617,7 @@ unilateral pick.
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
 | MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait — see `mtu2_ch3_periodic_housekeeping_tick` in Status above — ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine). Every other channel/register/event still plain storage (`regs[]` passthrough). **`MTU2_FREQ_HZ` confirmed real at 32MHz** (P0φ/1, same real clock as OSTM — the original 25MHz was an empirical placeholder, corrected once `-icount` made a real-clock re-check necessary) |
-| RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM, real bit-rate-generator-paced timing — **formula corrected 2026-09-10 (new session)** to implement all 5 real SCLE/NFE/CKS-dependent variants (manual §18.3.12/13), not just the SCLE=0 case, and to reset `FER`/`BRL`/`BRH`/`MR1` to their real hardware power-on defaults; confirmed against the real firmware-programmed register values (`CKS=1`⇒IICφ=16MHz, `FER` left at its real `SCLE=1,NFE=1` reset default) — real rate ≈340kHz, comfortably inside the GT24C128B datasheet's own min/max windows at either supported voltage (see README-history.md's newest section) — only RIIC2 exercised by any traced boot path so far, the real physical EEPROM `IC351`/`GT24C128B` (note: not the same thing as the diode matrix in `notes/diode-matrix.md`, which is a separate, GPIO-scanned resistor array — an earlier session's own label here conflated the two) |
+| RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR protocol + virtual EEPROM, real bit-rate-generator-paced timing — **formula corrected 2026-09-10 (new session)** to implement all 5 real SCLE/NFE/CKS-dependent variants (manual §18.3.12/13), not just the SCLE=0 case, and to reset `FER`/`BRL`/`BRH`/`MR1` to their real hardware power-on defaults; confirmed against the real firmware-programmed register values (`CKS=1`⇒IICφ=16MHz, `FER` left at its real `SCLE=1,NFE=1` reset default) — real rate ≈340kHz, comfortably inside the GT24C128B datasheet's own min/max windows at either supported voltage; START/RESTART/STOP conditions also corrected (`riic_condition_time_ns()`) to their real, much-shorter §18.12 timing instead of a full byte time (see README-history.md's newest two sections) — only RIIC2 exercised by any traced boot path so far, the real physical EEPROM `IC351`/`GT24C128B` (note: not the same thing as the diode matrix in `notes/diode-matrix.md`, which is a separate, GPIO-scanned resistor array — an earlier session's own label here conflated the two) |
 | SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel, now real baud-rate-accurate pacing (`FSR.TDFE`/`TEND`, `PCLK`=32MHz, see Status above — 2026-09-10). Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers, and now paced by a real (placeholder) delay too — see Status above) |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
