@@ -133,6 +133,39 @@ seconds (16 slots × ~82ms) a queue this size can absorb before overflowing. The
 up under checked arithmetic; it just isn't the specific scan previously credited with it. Full
 derivation in README-history.md's newest section.
 
+**Two more sharp user questions, both checked directly, together pinning the ~4× gap down to
+QEMU's own main-loop overhead**: (1) how long would SGI0 need to be unavailable, given the
+message rate? Simple math: 16 slots × ~82ms ≈ **1.31 real seconds** cumulative. (2) How long does
+the real RIIC ISR take to process? Decompiled the actual firmware handlers directly — all tiny,
+straight-line, no loops; genuinely fast on real hardware, not the bottleneck. (3) Does the
+handler (or its caller) busy-wait? Not the ISR — but `FUN_2001dcc4`/`FUN_2001dd58` (arms one
+32-byte chunk transaction) end with a real polling loop on the transaction's own phase byte,
+calling into a genuine ITRON-style syscall wrapper each iteration. **Checked live** (a
+structural, not timing, question — GDB's known perturbation matters far less here):
+`tools/trace_riic_busywait_probe.py`, two bounded THUMB-mode breakpoints (fast-fail path vs. the
+real `svc 0x0`) — **150/150 hits landed on the real SVC, zero on the fast-fail path**: the
+busy-wait genuinely traps into the kernel every iteration, not a disguised spin. (Real side
+finding: `LR` was *not* reliable for identifying the caller at this depth — `in_kernel_context()`
+overwrites it via its own internal `bl` and never restores it on return, only `PC` — the real
+caller sits on the stack, not in `LR`, at this call depth.)
+
+**But that still doesn't explain the ~4× gap on its own — continued into the QEMU-main-loop
+hypothesis using data already on hand.** Added a microsecond-precision host timestamp alongside
+the existing `icount_get_raw()` instrumentation in `riic_schedule_irq_delay()` (kept
+permanently, not reverted — the user's own call, and it's what found this). Broken down by IRQ
+type, for events where the guest did little real work: `STI`'s requested delay is ~4× shorter
+than `RI`/`TI`/`TEI`'s (this session's own condition-timing fix), yet its real measured cost is
+essentially the *same* (~67µs, right in their ~65-90µs range) — not ~4× shorter as it would be if
+real time scaled with the requested delay. **A real, roughly fixed ~65-90µs cost per scheduled
+event, largely independent of that event's own nominal timing value.** `TCG_KICK_PERIOD` (100ms)
+checked and ruled out directly — two orders of magnitude too coarse. This is very likely inherent
+to this emulator's own round-robin TCG main-loop architecture (exiting/re-entering `cpu_exec()`,
+BQL reacquisition, icount bookkeeping, GIC IRQ delivery) — not pinned to one exact QEMU function
+yet, but the magnitude and independence from the requested delay are directly measured, not
+inferred. Explains, in hindsight, why the condition-timing fix barely moved the measured
+duration: it reduced a *nominal* value that was never the dominant real cost to begin with. Full
+derivation, including the per-IRQ-type breakdown table, in README-history.md's newest section.
+
 **NEXT SESSION**: both items the prior handoff named are now closed (see above) — the old
 "NEXT SESSION, IN THIS ORDER" block a little further below is stale, superseded by this section,
 kept only for its own historical trail. Two real RIIC timing bugs got fixed this session (bit-rate

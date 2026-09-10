@@ -94,6 +94,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "exec/icount.h" /* for the permanent diagnostic instrumentation in
+                          * riic_schedule_irq_delay() -- see its own comment; kept deliberately
+                          * (2026-09-10, user's own call) rather than reverted, since it directly
+                          * found the real QEMU-main-loop-overhead mechanism behind this whole
+                          * RIIC2-timing thread -- see README.md's Status section. */
 #include "hw/core/irq.h"
 #include "hw/core/ptimer.h"
 #include "hw/core/qdev.h"
@@ -303,6 +308,32 @@ static uint64_t riic_condition_time_ns(RZA1HRiicState *s, int kind)
  * machine; a fresh request simply restarts the timer for whatever's newest. */
 static void riic_schedule_irq_delay(RZA1HRiicState *s, int irq_idx, uint64_t delay_ns)
 {
+    /* Diagnostic instrumentation (2026-09-10) -- kept permanently (deliberate, not an oversight:
+     * this exact log line is what found the real QEMU-main-loop-overhead mechanism dominating
+     * this whole scan's real duration, see README.md's Status section). Logs, per phase
+     * transition, host-side, GDB-free, zero perturbation:
+     *   - icount_get_raw() -- the real raw guest instruction count, independent of
+     *     icount_time_shift. Originally built to check whether the real busy-wait loop
+     *     firmware uses between phase transitions (FUN_2001dcc4/FUN_2001dd58's
+     *     `while (*pcVar1 != 0) FUN_20062c1c();`) is a genuine cheap RTOS block/wake or a real
+     *     spin -- confirmed cheap (median ~65 real instructions/transition), ruling out "the
+     *     guest is doing a lot of real work" as an explanation for the observed real-time cost.
+     *   - g_get_monotonic_time(), raw microseconds (rza1h_debug()'s own timestamp is only
+     *     millisecond-precision, too coarse here) -- correlating this against the *requested*
+     *     ptimer delay (`delay_ns`) directly caught the real mechanism: STI's real median cost
+     *     (~67us) is nearly identical to TI/TEI/RI's (~65-90us) despite STI's own requested
+     *     delay being ~4x shorter (~6.2us vs ~26.4us, after this same session's condition-timing
+     *     fix) -- a real, ~65-90us-ish cost per scheduled event that's largely *independent* of
+     *     the nominal ptimer delay value, consistent with a fixed per-event QEMU round-robin
+     *     main-loop overhead (exiting/re-entering cpu_exec(), BQL reacquisition, icount
+     *     bookkeeping, GIC IRQ delivery) rather than anything about this device model's own
+     *     timing values. `TCG_KICK_PERIOD` (100ms) was checked and ruled out as the cause -- far
+     *     too coarse to matter at this event rate. Not yet pinned to one exact QEMU function;
+     *     the *magnitude and event-type-independence* of the effect is what's confirmed. */
+    rza1h_debug("riic", "riic%u: schedule irq=%d delay_ns=%" PRIu64 " icount_raw=%" PRId64
+                " host_us=%" PRId64,
+                s->channel, irq_idx, delay_ns, icount_get_raw(), g_get_monotonic_time());
+
     s->pending_irq = irq_idx;
     ptimer_transaction_begin(s->event_timer);
     ptimer_set_count(s->event_timer, delay_ns);

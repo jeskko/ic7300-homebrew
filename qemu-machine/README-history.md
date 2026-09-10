@@ -3515,3 +3515,101 @@ real seconds a 16-slot queue fed by an ~82ms periodic MTU2 doorbell can absorb b
 long, just intermittent priority-0x10 interference of that rough scale spread across boot. The
 mechanism holds up under real, checked arithmetic -- it just isn't the specific 557-transaction
 scan previously credited with it.
+
+## 2026-09-10, same session: user asked two more sharp, concrete questions ("how long does the
+## real RIIC interrupt take to process?" and "does the handler wait in a busy loop?") -- both
+## checked directly, both real answers, and together they pin the ~4x real-time gap down to
+## QEMU's own main-loop overhead, not the device model or the firmware
+
+**Question 1: how long would SGI0 need to be unavailable, given the message rate?** Simple
+arithmetic, not yet stated explicitly anywhere in this thread: 16 ring slots, ~82ms doorbell
+period -> **16 x 82ms = ~1.31 real seconds** of cumulative unavailability to fill the ring from
+empty (less if the backlog starts partially filled).
+
+**Question 2: how long does the real RIIC ISR take to process?** Decompiled the actual firmware
+ISRs directly (not the device model) -- the real handlers registered via `register_event_handler`
+for GIC IDs 205-210 (`FUN_2001db50`, `FUN_2001da80`, `FUN_2001dbcc`, `FUN_2001da20`, and one more
+not yet disassembled). All are tiny: straight-line byte comparisons and register writes, no
+loops. Genuinely fast on real hardware -- not the bottleneck.
+
+**Given that, the earlier ~4x gap (predicted ~215ms for the `FUN_2006cb84` scan vs. measured
+~830-910ms) can't be the ISR body's own cost. Checked the arithmetic precisely rather than
+hand-wave it away.**
+
+**Question 3, the user's follow-up: does the RIIC IRQ handler (or anything around it) busy-wait
+for something?** Not the ISR itself -- but its *caller* does. `FUN_2001dcc4`/`FUN_2001dd58` (the
+low-level "arm one chunk transaction" entry points, called once per 32-byte chunk from
+`FUN_2001e484`/`FUN_2001e510`'s chunking loop) each end with
+`while (*pcVar1 != '\0') { FUN_20062c1c(); }` -- polling the transaction's own phase byte until
+the whole ISR-driven sequence (STI->TI->TI->TEI->restart->32xRI->SPI) finally drives it back to
+0. `FUN_20062c1c()` -> `FUN_20187010(1, 0xffffffff)`, a real ITRON-style syscall wrapper:
+`in_kernel_context()` (decompiled: checks the real CPSR mode bits, IRQ/FIQ mode -> true, User/
+System mode -> false) gates whether it takes a genuine `svc 0x0` kernel trap or an immediate
+fast-fail (`r0=0x82`, no wait at all).
+
+**Checked live, GDB-based, but as a structural (not timing) question -- exactly the kind of
+check this project's own established GDB-perturbation caution matters much less for.** Built
+`tools/trace_riic_busywait_probe.py`: two bounded breakpoints, one on the fast-fail path
+(`0x2018701e`) and one directly on the `svc 0x0` instruction (`0x20187034`) -- both addresses are
+THUMB code (confirmed via raw bytes), so `kind=2` was needed, not this project's usual
+ARM-mode-default `kind=4`. **Result: 150/150 hits landed on the real SVC, zero on the fast-fail
+path** -- the busy-wait genuinely traps into the kernel every single iteration; it is not a
+disguised, always-fails-open spin. **Real side-finding, an ARM calling-convention artifact worth
+remembering for future probes here**: the `LR` register read at these breakpoints was NOT useful
+for identifying the caller -- `in_kernel_context()` itself does `push {r4,lr}; bl
+get_cpsr_mode()`, overwriting `LR` with its own internal return address, and its epilogue
+(`pop {r4,pc}`) restores `PC` but never `LR` -- so several calls deep past a function with its
+own internal `bl`, `LR` is stale, not "who called this." The real caller sits on the stack, not
+in `LR`, at that depth.
+
+**So the busy-wait is real, and confirmed not a shortcut -- but the earlier `icount`-based
+measurement (median ~65 real guest instructions per phase transition) is still small for a full
+RTOS block/wake/reschedule round-trip. Continued into the QEMU-main-loop-overhead hypothesis,
+per the user's own direction, using data already collected rather than re-measuring:** the same
+`icount_get_raw()` instrumentation already had, per event, both the requested ptimer delay
+*and* a host-clock timestamp -- just at millisecond resolution (`rza1h_debug()`'s own `%.3f`),
+too coarse to resolve ~26us-scale gaps. Added a raw microsecond host timestamp
+(`g_get_monotonic_time()`) directly to the same log line and re-captured (no GDB, same
+GDB-free free-run as always).
+
+**Decisive result, broken down by IRQ type**: for events with a small (<500) instruction delta
+(i.e. the guest genuinely did very little real work in that gap):
+
+| IRQ type (of the preceding event) | n | requested delay (median) | real host time (median) | ratio |
+|---|---|---|---|---|
+| STI | 555 | ~6.2us (this session's own condition-timing fix) | ~67us | **10.83x** |
+| RI | 8553 | ~26.4us | ~65us | 2.46x |
+| TI | 554 | ~26.4us | ~77.5us | 2.93x |
+| TEI | 277 | ~26.4us | ~90us | 3.40x |
+
+**The tell**: STI's requested delay is ~4x shorter than RI/TI/TEI's (thanks to the condition-
+timing fix earlier this session), yet its real measured cost is essentially the *same*
+(~67us, right in the middle of the other three's ~65-90us range) -- not ~4x shorter as it would
+be if real time scaled with the requested ptimer delay. This directly shows a real, roughly
+fixed ~65-90us cost *per scheduled event*, largely independent of what that event's own nominal
+timing value is. Checked `TCG_KICK_PERIOD` (`accel/tcg/tcg-accel-ops-rr.h`) as a candidate
+explanation -- **ruled out directly**: it's `NANOSECONDS_PER_SECOND / 10` (100ms), two orders of
+magnitude too coarse to matter at this event rate (and likely not even active for a single-CPU
+machine, since `rr_start_kick_timer()` only creates it when a second CPU exists).
+
+**Conclusion**: the ~4x real-time gap this whole sub-thread has been chasing is not explained by
+the device model's own bus-timing values (already fixed, twice, to match the real GT24C128B/
+RZ-A1H manual precisely), not by the real firmware's ISR bodies (tiny, no loops), not by the
+busy-wait loop doing real spinning (confirmed it genuinely traps into the kernel every time),
+and not by the guest doing substantial real computational work per event (median ~65
+instructions). What's left, and what the data now points to directly: a real, roughly fixed
+~65-90us cost per scheduled device event inherent to this emulator's own round-robin TCG
+main-loop architecture (exiting/re-entering `cpu_exec()`, BQL reacquisition, `icount_account_
+warp_timer()`/`icount_handle_deadline()` bookkeeping, GIC IRQ delivery) -- not pinned to one
+single exact QEMU function yet, but the magnitude and its independence from the requested delay
+value are now directly measured, not inferred. This explains, in hindsight, why the earlier
+condition-timing fix had such a small effect on the measured scan duration: it reduced the
+*nominal* delay for STI/SPI/restart, but the *dominant* real cost per event was never actually
+coming from that nominal value in the first place.
+
+The `icount_get_raw()`/microsecond-host-timestamp instrumentation in `riic.c`'s
+`riic_schedule_irq_delay()` is being kept permanently (the user's own explicit call, not
+reverted) -- it's what found this mechanism, and it stays available for any future timing
+investigation in this area. `tools/trace_riic_busywait_probe.py` is also kept, as the reusable
+pattern for "is this specific busy-wait loop a real kernel trap or a disguised spin" checks
+elsewhere in this firmware.
