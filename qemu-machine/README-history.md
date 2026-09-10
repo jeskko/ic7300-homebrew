@@ -3303,3 +3303,85 @@ tooling-correctness question, not a QEMU-internals one, and hasn't been audited 
 finding; (3) the real ARM `arm_gic` device model's own state machine (not checked this pass at
 all) could have some `cpu_synchronize_state`-adjacent or interrupt-delivery-timing interaction
 specific to a stopped-CPU window that none of the three generic mechanisms above would surface.
+
+## 2026-09-10, same session: step 2 of the handoff -- both open EEPROM-caller questions resolved,
+## via a GDB-free re-confirmation that reveals the earlier GDB-based finding was itself the
+## artifact, plus a real read/write labeling bug in this file caught along the way
+
+With the QEMU-internals question logged as a sharper-but-open tension (above), moved to the
+second half of the prior handoff: re-confirm `cold_boot_hw_init`'s own repeated ~83ms EEPROM read
+(genuine re-entry, or a live-probing artifact?), and find the still-unfound denser
+557-transaction burst's own caller.
+
+**Built a GDB-free re-confirmation tool first, per this project's own established discipline of
+never trusting a single live-GDB-based finding on its own.** Rather than reasoning abstractly
+about whether GDB *could* distort a call count (the previous section's own conclusion: three
+plausible mechanisms checked, none explain it, tension left open), just get an independent
+measurement. Added one new line to `riic.c` (`rza1h_debug("riic", "riic%u: EEPROM addr=%#06x
+resolved", ...)`, fired once both address bytes of any real I2C transaction are known -- a real
+boundary event in the same spirit as every other `rza1h_debug()` call site, host-side only, zero
+guest-visible effect) and built `tools/trace_eeprom_addr_gdbfree.py` around it: free-run a boot
+with `RZA1H_DEBUG=riic`, zero GDB involvement anywhere, and read back every resolved EEPROM
+address with its own wall-clock timestamp.
+
+**Result, reproduced identically across 3 independent trials (20s/25s/60s)**: 279 total
+address-resolution events every single time, byte-for-byte the same histogram. EEPROM offset
+`0x3df0` -- the address the earlier GDB-based `trace_eeprom_scan_caller.py` capture found "60
+hits over ~9.7s, repeating every ~83ms" -- is targeted **exactly twice, ~44-47ms apart, then
+never again** for the rest of the run. Not "less often than thought" -- a completely different
+picture, off by well over an order of magnitude on hit count and showing no periodicity
+whatsoever. **The GDB-based capture was the artifact, not this one** -- confirmed by
+reproducibility (3/3 identical trials) rather than asserted from the QEMU-internals reading
+alone, keeping this project's usual discipline of trusting live reproducibility over plausible
+theory.
+
+**Then traced the real call chain by direct decompilation (Ghidra), independent of any live
+tracing at all, and it explains *why* the discrepancy is exactly this large.** `cold_boot_hw_init`
+calls `FUN_20029198` (`references_to` confirms this is its *only* caller, project-wide) -- a
+3-instruction function whose entire body is `FUN_2001e484(0x3df0, DAT_2002a090, 0x10)`. This is
+where a second, independent bug surfaced: **`FUN_2001e484` is the WRITE-side wrapper, not the
+read-side one** -- direct decompilation of both `FUN_2001e484`→`FUN_2001dcc4` (embeds source data
+into the outgoing request via `FUN_2017c710` -- a write) and `FUN_2001e510`→`FUN_2001dd58`
+(stores a destination pointer for the ISR to fill in later -- a read) settles it unambiguously.
+This matches `notes/eeprom-catalogue.md`'s own original labeling ("`FUN_2001e510`=get,
+`FUN_2001e484`=set") -- the *2026-09-10 "Ghidra fix applied" section of this very file* had it
+backwards ("a generic 'read N EEPROM bytes' chunking wrapper (`FUN_2001e484`...)"), a real,
+previously-uncaught documentation bug this session found and corrected in place, visibly, in
+`README.md` (not silently overwritten, per this project's own established correction convention).
+
+**So `cold_boot_hw_init`'s call was never a read at all -- it's a one-time write.** Resolved
+`DAT_2002a090` → `0x2018d7a6`, a ROM literal: `"SX3765 V0.9H-000"`. This is a fourth
+format-version-signature string, in the exact same `"SX3765 Vx.xx-000"` family already
+catalogued at `0x3e80`/`0x3fc0` (and the newer `V4.81`/`"Partial"` references from
+`FUN_2002b29c`'s own branch gate) -- `cold_boot_hw_init` **stamps** this legacy-compatibility
+signature slot once per cold boot; nothing reads it back anywhere traced so far. A single,
+bounded, entirely sensible operation from cold_boot_hw_init's own single, no-loop call site --
+not a mysterious periodic re-entry needing a loop that was never there. Added as a new row in
+`notes/eeprom-catalogue.md`. The whole "real re-entry vs. live-probing artifact" puzzle from
+2026-09-10 update #11 dissolves completely: there's no re-entry to explain, because there was
+never a repeating read to begin with.
+
+**The denser, ~557-transaction burst's own caller was sitting in the same GDB-free capture,
+already found by this project's own static analysis two sessions ago and never connected to this
+specific thread until now.** The wider (60s) run of the same tool caught it directly: a tight,
+~0.5-real-second window (`t≈4.18-4.70s`) of ~230 fully sequential, 32-byte-chunked address
+resolutions striding from EEPROM offset `~0x0420` through `~0x1fe0`, then `0x3ac0` through
+`0x3e80`/`0x3e44` -- landing exactly on the address ranges `notes/eeprom-catalogue.md` already
+documented (well before this session, via pure static analysis) as `FUN_2006cb84`'s own "combined
+settings struct (~0x1a80 bytes)" load -- its already-catalogued sub-blocks (`0x40`, `0x12e0`,
+`0x1620`, plus `0x3e44`'s already-confirmed diode-matrix read) sit exactly contiguous with what
+this capture shows. Confirmed directly via decompile: `FUN_2006cb84`'s entire body is a sequence
+of `FUN_2001e510` calls (the real getter, per the correction above) for each of its ~7 parameter
+IDs. Two fully independent methods -- an older static catalogue entry built for a completely
+different reason (the diode-matrix thread), and this session's brand-new live GDB-free capture
+-- landing on the exact same answer is real, convergent confirmation, not a coincidence:
+**`FUN_2006cb84` is the denser burst's caller.**
+
+**Net effect of this whole session**: both items from the prior handoff are closed, plus a real
+documentation bug caught and fixed, plus a new EEPROM catalogue entry -- all from one GDB-free
+tool built specifically because this project's own established discipline says not to trust a
+single live-GDB finding, exactly the discipline that paid off here. The QEMU-internals mechanism
+question from earlier this same session (why GDB-based polling distorts things at all, given
+none of the three checked mechanisms explain it) remains open, now with a second concrete
+data point: whatever it is, it can apparently inflate an observed call count by well over an
+order of magnitude on a persistent breakpoint, not just shift timing by a small amount.

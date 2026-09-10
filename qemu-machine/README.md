@@ -46,14 +46,52 @@ at all, given the freeze/no-burst/no-shift-skew findings above all say it should
 before (three specific mechanisms eliminated with citations), not closed. Full derivation,
 including the exact functions/lines checked, in README-history.md's newest section.
 
-**Step 2 of the prior handoff, next**: resume tracing the EEPROM-scan caller with this corrected
-understanding in hand — since a GDB pause is now shown to add zero virtual-time distortion on its
-own (whatever the still-open remaining tension is, it isn't "the pause fabricates extra time"),
-`tools/trace_eeprom_scan_caller.py`'s ~83ms-cadence finding (cold_boot_hw_init repeatedly calling
-the EEPROM-read wrapper) leans more toward "genuine re-entry" than before, but isn't proven yet —
-get a second, GDB-free confirmation (the established discipline throughout this project) before
-trusting it, then find the still-unfound denser 557-transaction burst's own caller among the
-~23 other read-side call sites of `FUN_2001e484`.
+**Step 2 of the prior handoff, done — both open items resolved, plus a real documentation bug
+found and fixed.**
+
+**The "genuine re-entry vs. GDB artifact" question is CLOSED: it was the artifact.** Built
+`tools/trace_eeprom_addr_gdbfree.py`: adds one new host-side debug line to `riic.c`
+("EEPROM addr=... resolved", fired once both address bytes of any real I2C transaction are known
+— GDB-free, no perturbation, same convention as every other `rza1h_debug()` call site) and
+correlates it against wall-clock time with zero GDB involvement at all. Ran 3 independent trials
+(20s/25s/60s) — **byte-for-byte reproducible each time** (279 total EEPROM-address events, same
+histogram): EEPROM offset `0x3df0` is targeted **exactly twice, ~44-47ms apart, then never
+again** — nothing like the GDB-based capture's "60 hits over ~9.7s, every ~83ms". A live-probing
+artifact after all, cleanly confirmed by a structurally different, fully independent technique —
+consistent with (though not itself proof of a specific cause for) the still-open GDB-distortion
+tension flagged just above.
+
+**Also resolved, and it changes the whole picture: this was never a read.** Direct decompilation
+(Ghidra) traced the exact call chain: `cold_boot_hw_init` → `FUN_20029198` (a 3-instruction
+wrapper, sole caller confirmed via `references_to`) → `FUN_2001e484(0x3df0, DAT_2002a090, 0x10)`.
+Per the read/write correction above, `FUN_2001e484` is the **write** path — this call **writes**
+the fixed 16-byte ROM literal at `DAT_2002a090` (`"SX3765 V0.9H-000"`, a fourth, previously-
+undocumented format-version-signature string in the same family as `0x3e80`/`0x3fc0`'s already-
+catalogued `"SX3765 Vx.xx-000"` strings — see `notes/eeprom-catalogue.md`, updated) to EEPROM
+offset `0x3df0`. A single, bounded, sensible "stamp a legacy-compatibility signature slot" write,
+called once per boot from one static call site — not a mysterious repeating read with no loop
+around it. The whole "does `cold_boot_hw_init` really get re-entered" puzzle from update #11
+dissolves: it doesn't.
+
+**The denser, ~557-transaction burst's own caller, also found**: the same GDB-free tool's wider
+(60s) run caught the real thing directly — a tight, ~0.5s (t≈4.18-4.70s), fully sequential,
+32-byte-chunked scan striding from EEPROM offset `~0x0420` through `~0x1fe0` (then `0x3ac0`
+through `0x3e80`/`0x3e44`) — **~230 chunk-reads, each a real address-resolution event**, landing
+exactly on the address ranges `notes/eeprom-catalogue.md` had *already*, independently (pure
+static analysis, no live trace) catalogued as `FUN_2006cb84`'s own "combined settings struct
+(~0x1a80 bytes)" load (its documented sub-blocks — `0x40`/`0x12e0`/`0x1620`, plus `0x3e44`'s
+already-confirmed diode-matrix read — are exactly contiguous with what this capture shows).
+Confirmed directly via decompile: `FUN_2006cb84` calls `FUN_2001e510` (the real getter, per the
+correction above) for each of its ~7 known parameter IDs. Two fully independent methods — an
+older static catalogue entry and this session's brand-new live capture — landing on the same
+answer is real, convergent confirmation: **`FUN_2006cb84` is the denser burst's caller**, not one
+of the other ~23 uninspected sites.
+
+**One real documentation bug found and fixed, worth flagging on its own**: `README.md`'s own
+"Ghidra fix applied" paragraph (2026-09-10, prior session) had `FUN_2001e484`/`FUN_2001e510`'s
+read/write roles backwards, silently contradicting `notes/eeprom-catalogue.md`'s own original,
+correct labeling. Corrected in place with a visible annotation (not silently) — see that
+paragraph below.
 
 ## Status, 2026-09-10 (updated same day) — DMAC completion race fixed; a real virtual DSP-ready
 ## signal built and confirmed (`scif5_wait_hsk1_ready`'s ~16-minute software timeout is gone, boot
@@ -432,18 +470,30 @@ trusting it, then find the still-unfound denser 557-transaction burst's own call
 ## **Ghidra fix applied, same day — the real driver code read for the first time, and it raises a
 ## sharper question than "why 557 reads".** The 5 low-level RIIC2 protocol handlers (STI/TI/TEI/
 ## RI/SPI, matching `riic.c`'s own model exactly) decompile cleanly now. Traced the real
-## call graph: both a generic "read N EEPROM bytes" chunking wrapper (`FUN_2001e484`, 24 callers
-## project-wide) and its write-side sibling (`FUN_2001e510`, 49+ callers) exist, each chunking
-## into ≤32-byte pieces (respecting a real page-boundary check) and calling one of two low-level
-## entry points (`FUN_2001dcc4`/`FUN_2001dd58`) that actually drive the 5-handler state machine —
-## confirming this whole area is one shared, generic EEPROM-access API, not something built for
-## one specific caller. **A bounded, one-shot GDB breakpoint on the read wrapper's entry** (60
-## hits, then released — same technique as the earlier DRT watchpoint) caught something
-## unexpected: **every single hit, across the whole ~9.7s capture, comes from the identical call
-## site** — `LR=0x2002b17c`, which resolves to `cold_boot_hw_init` itself (the `bl` at
-## `0x2002b178`, immediately before `tuner_jack_signal_precheck()` in its own tail), reading a
-## fixed 16 bytes from EEPROM offset `0x3df0`, repeating roughly every **~83ms — the same period
-## as the already-established MTU2 tick**.
+## call graph: both a generic EEPROM chunking wrapper (`FUN_2001e484`, 24 callers project-wide)
+## and its sibling (`FUN_2001e510`, 49+ callers) exist, each chunking into ≤32-byte pieces
+## (respecting a real page-boundary check) and calling one of two low-level entry points
+## (`FUN_2001dcc4`/`FUN_2001dd58`) that actually drive the 5-handler state machine — confirming
+## this whole area is one shared, generic EEPROM-access API, not something built for one specific
+## caller. [**CORRECTED, 2026-09-10, new session**: this paragraph originally called
+## `FUN_2001e484` "a generic 'read N EEPROM bytes' chunking wrapper" and `FUN_2001e510` its
+## "write-side sibling" — backwards. Direct decompilation confirms `FUN_2001e484`→`FUN_2001dcc4`
+## is the WRITE path (embeds source data into the outgoing request via `FUN_2017c710`) and
+## `FUN_2001e510`→`FUN_2001dd58` is the READ path (stores a destination pointer for the ISR to
+## fill in) — matching `notes/eeprom-catalogue.md`'s own original, correct labeling
+## ("`FUN_2001e510`=get, `FUN_2001e484`=set"), which this paragraph had silently contradicted.
+## See below for why this matters far beyond a naming nit.] **A bounded, one-shot GDB breakpoint
+## on `FUN_2001e484`'s entry** (60 hits, then released — same technique as the earlier DRT
+## watchpoint) caught something unexpected: **every single hit, across the whole ~9.7s capture,
+## comes from the identical call site** — `LR=0x2002b17c`, which resolves to `cold_boot_hw_init`
+## itself (the `bl` at `0x2002b178`, immediately before `tuner_jack_signal_precheck()` in its own
+## tail), targeting a fixed 16 bytes at EEPROM offset `0x3df0`, repeating roughly every **~83ms —
+## the same period as the already-established MTU2 tick**. [**RESOLVED, 2026-09-10, new session
+## — this was wrong on two independent counts, see the new Status section above**: (1) given the
+## corrected labeling just above, this call is a WRITE, not a read; (2) it does not repeat every
+## ~83ms at all — a GDB-free re-confirmation found it fires exactly twice, ~44ms apart, then
+## never again, matching its single static call site exactly. The "~83ms, 60 hits" picture was a
+## live-GDB-probing artifact.]
 ##
 ## **That's the surprising part**: `cold_boot_hw_init`'s own decompiled body (read many sessions
 ## ago, re-checked again here) is a single, linear, no-loop sequence — this exact call site has
