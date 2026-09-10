@@ -14,6 +14,66 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — prepared the actual live RIIC2 capture while the
+## user checks physical hookup feasibility. Pinned a precise, fresh timing estimate for the scan's
+## real onset, bench-characterized the OLS's real RLE/sample-count limits empirically (not
+## assumed), and built + fully verified (via a synthetic waveform, not just "should work") two
+## ready-to-run tools: the capture script and the decode/analysis script.
+
+**Fresh, current-build timing estimate** (`tools/trace_eeprom_addr_gdbfree.py 20`, re-run on the
+current build since so much has changed in the boot path across this whole thread's history): the
+dense sequential `0x20`-byte-chunk `FUN_2006cb84` scan starts at real elapsed **t~4.25-4.3s** (since
+QEMU/boot start under `-icount shift=auto`) and runs to **~t=5.0s** -- about 0.7-0.8s total
+duration, then transitions into the two `0x3df0` `cold_boot_hw_init` stamp-writes. This is the best
+available estimate for real hardware's own timing, not a guarantee -- real power-on sequencing
+(voltage rail ramp, reset controller behavior) isn't modeled by this emulation at all, so real
+timing could differ by whatever that adds. Flagged plainly in the tooling: **expect to iterate
+across a few power cycles**, not one perfect shot.
+
+**Bench-characterized the OLS's actual RLE/buffer behavor empirically, on the bench (no radio
+needed)**, since the earlier planning session's own theoretical concern (would periodic RLE
+reissue overhead limit how much idle time a capture can bridge?) deserved a real measurement, not
+an assumption: with the input held idle and RLE on, requesting an oversized sample count, the
+device reliably delivered exactly **1,572,864 samples before stopping -- identical across four very
+different configured sample rates (100kHz/200kHz/500kHz/2MHz)**. Since the cutoff doesn't scale
+with rate, this is a **fixed sample-count ceiling in the driver/protocol**, not a rate-dependent
+RLE-efficiency limit -- meaning real-time window covered = ceiling ÷ sample rate, a direct,
+useful, quantified tradeoff between edge-timing resolution and how much timing-estimate
+uncertainty a single capture can absorb. Chose **1MHz** (yielding a **~1.57s window**, ~1.5x
+oversampling of the real ~340kHz signal -- adequate for confirming bus frequency/per-byte timing,
+this project's actual question, not for lab-grade edge-jitter measurement) specifically to maximize
+margin around the timing estimate's own uncertainty.
+
+**Built and independently verified two tools, not just written and hoped for**:
+- `tools/live_riic2_capture.sh` -- sleeps a configurable delay after the user applies power (default
+  3.5s, centering the ~1.57s window on the ~4.25-5.0s estimated scan with margin both sides), arms
+  the OLS at 1MHz/RLE-on/max-samples, saves a `.sr` session file, and runs a quick post-capture
+  check for any decoded I2C activity at all.
+- `tools/analyze_riic2_capture.py` -- decodes a saved capture via sigrok's built-in `i2c` protocol
+  decoder and extracts real per-byte timing, printed directly against this project's own
+  decompiled-register-derived prediction (26,433ns/byte, ~340kHz) as a ratio.
+
+**Verified the analysis script's parsing against the decoder's own real output, not assumed
+syntax** -- an early draft guessed at annotation text (`"ADDRESS WRITE"` etc.) that turned out
+wrong; caught and fixed by synthesizing a minimal, correct I2C waveform (`START`, address `0xa0`,
+`ACK`, data `0x42`, `ACK`, `STOP`) as raw binary samples, feeding it through the exact same
+`sigrok-cli`/`i2c` decode command the real script uses, and reading the actual output format
+directly (`"40-124 i2c-1: Address write: 50"`, bare `"0"`/`"1"` bit lines needing to be filtered
+out, etc.) -- rewrote the regex against real, confirmed text, then re-ran the full pipeline
+end-to-end against that synthetic capture and confirmed correct parsing/gap-computation/ratio
+output before trusting it on a real, one-shot, hard-to-repeat physical capture.
+
+**Hookup reference** (`notes/ic7300-signal-chain.md`/`notes/ic7300-hardware.md`, already
+established, not re-derived): `IC351` (`GT24C128B`), SCL/SDA labeled `ECK`/`EDT` on the schematic
+(CPU pins `P1_4`/`P1_5`) -- probe directly at `IC351`'s own SOIC pins (or its pull-up resistors, if
+more accessible), not the CPU package (a BGA, not practically probeable). Channel 0 = SCL/`ECK`,
+channel 1 = SDA/`EDT`, common GND to the radio's own ground -- must match how the probes are
+actually clipped on.
+
+**Not yet done**: the actual physical capture itself (gated on the user's own hookup-feasibility
+check, in progress). Once attempted, `tools/analyze_riic2_capture.py` gives a direct, immediate
+answer on whether the decompiled-register-derived bit-rate formula holds up against real hardware.
+
 ## Status, 2026-09-10, same session, continued — side quest per the user's own request: the
 ## Openbench Logic Sniffer (OLS) mentioned as candidate tooling was found and bench-tested.
 ## CONFIRMED WORKING, on its best possible firmware already -- no update needed or even available.
