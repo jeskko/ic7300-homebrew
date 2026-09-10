@@ -93,6 +93,22 @@ read/write roles backwards, silently contradicting `notes/eeprom-catalogue.md`'s
 correct labeling. Corrected in place with a visible annotation (not silently) — see that
 paragraph below.
 
+**NEXT SESSION**: both items the prior handoff named are now closed (see above) — the old
+"NEXT SESSION, IN THIS ORDER" block a little further below is stale, superseded by this section,
+kept only for its own historical trail. No fix was attempted this session for the underlying
+ring-overflow trap itself (`0x200b93fc`, GIC-priority-starvation, mechanistically closed since
+the prior session — see "CLOSED, same day" below) — boot still stops there, same as before this
+session, since this session was pure investigation/tooling (one inert debug-log line in
+`riic.c`), not a mitigation attempt. **The concrete next step**: decide on and build an actual
+fix for that overflow so boot can progress toward the real Phase-0 payoff (the SD-card/VFS/MMCIF
+driver path, see "Extension roadmap" below) — candidates not yet weighed against each other:
+raise SGI 0's own GIC priority above `0x10` (risks masking something that currently relies on
+being preemptible), grow the 16-slot ring's capacity (a firmware-side struct-layout change, more
+invasive), or find a way to reduce/pace the RIIC2 scan's own IRQ density further (already tried
+once via real bus-speed pacing — confirmed insufficient alone, see "Added real I2C bus-speed
+pacing" below). Worth a real discussion of trade-offs with the user before picking one, not a
+unilateral pick.
+
 ## Status, 2026-09-10 (updated same day) — DMAC completion race fixed; a real virtual DSP-ready
 ## signal built and confirmed (`scif5_wait_hsk1_ready`'s ~16-minute software timeout is gone, boot
 ## now visibly exercises much more of `cold_boot_hw_init`); **the job-ring-overflow trap's GIC
@@ -108,7 +124,9 @@ paragraph below.
 ## tight current-state summary, not the narrative — for the full derivation, README-history.md's
 ## final six 2026-09-10 sections cover the ring-overflow
 ##
-## **NEXT SESSION, IN THIS ORDER (explicit user instruction, 2026-09-10)**:
+## **STALE — both steps below are done, see the new 2026-09-10 "new session" Status section at
+## the top of this file for the resolution and the actual current next step.**
+## ~~NEXT SESSION, IN THIS ORDER (explicit user instruction, 2026-09-10)~~:
 ## 1. **First**, read QEMU's own internals to confirm or correct the GDB/icount-perturbation
 ##    theory in "New open question" below — `qemu-src/gdbstub/gdbstub.c` (does servicing a
 ##    register/memory request genuinely require stopping the vCPU in this build, and does that
