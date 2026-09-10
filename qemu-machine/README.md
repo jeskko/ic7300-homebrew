@@ -14,6 +14,80 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, same session, continued — a decisive, direct test REFUTES the whole
+## "QEMU's own round-robin real-wall-clock overhead is why SGI0 starves" theory. The ring overflow
+## is a virtual-time-domain phenomenon, completely independent of how fast or slow the emulation
+## runs in real seconds. Neither of the two follow-up approaches below (icount shift tuning, and
+## by direct implication the bigger single-vCPU round-robin-loop patch idea) can fix it, and
+## nothing at this project's level can -- this is now genuinely closed.
+
+**Per the user's own follow-up ("do we have other approaches"), evaluated two candidates before
+building either**: (1) skip QEMU's multi-vCPU relock/`wait_io` dance in the round-robin loop for
+this single-CPU target (a new, bigger, permanent core-QEMU patch -- untried); (2) test whether
+`-icount shift=auto`'s own adaptive retuning (vs. a fixed shift) changes the per-event round-robin
+pass count (cheap, no new patch). User chose to try both, in order, starting with the cheaper one.
+
+**Testing #2 immediately produced a real, measured effect** -- re-applied `patches/
+rr-loop-trace.patch`, ran `tools/trace_rr_loop_overhead.py` (now takes an `icount_value` arg) under
+both `shift=auto` and a fixed `shift=7`, then did the same RI->RI per-event join the closed
+diagnosis used. **Real result**: fixed `shift=7` needs a median of **4** round-robin passes per
+RI->RI event, vs. **10** under `shift=auto` -- a genuine, reproducible >2x reduction in pass count.
+But the per-event *real time* gap barely moved (median 127us vs 142us, ~11%) despite passes
+dropping by more than half -- meaning each remaining pass, under the higher shift, does
+proportionally more real work (bigger icount budget per `tcg_cpu_exec()` call). **This is the key
+tell**: the total real-time cost per virtual byte-period looks like it's roughly fixed regardless
+of how many discrete passes it's divided into -- exactly what you'd expect if something *other*
+than the loop's own per-pass bookkeeping (wait_io/relock/icount-bookkeeping) is the true dominant
+real-time cost.
+
+**Ran the actual overflow check under the fixed shift to see if the (real) per-event cost
+reduction translated into anything -- it didn't**: `tools/check_overflow_r0.py` (now also takes an
+`icount_value` arg) with `shift=7` hits the identical trap, identical `r0=2`, at the identical ~6s
+mark as `shift=auto` -- despite genuinely fewer round-robin passes per event. **Then the decisive
+test**: added `sleep=off` (fully decoupling virtual time from any real-time pacing QEMU would
+otherwise insert to keep the two roughly in sync) -- the whole run now genuinely compresses into
+real seconds (trap hit inside the *first* 3s poll window instead of ~6s, confirmed again even more
+dramatically with `shift=10,sleep=off`) -- **and the ring still overflows, identical `r0=2`, every
+trial.** Making the entire emulation run many times faster in real wall-clock terms changed
+*nothing* about whether or when (in virtual time) the overflow happens.
+
+**This directly refutes the working theory this whole sub-thread (and the now-superseded handoff
+below) was built on**: SGI0 losing the race to RIIC2 is **not** caused by QEMU's own round-robin
+main-loop real-wall-clock dispatch latency being larger than the ~26.4us real hardware gap.  If it
+were, compressing real wall-clock time by 12x+ (`sleep=off`) relative to virtual time should have
+given SGI0 dramatically more *real* opportunities to interleave per unit of virtual time and
+softened or removed the overflow -- it did neither, not even slightly, across every shift value
+tried. **What this vindicates instead**: the earlier "real resolution" section further down this
+file (no producer burst; `read_idx` freezes for a completely ordinary ~30ms under real GIC-
+priority arbitration; the ring's own corrected true margin is ~16-32ms, not the ~1.3s the whole
+thread originally assumed) was the *right* framing all along -- this is a **virtual-time-domain**
+GIC-priority-arbitration outcome, evaluated identically regardless of real wall-clock speed, not a
+real-time-dispatch-latency artifact. The later "sharp user challenge" section that reframed it back
+toward round-robin real-time overhead was a reasonable hypothesis to raise and worth having tested
+directly (this is exactly that direct test) -- but it's now falsified, cleanly, not just
+theoretically doubted.
+
+**Practical fallout for the two candidate approaches**: #2 (icount shift tuning) is answered --
+real effect on internal pass count, zero effect on the actual overflow. #1 (the bigger single-
+vCPU round-robin-loop patch) was **not built**, on the strength of this same evidence: it targets
+the identical class of cost (real per-pass loop overhead) that #2's test just showed has no bearing
+on the outcome, so building a new permanent core-QEMU patch to chase it further isn't worth the
+maintenance cost this project already weighs against exactly this kind of change (see
+`setup.sh`'s own re-clone-and-repatch-every-run design, and this project's existing one permanent
+patch, `hw-arm-build.patch`). Flagged to the user rather than silently building it anyway.
+
+**Where this actually leaves the whole ring-overflow thread now**: genuinely closed at the
+device-model *and* QEMU-performance level, from three independent angles -- the original closed
+per-checkpoint diagnosis, the mechanistic dispatch-count argument against batching (previous
+Status section), and now this direct real-time-compression test against the round-robin-overhead
+theory itself. **The one remaining open question, unchanged and only reachable with real
+hardware**: would a real IC-7300 also overflow this ring given the same firmware/EEPROM-scan
+conditions -- a virtual-time-domain question about real GIC arbitration and real bus timing, not
+something any further emulator-side change can settle. Tool changes from this investigation
+(`icount_value` override params on `check_overflow_r0.py`/`trace_rr_loop_overhead.py`) are kept,
+general-purpose, harmless with the default unchanged. `patches/rr-loop-trace.patch` reverted again,
+`qemu-src/` back to its normal unpatched build.
+
 ## Status, 2026-09-10, new session — the round-robin-batching fix from the handoff just below was
 ## evaluated (not blindly attempted) and rejected on mechanistic grounds, per the user's own
 ## choice at a checkpoint; a smaller, real (but expectedly marginal) hot-path cost was cut and

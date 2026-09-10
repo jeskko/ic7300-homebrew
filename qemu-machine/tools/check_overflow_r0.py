@@ -10,7 +10,12 @@ see README.md's Status section for what this distinguishes.
 Coarse polling only (every few seconds) -- this project has repeatedly found tight/frequent
 polling suppresses the very stall being chased; a few-second cadence has not shown that problem.
 
-Usage: check_overflow_r0.py [n_trials] [max_seconds_per_trial]
+Usage: check_overflow_r0.py [n_trials] [max_seconds_per_trial] [icount_value]
+
+`icount_value` (2026-09-10 addition) overrides the `-icount` argument, default "shift=auto" --
+added to test whether a fixed, higher icount shift (found via tools/trace_rr_loop_overhead.py to
+need real round-robin passes/RIIC2-event) changes the overflow outcome. See README.md's Status
+section.
 """
 
 from __future__ import annotations
@@ -53,14 +58,15 @@ def parse_r0_pc(regs_text: str) -> tuple[int, int]:
     return r0, pc
 
 
-def run_trial(n: int, max_seconds: float, poll_interval: float = 3.0) -> None:
+def run_trial(n: int, max_seconds: float, poll_interval: float = 3.0,
+              icount_value: str = "shift=auto") -> None:
     sock_path = f"/tmp/qemu_r0check_{n}.sock"
     Path(sock_path).unlink(missing_ok=True)
     args = [
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto",
+        "-icount", icount_value,
         "-qmp", f"unix:{sock_path},server,nowait",
     ]
     proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -98,8 +104,10 @@ def run_trial(n: int, max_seconds: float, poll_interval: float = 3.0) -> None:
 def main() -> None:
     n_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     max_seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 60.0
+    icount_value = sys.argv[3] if len(sys.argv) > 3 else "shift=auto"
+    print(f"-icount {icount_value}")
     for n in range(1, n_trials + 1):
-        run_trial(n, max_seconds)
+        run_trial(n, max_seconds, icount_value=icount_value)
 
 
 if __name__ == "__main__":
