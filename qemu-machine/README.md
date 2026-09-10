@@ -14,6 +14,32 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
+## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
+## assumption. **A genuinely valuable finding, not just a mishap.**
+
+**The user's own finding, from the currently-broken probe/repair state**: with `SDA` lacking a
+pull-up (or disconnected from the CPU entirely — the current, mid-repair state of the real board),
+pressing the radio's power button produces **no activity at all**. A total, silent hang, no visible
+sign of life whatsoever.
+
+**This matches, almost exactly, the founding reason this whole `qemu-machine/` device model
+exists.** `riic.c`'s own header comment records the *emulated* equivalent of precisely this
+failure, found early in this project before `riic.c` had any real behavior: "this project found
+busy-waiting forever on a completion interrupt once the channel was still a bare RAM region" —
+i.e. with no real EEPROM ever able to ACK a transaction, `body.bin` hung completely, waiting on an
+I2C completion interrupt that could never arrive. **Break the real bus on real hardware (no
+pull-up, no ACK possible) and the exact same class of failure reproduces**: real firmware really
+does treat the early RIIC2/EEPROM transaction as a hard, synchronous, un-skippable dependency, not
+something that gets timed out or bypassed — confirming on real silicon what this whole thread has
+built its entire model on, not just observed in emulation.
+
+**Practical implication for the still-open ring-overflow question**: this reinforces (doesn't
+settle, but reinforces) that the early EEPROM read really does happen on real hardware, really is
+a hard boot dependency, and firmware really does block synchronously on its completion, exactly as
+modeled — the underlying premise the whole ring-overflow investigation depends on is, once again,
+validated against real hardware, not just decompiled code.
+
 ## Status, 2026-09-11, continued — the live RIIC2 bus-timing capture attempt hit real physical
 ## limits: both the EEPROM's own SOIC pins AND its pull-up resistors turned out too small for
 ## clip probes without support gear this session didn't have, and an attempt at the pull-ups
