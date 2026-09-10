@@ -199,21 +199,53 @@ struct RZA1HRiicState {
     int pending_irq; /* -1 = idle */
 };
 
-/* Real RZ/A1H RIIC bit-rate-generator formula: SCL low/high widths are (BRL[4:0]+1)/IICφ and
- * (BRH[4:0]+1)/IICφ respectively (standard Renesas RIIC design, shared across the RX/RZ family).
- * IICφ = PCLK / 2^CKS, where CKS is a prescaler field in MR1 -- its exact bit position isn't
- * independently confirmed against this project's own SVD copy within this pass's scope, so it's
- * treated as CKS=0 (IICφ=PCLK) here, an honestly-flagged simplification in the same spirit as
- * scif.c's own "PCLK not independently re-derived for SCIF specifically" caveat. PCLK is P0φ =
- * 32MHz, the same real clock already established project-wide. 9 SCL cycles per byte (8 data
- * bits + 1 ACK) -- this is what's actually being paced: every phase transition below
- * (STI/TI/TEI/RI/SPI) represents one such byte-shaped step in the real protocol. */
+/* Real RZ/A1H RIIC bit-rate-generator formula (2026-09-10, corrected -- confirmed against the
+ * real RZ/A1H hardware manual, R01UH0403EJ0600 section 18.3.12/18.3.13, and the real
+ * firmware-programmed register values read directly from `riic2_driver_init`, 0x2001e120):
+ * SCL low/high periods are NOT simply (BRL[4:0]+1)/IICφ and (BRH[4:0]+1)/IICφ as this file
+ * previously, incorrectly, always assumed -- that's only formula (1) below, and only applies
+ * when FER.SCLE=0. The manual gives 5 variants depending on FER.SCLE/NFE and MR1.CKS:
+ *   (1) SCLE=0:                extra = 1
+ *   (2) SCLE=1,NFE=0,CKS=000:  extra = 3
+ *   (3) SCLE=1,NFE=1,CKS=000:  extra = 3 + nf
+ *   (4) SCLE=1,NFE=0,CKS!=000: extra = 2
+ *   (5) SCLE=1,NFE=1,CKS!=000: extra = 2 + nf
+ * with period = (BR[4:0] + extra) / IICφ per side, `nf` = MR3.NF[1:0]'s noise-filter stage count
+ * (0->1, 1->2, 2->3, 3->4), and IICφ = PCLK / 2^CKS (CKS = MR1.CKS[2:0], bits 6-4 -- confirmed
+ * against the manual, not a guess). PCLK is P0φ = 32MHz, the same real clock established
+ * project-wide. This matters in practice, not just on paper: `riic2_driver_init` never writes
+ * FER at all, leaving it at its real hardware power-on-reset default -- **SCLE=1, NFE=1** (see
+ * `rza1h_riic_reset()`'s own comment) -- and programs MR1.CKS=1, MR3.NF[1:0]=0, so this project's
+ * own traced RIIC2 boot path lands on formula (5), not (1): real byte time ~26.4us, not the
+ * ~12.1us the old (1)-only formula computed -- about 2.2x too fast. tr/tf (SCL rise/fall time,
+ * bus-capacitance-dependent) are omitted, same simplification level as every other parasitic
+ * this project has consistently left out (e.g. scif.c's own transceiver-propagation omission).
+ * 9 SCL cycles per byte (8 data bits + 1 ACK, MR1.BC[2:0]'s own default) -- this is what's
+ * actually being paced: every phase transition below (STI/TI/TEI/RI/SPI) represents one such
+ * byte-shaped step in the real protocol. */
 #define RIIC_PCLK_HZ 32000000
 
 static uint64_t riic_byte_time_ns(RZA1HRiicState *s)
 {
-    uint64_t low_ns = ((s->brl & 0x1f) + 1) * 1000000000ULL / RIIC_PCLK_HZ;
-    uint64_t high_ns = ((s->brh & 0x1f) + 1) * 1000000000ULL / RIIC_PCLK_HZ;
+    bool scle = (s->fer >> 6) & 1;
+    bool nfe = (s->fer >> 5) & 1;
+    unsigned cks = (s->mr1 >> 4) & 0x7;
+    unsigned nf = (s->mr3 & 0x3) + 1; /* NF[1:0]: 0->1 stage, 1->2, 2->3, 3->4 */
+    uint64_t iicphi_hz = (uint64_t)RIIC_PCLK_HZ >> cks;
+    unsigned extra;
+    uint64_t low_ns, high_ns;
+
+    if (!scle) {
+        extra = 1;
+    } else {
+        extra = (cks == 0) ? 3 : 2;
+        if (nfe) {
+            extra += nf;
+        }
+    }
+
+    low_ns = ((s->brl & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
+    high_ns = ((s->brh & 0x1f) + extra) * 1000000000ULL / iicphi_hz;
 
     return (low_ns + high_ns) * 9;
 }
@@ -459,8 +491,22 @@ static void rza1h_riic_reset(DeviceState *dev)
 
     /* image_path/image_fd deliberately untouched, same reasoning as
      * mmc.c's own reset -- realize()'s job, not a per-reset concern. */
-    s->cr1 = s->mr1 = s->mr2 = s->mr3 = s->fer = s->ser = s->ier = 0;
-    s->sr1 = s->sar0 = s->sar1 = s->sar2 = s->brl = s->brh = 0;
+    s->cr1 = s->mr1 = s->mr2 = s->mr3 = s->ser = s->ier = 0;
+    s->sr1 = s->sar0 = s->sar1 = s->sar2 = 0;
+    /* FER/BRL/BRH/MR1's real hardware power-on-reset defaults (2026-09-10, corrected -- per the
+     * manual, section 18.3.3/18.3.6/18.3.12/18.3.13): FER=0x72 (SCLE=1, NFE=1, NACKE=1, MALE=1),
+     * BRL=BRH=0xFF (bits 7-5 reserved-as-1, BR[4:0]=0x1F), MR1=0x08 (BCWP=1, CKS=0, BC=0/9-bit).
+     * This isn't cosmetic for FER specifically: `riic2_driver_init` never writes it at all, so
+     * whatever this reset leaves it at is what `riic_byte_time_ns()` sees for the entire traced
+     * boot -- getting SCLE/NFE wrong here (previously: both defaulted to 0) silently collapsed
+     * the corrected formula above back to its SCLE=0 case regardless of what real hardware
+     * actually does. BRL/BRH/MR1 get fully reprogrammed by `riic2_driver_init` before any real
+     * transaction on the one channel this project traces, so their own reset values are inert in
+     * practice today -- fixed anyway so an untraced channel/boot path doesn't inherit a latent,
+     * invisible mismatch later. */
+    s->fer = 0x72;
+    s->brl = s->brh = 0xff;
+    s->mr1 = 0x08;
     s->cr2 = s->sr2 = s->drt = 0;
     s->phase = RIIC_IDLE;
     s->mem_addr = 0;

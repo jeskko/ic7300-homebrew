@@ -3385,3 +3385,67 @@ question from earlier this same session (why GDB-based polling distorts things a
 none of the three checked mechanisms explain it) remains open, now with a second concrete
 data point: whatever it is, it can apparently inflate an observed call count by well over an
 order of magnitude on a persistent breakpoint, not just shift timing by a small amount.
+
+## 2026-09-10, same session: fixed the real RIIC bit-rate-generator formula against the actual
+## GT24C128B datasheet and the RZ/A1H hardware manual, per the user's own follow-up question
+
+User asked, prompted by the EEPROM investigation above, how well this project's RIIC2 timing
+matches the real GT24C128B EEPROM's own datasheet (`/data/misc/icom/7300/doc/
+GT24C128B-2UDLI-TR.pdf`, page 17's AC electrical characteristics). Answer required going past the
+datasheet alone, to the real RZ/A1H hardware manual (`R01UH0403EJ0600`) and the real
+firmware-programmed register values (via Ghidra decompile of `riic2_driver_init`,
+`0x2001e120`) -- and found `riic_byte_time_ns()`'s own already-honestly-flagged simplification
+("CKS treated as /1... not independently confirmed") was concretely wrong, plus a second,
+previously-unsuspected gap: the formula itself only covered one of five real variants the manual
+actually specifies.
+
+**Real firmware-programmed values, decompiled directly**: `MR1=0x10` -> `CKS[2:0]=1` ->
+**IICφ=P0φ/2=16MHz**, not the 32MHz this file assumed. `BRL=0xF7`, `BRH=0xF2` -> `BRL[4:0]=23`,
+`BRH[4:0]=18` (this part was already right). `MR3=0x10` -> `NF[1:0]=0` -> single-stage noise
+filter (`nf=1`). Critically, **`riic2_driver_init` never writes `FER` at all** -- it stays at its
+real hardware power-on-reset default, `0x0072` (confirmed via the manual's own register table),
+which has **both `SCLE=1` and `NFE=1`** set. This project's own model had `fer` resetting to 0,
+silently making `SCLE`/`NFE` read as 0 regardless of what real hardware does -- a second bug,
+compounding the first, that would have defeated any formula fix on its own if left unfixed.
+
+**The real formula** (manual section 18.3.12/18.3.13) has 5 variants by `SCLE`/`NFE`/`CKS`; this
+file's own formula only ever implemented the `SCLE=0` case (`extra=1` cycle per side). The real,
+traced configuration (`SCLE=1, NFE=1, CKS!=0`) is variant (5): `extra=2+nf=3` cycles per side --
+`T_LOW=(23+3)/16MHz=1625ns`, `T_HIGH=(18+3)/16MHz=1312.5ns`, giving a real per-byte time of
+`(1625+1312.5)*9≈26.44us` and a real bus frequency of **~340kHz** -- comfortably inside the
+datasheet's own min/max windows at *either* supported voltage (max 1MHz at 2.5-5.5V, max 400kHz
+at 1.7-2.5V; mins 600ns/1200ns `T_LOW`, 400ns/600ns `T_HIGH`) -- a sensible, deliberate,
+conservative real-world choice, confirmed by hardware register decode rather than assumed. The
+model's old formula computed `T_LOW=750ns`, `T_HIGH=593.75ns`, `~12.09us/byte`, **~744kHz** --
+about **2.19x too fast**, and would have exceeded the datasheet's own 400kHz cap at the lower
+voltage range.
+
+**Fixed both bugs in `riic.c`**: `riic_byte_time_ns()` now reads live `fer`/`mr1`/`mr3` and
+implements all 5 formula variants (`tr`/`tf`, the bus-capacitance-dependent rise/fall times, are
+still omitted -- same simplification level as every other such parasitic this project has
+consistently left out elsewhere, e.g. `scif.c`'s own transceiver-propagation omission).
+`rza1h_riic_reset()` now sets `FER=0x72`, `BRL=BRH=0xFF`, `MR1=0x08` -- the real hardware
+power-on-reset defaults (per the manual's own register tables) -- not just for `FER` (which
+matters today, since nothing else ever writes it) but also `BRL`/`BRH`/`MR1` (inert today, since
+`riic2_driver_init` reprograms all three before any real transaction on the one channel this
+project traces, but fixed anyway so an untraced channel/boot path doesn't inherit a latent,
+invisible mismatch later).
+
+**Confirmed live, two ways.** (1) Hand-verified the new formula's own arithmetic against the
+corrected register values: computes 26,433ns/byte, matching the by-hand derivation (26.44us)
+almost exactly. (2) Re-ran `tools/trace_eeprom_addr_gdbfree.py`'s wider capture pre- and post-fix
+and compared the same dense ~230-chunk `FUN_2006cb84` scan's mean inter-event gap directly (not
+eyeballed off millisecond-rounded timestamps, which hide a ~26us step): **2249ns pre-fix ->
+3238ns post-fix**, confirming the fix genuinely makes RIIC2 slower, in the right direction. **One
+honest wrinkle, not smoothed over**: the *per-event* delay change is a confirmed, exact 2.19x
+(12,087ns -> 26,433ns, matching the formula-level math exactly); the *aggregate* real-world
+scan-duration change measured only **~1.44x** (0.560s -> 0.829s for the same scan), not the full
+2.19x a naive per-event multiplication would predict. Most likely explanation, not fully chased
+down this pass: `-icount shift=auto`'s own adaptive retuning (already established earlier this
+same session, and by 2026-09-09 update #9/#10, to be a real, stateful, host-wall-clock-comparing
+mechanism) very plausibly absorbs part of the change, since a busier/slower RIIC2 wait pattern
+changes the guest's own effective instruction throughput during this exact window. Re-ran
+`tools/check_overflow_r0.py` afterward: **5/5 trials, same trap, same `r0=2`, same PC** -- no
+regression, and the trap now takes consistently ~1-1.5s longer to reach (`t≈6.0s` vs the
+previously-established `t≈4.6-5.7s`), the expected direction given RIIC2 is now genuinely paced
+closer to real hardware speed.
