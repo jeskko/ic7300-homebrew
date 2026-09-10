@@ -409,6 +409,12 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             qemu_irq_lower(s->irq[IRQ_TI]);
             s->mem_addr |= (uint8_t)value;
             s->phase = RIIC_WAIT_RESTART;
+            /* Log the resolved EEPROM address once both bytes are known (2026-09-10) -- a real
+             * boundary event (this project's own protocol-handler log lines above only ever see
+             * one address byte at a time), added specifically to let host-side, GDB-free log
+             * correlation distinguish *which* address a given transaction targets -- see
+             * README.md's Status section (tracing the EEPROM-scan caller). */
+            rza1h_debug("riic", "riic%u: EEPROM addr=%#06x resolved", s->channel, s->mem_addr);
             riic_schedule_irq(s, IRQ_TEI);
             break;
         case RIIC_WAIT_READ_ADDR:
