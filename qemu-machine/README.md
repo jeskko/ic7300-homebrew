@@ -14,6 +14,385 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-10, new session — the round-robin-batching fix from the handoff just below was
+## evaluated (not blindly attempted) and rejected on mechanistic grounds, per the user's own
+## choice at a checkpoint; a smaller, real (but expectedly marginal) hot-path cost was cut and
+## validated instead. The ring-overflow/round-robin-overhead thread is now believed genuinely
+## closed at the device-model level.
+
+**Before implementing, worked through the batching design's actual mechanism rather than building
+it first and measuring second (the checkpoint call was explicit: build-and-measure vs. reason-
+first).** Conclusion, laid out for the user and confirmed as the basis for their own decision:
+the closed diagnosis (see the handoff just below) pins the ~65-90us/event cost to the **outer
+round-robin loop itself** (`wait_io`/`relock`/`icount-bookkeeping`, ~10 passes/event) — not to
+anything `riic.c` does when arming its own `ptimer`. Firmware's RIIC2 driver is genuinely
+interrupt-per-byte (confirmed by decompile, this file's own header comment): each byte needs its
+own real `qemu_irq_raise()` -> `cpu_exit()` -> guest ISR dispatch -> DRR read. That's N discrete,
+guest-observable dispatch events for N bytes no matter how the device model schedules them —
+pre-computing a whole chunk's byte *values* ahead of time (the tractable half of the original
+design wrinkle) doesn't reduce how many times the guest must actually be woken, so it can't lower
+the round-robin pass *count*, only this file's own microsecond-scale bookkeeping. Reducing
+dispatch count without changing guest-visible IRQ timing (the handoff's own fidelity requirement)
+or patching QEMU's core loop (already out of scope per the closed diagnosis) isn't achievable at
+this level. **User's own choice, given this**: don't build the batching design (agreed it's very
+unlikely to survive contact with a real measurement, not worth the build+long-trace cycle to
+empirically rediscover that), try one smaller, concrete overhead cut instead.
+
+**The one real (not speculative) hot-path cost actually found**: `riic_schedule_irq_delay()`'s own
+permanent diagnostic log line calls `icount_get_raw()`/`g_get_monotonic_time()` as *arguments* to
+`rza1h_debug()` — `rza1h_debug()` gates its own body on `RZA1H_DEBUG`, but C evaluates a function's
+arguments before the call regardless, so these two calls were being paid on **every** RIIC2
+schedule (thousands per dense scan) even with `RZA1H_DEBUG` unset, unlike every other
+`rza1h_debug()` call site in this file (whose arguments are plain field reads, not function calls —
+not worth the same treatment). Fixed by wrapping the whole call in `if
+(rza1h_debug_enabled("riic"))` — restores the "silent unless asked" cost this project's own
+`rza1h_debug.h` header comment promises, for this one site.
+
+**Validated, not just built**: rebuilt cleanly (`ninja qemu-system-arm`, only `hw_arm_riic.c.o`
+recompiled). `tools/check_overflow_r0.py 3 40` — same trap, same `r0=2`, 3/3, at the same ~6s mark
+as an unpatched-in-spirit run (no change expected or found). `RZA1H_DEBUG=riic` capture (8s, 10,500
+schedule events) shows byte-identical log format/fields to what's documented throughout
+README-history.md — the debug-on path is untouched by this change, exactly as intended.
+
+**Honest sizing of the actual saving, done by arithmetic rather than a wall-clock A/B (the effect
+is far below what wall-clock timing in this environment could distinguish from process-launch
+noise)**: two now-skipped calls (~tens of ns each) x ~10,500 events in an 8s capture is on the
+order of ~1ms of real time saved across the whole window — against the ~65-90us/event round-robin
+tax this same window pays (~700ms-1s aggregate for the same event count), this is roughly a
+0.1-0.2% cut. **Expected, not a disappointment**: this specific call site was never claimed to be
+the round-robin bottleneck (it's riic.c's own bookkeeping, not the main loop's), so a real fix with
+no measurable effect on the overflow outcome is exactly what the mechanistic argument above
+predicts. Kept anyway — a real, permanent, zero-risk cleanup (this change cannot alter any
+guest-visible behavior: the debug-enabled path is byte-for-byte identical, and the debug-disabled
+path only skips computing values that were previously discarded unread).
+
+**Where this leaves the whole thread**: the round-robin-per-event overhead is now believed closed
+at the device-model level from two independent directions — the prior session's own directly-
+measured, per-checkpoint diagnosis (inherent to QEMU's TCG/icount round-robin architecture), and
+this session's mechanistic argument for why no device-model-side batching/scheduling trick can
+reduce dispatch *count* without either breaking guest-visible timing fidelity or patching QEMU
+itself. **The sole remaining genuinely open question on this whole ring-overflow thread stays
+exactly what the "real resolution" section further down already named**: whether real IC-7300
+hardware would also overflow this ring under the same firmware conditions — undecided without live
+JTAG hardware, not resolvable by any further emulator-side change. **Recommendation for whoever
+picks this up next**: treat the ring-overflow/round-robin thread as closed pending hardware access;
+spend further `qemu-machine/` session time on a different open item (`mmc.c`'s own zero-`ptimer`
+gap once SD-card testing becomes active, or another queued item) rather than re-attempting
+round-robin-overhead mitigation at this level.
+
+## Status, 2026-09-10, handoff for a fresh session — ATTEMPT THE RIIC2 ROUND-ROBIN-BATCHING FIX
+## (superseded by the section just above — read that first; kept below for the full diagnosis
+## trail the section above builds directly on)
+## (not another diagnosis pass — the diagnosis is already complete and closed, see below)
+
+**Do not re-run the round-robin diagnostic tooling from scratch** — an earlier session in this
+same thread already did the full per-event correlation and reached a closed, precise verdict
+(README-history.md's "round-robin-loop-overhead investigation is CLOSED" section, plus this same
+day's later re-confirmation). Re-deriving it wastes a session; start from the conclusion below.
+
+**The established facts, not to re-derive**:
+- QEMU's round-robin TCG main loop costs a median of **~10 outer-loop passes per RIIC2 event**
+  (RI→RI dominant case), each paying 5-30us across wait-io/lock-shuffle/icount-bookkeeping stages,
+  summing to ~168us — matching the measured ~178-206us real inter-event gap almost exactly.
+- Root cause: `cpu_exit()` fires on every interrupt raise (correct, standard QEMU behavior, not a
+  bug) forcing a fresh round-robin pass each time, and RIIC2/MTU2's IRQ rate during a dense scan
+  is fast enough that ~10 such passes are needed to advance one RIIC byte-period.
+- Real hardware's own gap between RIIC2 byte events (**~26.4us**, from the real, firmware-
+  programmed bus-timing registers) is **2.5-3.5x smaller** than this emulation's own per-event
+  dispatch cost (~65-90us) — a real GIC would deliver a pending interrupt in a handful of cycles;
+  this emulation needs a full round-robin pass, tens of microseconds, regardless of how trivial
+  the work is. This is why SGI 0 (the job-ring drain IRQ, lowest GIC priority in the system)
+  can't interleave into gaps real hardware would leave wide open — not because RIIC2 "stays busy"
+  in any real GIC-priority sense (a sharp user challenge this same day corrected that framing),
+  but because the *emulator's own* delivery latency is larger than the real hardware window.
+- **Why fixing this is worth doing regardless of the eventual "would real hardware also overflow"
+  answer**: it removes an emulation-specific confound. If the ring stops overflowing after this
+  fix, that's real evidence the overflow was substantially an emulation artifact. If it still
+  overflows, that's real evidence the firmware's own ring/timing combination is genuinely fragile
+  on real hardware too. Either outcome is a genuine answer instead of a confounded one.
+- **Beyond RIIC2**: `mmc.c` (the actual Phase-0 payoff target, still never reached by any traced
+  boot path) has zero `ptimer` usage today. This exact problem — real bus-speed pacing colliding
+  with round-robin dispatch overhead — will very plausibly resurface there, likely worse (SD
+  transfers can be far more event-dense than a 230-chunk EEPROM scan), once real MMCIF timing
+  gets added following this project's own established pattern. Understanding/fixing this pattern
+  now has payoff beyond just closing out the RIIC2 thread.
+
+**The proposed fix (from the closed diagnosis, never attempted)**: pre-compute a whole in-flight
+chunk's worth of RIIC2 byte events and schedule them as fewer, larger `ptimer` waits — landing
+every individual byte's own correct nominal virtual-time cost and IRQ, but needing far fewer
+separate round-robin-triggering wakeups to deliver them.
+
+**A real design wrinkle to resolve before coding, flagged now so a fresh session doesn't lose time
+rediscovering it**: this can't be a uniform "batch N future events" scheme, because RIIC2 **reads**
+and **writes** are asymmetric in what's knowable in advance:
+- **Reads** (the actually-observed overflow trigger — `FUN_2006cb84`'s settings-struct scan):
+  the device model already knows every byte's own value up front (from `riic.c`'s own virtual
+  EEPROM backing store) before the guest ever asks for it. This is the tractable case — the whole
+  read burst's nominal timing and byte values are fully known in advance, so precomputing a chunk
+  of RI events as one larger wait and delivering the individual per-byte IRQs cheaply (without
+  each one separately re-triggering a full round-robin `cpu_exit()` cycle) is a real, buildable
+  optimization here.
+- **Writes**: the *guest* supplies each byte's own value via a live `DRT` register write —
+  the device model cannot know byte N+1's value before the guest actually writes it (already
+  confirmed this session: `riic.c`'s own write-data-loop is correctly gated on real guest register
+  access, not free-running — see README-history.md's EEPROM-write-cycle section). A naive
+  "precompute and batch ahead" scheme fundamentally cannot apply to writes without either
+  guessing (wrong) or waiting for the guest anyway (no win). **Scope the first attempt to the read
+  path only** — it's both the tractable case and the one actually observed triggering the
+  overflow; writes can stay exactly as they are.
+
+**Concrete first steps for whoever picks this up**:
+1. Read `riic_schedule_irq_delay()`/`riic_schedule_irq()`/`riic_schedule_irq_conditional()` in
+   `src/riic.c` (22 call sites total, all funneling through one `ptimer` — a single, well-scoped
+   chokepoint) and the `RIIC_READING` phase's own DRR-read handler (`rza1h_riic_read()`'s
+   `RIIC_REG_DRR` case) to see exactly where a batched-read design would hook in.
+2. Design (on paper/in comments first, this is a real device-model architecture change, not a
+   quick patch) a mechanism that, once a read chunk is recognized as in-flight, arms **one**
+   `ptimer` for the whole chunk's real duration, then delivers each byte's own RI IRQ at its
+   correct virtual-time offset with minimal round-robin re-entry — while remaining byte-for-byte
+   indistinguishable to the guest from today's one-`ptimer`-per-byte behavior (same IRQ sequence,
+   same timing, same register values at every point the guest can observe).
+3. Implement, build, and validate with the exact same regression discipline this whole thread has
+   used throughout: `tools/check_overflow_r0.py` (does the trap/r0 outcome change?),
+   `RZA1H_DEBUG=riic` log diffing against a pre-fix baseline (do the logged events match 1:1 in
+   content/order, only real-time delivery cost should change), and a fresh, fine-grained
+   `write_idx`/`read_idx` header trace (the technique from this same day's ring-overflow work) to
+   directly confirm whether the ring still overflows post-fix.
+4. Either outcome (overflow gone / overflow persists) is a valid, useful, publishable result —
+   document it plainly, don't chase a specific "should" answer.
+
+## Status, 2026-09-10, same session, continued — the ring-overflow thread reaches a real
+## resolution: there was never a producer burst. Reading `write_idx`/`read_idx` together (not
+## just the derived `pending` byte) shows the producer never changes cadence — it's the consumer
+## (`read_idx`) that freezes, for **~30ms**, both under `-icount shift=auto` and without it. This
+## also overturns a load-bearing assumption from this whole thread's very first session: the
+## ring's *real* margin, once the RIIC2 scan is contributing its own pushes (measured combined
+## rate ~1-2ms/push, not the assumed ~82ms), is **~16-32ms, not ~1.3 real seconds**. A ~30ms
+## consumer stall is completely ordinary under GIC priority preemption — no exceptionally long or
+## dense trigger is needed at all. **The GIC-priority mechanism itself was always correct; the
+## margin math built on top of it was wrong by ~40x.** This also explains, in hindsight, why the
+## EEPROM-write-cycle and no-icount/round-robin-overhead threads earlier this session (both
+## honestly tested, neither confirmed) never fully explained it — they were sized against the
+## wrong margin.
+##
+## **Both remaining open items now closed.** (1) The fast-phase push sources resolved, GDB-free:
+## PC sampling during the fast phase lands dominantly in `irq_exception_dispatch` — the generic
+## GIC dispatch trampoline itself (nesting counter, GIC IAR read, indirect call through a real
+## per-IRQ-ID handler table, nested IRQs re-enabled around the call). It doesn't push to the ring
+## itself — the fast rate is the aggregate effect of many brief, legitimate RIIC2 interrupts (TI/
+## TEI/RI, already independently confirmed to dominate 86.7% of HPPIR samples in this exact
+## window) each passing through the same shared trampoline, not one new culprit function. (2)
+## **No device-model bug is left standing** — real bus timing, real GIC priorities, and correct
+## dispatch code all confirmed individually correct. The 16-slot ring was sized against "~1 push
+## per 82ms," an assumption that silently broke once real RIIC2 timing made the scan-phase rate
+## ~40-80x denser.
+##
+## **Corrected, same session, per a sharp user challenge to the "density" framing**: real GIC
+## priority arbitration doesn't block a lower-priority interrupt just because something exists
+## at higher priority *anywhere in the system* — only while something higher is *currently
+## running* or *also pending at that exact instant*. Since each RIIC2 service is genuinely brief
+## (~150ns of the ~26.4µs gap, per the earlier per-instruction count), real hardware should have
+## ample idle time to interleave SGI 0 in nearly every gap. **The actual mechanism is QEMU's own
+## round-robin dispatch latency** — already measured, earlier in this thread, at **~65-90µs per
+## scheduled event**, which is 2.5-3.5x *larger* than the entire ~26.4µs gap real hardware would
+## offer. A real GIC delivers a pending interrupt in a handful of cycles; this emulation's own
+## delivery is gated behind a discrete round-robin pass costing tens of microseconds regardless
+## of how trivial the work is. **This pulls the "would real hardware also overflow?" question
+## back toward "likely at least partly an emulation-architecture artifact"** — not a clean,
+## equally-weighted three-way toss-up anymore, since the QEMU-specific latency floor exceeding
+## the real hardware gap is a concrete, mechanistic reason, not just one of several guesses.
+## Still not fully resolved without live hardware. Full derivation in README-history.md's newest
+## section.
+##
+## **Two follow-up questions checked, same session.** (1) Why does the real, individually-tiny
+## RIIC2 IRQ handling still cause a stall? Confirmed: no single interrupt is slow (real, logged
+## spacing of ~26.5us between events, matching the corrected ~340kHz bus formula exactly) — it's
+## the sheer *density* of many brief interrupts (one every ~26.5us during an active transfer)
+## that leaves SGI 0 (lowest priority) no continuous gap wide enough to slot into, not any one
+## handler's own duration. (2) What would real hardware do if this overflow occurred — reboot,
+## hang, something else? This firmware already has a real, documented "arm watchdog then spin
+## forever" restart idiom used elsewhere (`notes/firmware-update.md`) — but the overflow trap's
+## own code doesn't arm the watchdog itself (confirmed via direct listing: a bare `b .`, nothing
+## else nearby). Whether a watchdog is already armed by the time this early trap is hit is the
+## one genuinely open piece — real, if not fully conclusive, evidence points toward yes (the
+## watchdog registers are read and written by the dispatcher that runs *before* `cold_boot_hw_
+## init`), making a watchdog-forced reboot the better-supported guess over a silent permanent
+## hang, though not proven with this thread's usual rigor. This emulator has no watchdog device
+## modeled at all, so it can't test this either way. See README-history.md's newest section for
+## the full derivation and the concrete next step (check the real WTCSR/WRCSR unlock semantics
+## against the manual, or add a minimal WDT model and test empirically).
+##
+## **Two more follow-ups, same session, both answered with real, derived numbers, not estimates.**
+## (1) Precisely counted (from the real listings, not decompiled C) the per-byte RIIC2 interrupt
+## cost: 37 instructions for `irq_exception_dispatch`'s own entry/exit + 24 for the real RI ISR
+## (`0x2001dbcc`, resolved via the actual handler-table pointer, not guessed) = **61 instructions
+## per byte**. Against the real 26.44us byte-time, that's **~0.6% of available CPU cycles** — over
+## 99.4% idle between interrupts, confirming with an actual number that the mechanism was never
+## about raw CPU consumption, purely about SGI 0's own bottom-of-the-stack GIC priority losing a
+## continuously-repeated race. (2) The CPU clock (Iφ): a first attempt cross-checked a vendor
+## sample's `FRQCR` value against this project's confirmed `P0φ=32MHz`, then had to be retracted
+## when a second vendor sample showed the same `P0φ` is consistent with more than one `Iφ` (`IFC`
+## only scales the CPU core clock, not the shared peripheral dividers). **Then genuinely resolved,
+## not just re-assumed**: per the user's own real hardware fact (`P0_2`/`MD_CLK` pulled up →
+## clock mode 1, `USB_X1`) and their request for the actual configured values, searched `flash.bin`'s
+## own real boot code directly for the `strh` (16-bit store) instructions writing `FRQCR`/`FRQCR2`
+## — found them: **`CPG.FRQCR=0x1035`, `CPG.FRQCR2=0x0001`**, this firmware's own real, executed
+## values, not inferred from any external sample. Decoded: `IFC=1/1` → **Iφ=384MHz, genuinely
+## confirmed** (vindicating the first attempt's number, though not its flawed cross-check
+## reasoning). Full clock tree for this exact board: Iφ=384MHz, Bφ=128MHz, P1φ=64MHz, P0φ=32MHz.
+## Full derivation across all three passes (assumption → retraction → real confirmation) in
+## README-history.md's newest sections.
+
+## Status, 2026-09-10, new session — the deferred heat-map analysis actually run, then a fun
+## for-entertainment scif.c experiment, then the session's own biggest open question (the
+## dominant non-trap hot spot's "blind spot") chased down and fully RESOLVED with a live memory
+## dump: it's `base.dat`'s own real LZSS decompressor, already documented elsewhere in this
+## project from a completely different investigation. Verdict on the original heat-map question:
+## nothing malicious or anomalous found anywhere — every hot spot is an ordinary, explainable,
+## already-understood piece of boot work.
+
+**Ran the tool exactly as the prior session's handoff prescribed.** A 12s capture already showed
+the known ring-overflow trap (`0x200b93fc`) at 92.74% of retired instructions (even earlier than
+the prior session's own 8s/78.89% smoke test); a 30s capture confirmed it climbs to 97.95%. Per
+the handoff's own option (a)/(b) split: used **both** — a 4s pre-trap-only capture for a clean
+early-boot picture, and the 30s capture's full data with the trap (and `scif5_wait_hsk1_ready`)
+programmatically excluded to get a stable, larger-sample view of "everything else." Both
+approaches converged on the same top spots, a good cross-check that the picture is real and not
+an artifact of window choice.
+
+**RESOLVED, same session, follow-up per the user's own request ("let's get the memory dump from
+qemu for that early boot cluster") — no longer a blind spot at all.** Built `tools/
+dump_early_boot_ram.py`: a fully GDB-free, QMP-only (`-S` at reset, `cont`, then tight
+`info registers` polling until PC lands in range, then `pmemsave`) capture of guest RAM
+`0x20000000`-`0x20004fff`. **Two real QMP gotchas hit and fixed while building it, worth
+remembering for any future QMP-scripted tool**: (1) `pmemsave`'s filename argument must be
+quoted (`"..."`) — unquoted, the monitor's expression parser tries to evaluate it and chokes on
+the first non-hex-digit character ("invalid char 't' in expression"), even though `pmemsave`'s
+own `args_type` declares it a plain string; (2) `cont` triggers an asynchronous `RESUME` **event**
+on the same QMP socket, interleaved with command replies — a naive one-reply-per-request reader
+gets silently offset by one exchange from then on (each subsequent command's reply looks like the
+*previous* command's answer) unless events are explicitly skipped while waiting for a reply.
+
+**Disassembling the dump (`arm-none-eabi-objdump`, ARM mode) immediately identified real, valid
+code** — and it's a **direct, byte-for-byte match to `unpack_from_flash_to_mem()`**, the real LZSS
+decompressor this project already fully reverse-engineered in a completely separate, much earlier
+investigation (`notes/decompression-lzss.md`/`notes/base-loader.md`, from the firmware-container-
+format work) — same `0xfee`-cursor ring-buffer size, same control-bit literal/match dispatch, same
+match length/offset decode, same ring-buffer copy loop, all confirmed line-for-line against the
+disassembly. **This isn't a Ghidra coverage gap or a mystery at all**: `body.bin`'s own Ghidra
+project correctly starts at `0x20005000` because that's `body.bin`'s real, documented load
+address (per `notes/base-loader.md`) — the code below it belongs to `base.dat`, the flash
+bootloader, which decompresses the (LZSS-compressed) firmware body directly into RAM at
+`0x20005000` before jumping there. This emulation runs that real decompression for real, exactly
+as real hardware would. **The heat-map dominance is now fully explained, not just described**: a
+byte-at-a-time LZSS decoder unpacking a multi-hundred-KB firmware image is inherently a very large
+amount of raw instruction execution — genuinely the single most CPU-expensive phase of the whole
+captured boot window, but expected, understood, already-documented work, not a surprise and not a
+tooling blind spot. Full disassembly excerpt and the exact match against the documented algorithm
+in README-history.md's newest section.
+
+**Everything else resolved cleanly, and none of it is suspicious — all ordinary, boundable
+boot-time work**, several of it worth adding to this project's existing named-busy-wait list
+(`scif5_wait_hsk1_ready`, the ring-overflow trap, `FUN_2001dcc4`/`FUN_2001dd58`) for future
+sessions' own quick recognition:
+- **`0x2017c75c` → `FUN_2017c758`**, a plain `memset`-style byte-fill loop (`while(n--) *p++ = c`)
+  — ordinary library code, not a peripheral wait, just genuinely CPU-bound work (likely BSS/buffer
+  clearing somewhere in early boot).
+- **`0x2018648c` → tail of `FUN_20186480`**, a `memcpy`-style word-copy loop whose *second half* —
+  a near-identical second loop body reusing the same `r0` value each store instead of reloading —
+  was **never auto-disassembled by Ghidra** (shows as raw undefined bytes in the listing, though
+  manually decoding the bytes confirms a real `bne` back-branch to `0x2018648c`, i.e. a genuine
+  tight loop). This is the **same already-documented Ghidra disassembly bug** this project has
+  a known workaround for (see the project-status memory's "Ghidra disassembly-bug workaround"
+  note) showing up again, not a new tooling issue.
+- **`0x2002b04c` → inside `cold_boot_hw_init`**, a tight 3-instruction spin (`*counter=0; while
+  (*counter < 50);`) — a "wait ~50 ticks" delay implemented as a pure CPU busy-poll rather than a
+  sleep, presumably incremented by a periodic ISR elsewhere. A new, previously-unnamed member of
+  this project's busy-wait family, but unremarkable in kind — same pattern as everything else
+  already catalogued.
+- **`scif3_driver_pump_tick`/`scif3_frontpanel_identify_handshake`** (`0x200373ac`-`0x200374e3`,
+  cluster at `0x2003741c`/`0x200373ac`/`0x200374b0`/`0x200374bc`/`0x200374d4`) — a bounded,
+  one-shot boot-time "identify" handshake with the front-panel MCU (IC501) over SCIF3, polling a
+  status byte across two small timeout windows (75 and 12 ticks). Also new to this project's named
+  list, also unremarkable — a real UART handshake, correctly bounded, not a runaway spin.
+- **`FUN_20005dd8`/`FUN_20005d88`** (the `0x20005d88`-`0x20005dec` cluster) — confirmed as one
+  single busy-wait, exactly matching this session's own icount-block-splitting hypothesis for why
+  the same starting PC kept reappearing with different instruction counts. Mildly interesting on
+  its own terms (not concerning): the spin condition is computed via **VFP floating-point math**
+  (`VectorUnsignedToFloat` → scale → `VectorFloatToUnsigned` → compare against a threshold) rather
+  than plain integer comparison — an unusual implementation choice for a delay/wait primitive,
+  worth a curious look in some future session, but not itself a red flag.
+
+**Net verdict on the original question ("check if there's some suspiciously hot spots")**: no —
+nothing pathological, no unexpected runaway loop, no lead pointing at hidden/undocumented
+functionality. Every hot spot found is a mundane, explainable piece of boot-time init or a already
+partially-understood busy-wait. The one genuine actionable finding is the Ghidra RAM-coverage gap
+above, which is a *tooling* limitation on this project's own analysis, not a firmware finding.
+
+**Follow-up, same session, per the user's own question ("does the poller expect something else
+besides just the ack?")**: traced the full RX FSM (`scif3_frame_rx_statemachine` →
+`scif3_frame_dispatch_by_type`) and the handshake's caller, not just the two busy-wait loops.
+**The busy-wait itself needs nothing more** — both loops only test status *bits*, and the
+existing responder's precomputed state + real-terminator-byte delivery makes the *real* firmware
+dispatch code set those bits itself (confirmed by direct decompile, not just re-reading the prior
+comments). **But the handshake's own caller, `scif3_frontpanel_init_and_latch_version`, does want
+more**: right after the handshake returns, it unconditionally copies `g_scif3_rx_status_buffer`
+bytes 1-12 into `g_frontpanel_latched_status` (no comparison, no branch on content — confirmed via
+full decompile, so this can't corrupt boot or misroute anything) — bytes 1-3 of which
+`ui_version_screen_populate_fields` later formats as "Front CPU: x.xx". Per `scif3_frame_dispatch_
+by_type`'s own per-type write-offset logic, those specific bytes are only ever populated by real
+frame types 0x01/0x05/0x07/0x0b, not by the generic type-0 frame this project's responder loops
+back to satisfy the busy-wait — so those bytes stay unpopulated (almost certainly zero) under the
+current model. **Net**: a real, now-documented display-only correctness gap (a future "Front CPU"
+version-screen would show garbage/zero, not a real version) — cosmetic only, not currently
+reachable by any traced boot path (well before display/UI init), and not blocking. Worth revisiting
+only if UI/service-mode work or a later boot stage ever reaches that screen.
+
+**Second follow-up, same session — the shared front-panel status buffer connects directly to the
+MENU+FUNCTION service-mode entry combo already fully documented elsewhere in this project**
+(`notes/kernel-rtos-history.md`'s "Factory/service mode" section). `boot_check_mode1_combo`/
+`_mode5_combo`/`_challenge_response` (called from `cold_boot_hw_init`, right after `scif3_
+frontpanel_init_and_latch_version` returns — confirmed via full decompile of `cold_boot_hw_init`)
+read the *same* buffer (`DAT_2002b4d8`, offset `0xd` bits 3/4 = MENU+FUNCTION) our responder's
+canned ACK only ever partially populates (byte 0 = type, byte 1 = one dummy zero byte — never
+offset `0xd`/`0xe`). **Concretely**: this project's own virtual front-panel responder can never
+cause the emulated boot to enter `svc_mode1_idle_loop` (real service/factory mode) — the MENU+
+FUNCTION bits it would need to see set stay at whatever the buffer's zero-initialized state
+already was. Purely informational (nobody's asked to reach service mode via this emulator yet),
+but worth having written down given how directly it follows from this session's own trace, and
+relevant background if the "run custom code" goal ever wants to explore service-mode entry as a
+foothold.
+
+**Third follow-up, same session, purely for fun/entertainment per the user's own explicit
+request**: added a real, deliberately arbitrary reply delay (`FRONTPANEL_ACK_DELAY_NS`, `src/
+scif.c`, currently 1ms) to the virtual front-panel responder's ack, using the exact same `ptimer`
+idiom already established for the channel-5 DSP-link responder's own `DSP_ACK_DELAY_NS`/
+`dsp_ack_timer` — arm-on-TX-terminator, precompute-and-deliver-on-fire, same split as that
+existing mechanism. **Confirmed harmless to real (unplugged) boot behavior** at both an initial
+200µs value and this final 1ms value: 3/3 trials each, identical trap/`r0`/timing to the
+synchronous-ack baseline. **A genuinely interesting side effect on the hotblocks heat-map
+methodology itself, not on real boot behavior**: a fixed-real-second hotblocks capture (4s) that
+previously always showed the SCIF3 pump/handshake cluster instead showed *zero* hits for it,
+3/3 reproducible — not because the code stopped running, but because adding one new real
+scheduled `ptimer` event shifted which real-second slice of a *profiled* capture that code falls
+into (confirmed: the cluster reappears intact, similar total instruction cost, in a longer 12s
+capture). A neat, concrete demonstration of the same class of profiling-technique fragility this
+project has already documented for GDB-breakpoint perturbation and `-icount shift=auto` skew, now
+shown for the hotblocks plugin itself — worth remembering before trusting any single fixed-
+duration hotblocks capture as directly comparable to another once anything changes the guest's
+own scheduled-timer-event count.
+
+**Concrete next steps for whoever picks this up**: (1) the early-boot "blind spot" is now fully
+resolved (see above) — nothing further needed there unless someone wants to actually annotate
+`unpack_from_flash_to_mem()` in the separate `icom_loader.rep`/`icom.rep` Ghidra project (out of
+scope for this session, which only has `body.bin` open); (2) add the four newly-named busy-waits
+above to this file's Directory-layout/reference material alongside the existing three, so a future
+heat-map or trace session recognizes them on sight instead of re-deriving them; (3) the
+`FUN_20005dd8` VFP-based wait is a loose thread worth a closer look if a future session has spare
+curiosity, though not blocking anything; (4) `tools/dump_early_boot_ram.py`'s two QMP gotchas
+(quote `pmemsave`'s filename; skip async events like `RESUME` when reading command replies) are
+worth remembering for any future QMP-scripted tool in this project.
+
 ## Status, 2026-09-10, continued once more, same day — user asked for a firmware CPU-time "heat
 ## map" (which code churns the most CPU, to spot anything suspiciously hot). Feasibility checked
 ## and confirmed high-value; a working tool built and verified end-to-end; the actual analysis

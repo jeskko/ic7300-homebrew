@@ -109,6 +109,8 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h" /* QEMUBH -- see riic_ti_offer_bh()'s own comment */
 #include "qemu/module.h"
+#include "qemu/timer.h" /* qemu_clock_get_ns()/QEMU_CLOCK_VIRTUAL -- see
+                          * EEPROM_WRITE_CYCLE_NS's own comment */
 #include "qom/object.h"
 
 #include "rz_a1h.h"
@@ -193,6 +195,16 @@ struct RZA1HRiicState {
                           * read (the byte it was requested ahead of)
                           * completes, not immediately -- see file
                           * comment's RI/SPI ordering note. */
+
+    /* Real EEPROM write-cycle busy time (2026-09-10) -- see EEPROM_WRITE_CYCLE_NS's own comment.
+     * `eeprom_write_pending` tracks whether *this* transaction has sent at least one real
+     * write-data byte (RIIC_WAIT_RESTART's own DRT-write case) by the time STOP is seen -- a
+     * bare "write the address, then STOP" transaction (no data) doesn't trigger a real EEPROM
+     * write cycle at all, so shouldn't arm any busy time. `eeprom_write_busy_until_ns` is the
+     * `QEMU_CLOCK_VIRTUAL` deadline before which a new START's own address byte gets NACKed,
+     * exactly matching real serial-EEPROM "ACK polling" behavior. */
+    bool eeprom_write_pending;
+    int64_t eeprom_write_busy_until_ns;
 
     char *image_path;   /* QOM property, unchanged CLI usage (-global rza1h-riic.image=...) --
                           * read once, at realize() time, only to seed the real EEPROM slave's
@@ -333,6 +345,25 @@ static uint64_t riic_condition_time_ns(RZA1HRiicState *s, int kind)
     }
 }
 
+/* Real EEPROM write-cycle busy time (2026-09-10) -- added per the user's own follow-up on the
+ * ring-overflow thread ("let's add the delays and re-test"), see README-history.md's newest
+ * section for the full derivation: a live no-icount trace found the overflow driven by a ~36ms
+ * *burst* of real RIIC2 write-completion/restart interrupts, and QEMU's own `hw/nvram/
+ * eeprom_at24c.c` (the real EEPROM slave model this device drives, see the struct's own
+ * `eeprom_bus` comment) was found to model zero write-cycle busy time at all -- writes complete
+ * instantly from the bus's own perspective, paced only by this file's already-real per-bit clock
+ * timing. Every real serial EEPROM (this family included -- GT24C128B, see notes/
+ * diode-matrix.md) needs several real milliseconds after each write for its own internal
+ * cell-programming cycle, during which it NAKs any new START addressed to it -- the textbook
+ * reason real EEPROM drivers poll/retry ("ACK polling") before their next transaction. 5ms is
+ * the standard, near-universal "Write Cycle Time (byte or page)" spec across the whole 24Cxx
+ * family's datasheets (Atmel/ST/Microchip agree on this figure for this device class) -- not
+ * independently re-derived from a GT24C128B-specific datasheet page this session, but not an
+ * arbitrary placeholder either. See rza1h_riic_write()'s RIIC_WAIT_ADDR case for where this gets
+ * enforced (a synthetic NACK, not a real i2c_start_transfer() rejection -- eeprom_at24c.c itself
+ * has no concept of this busy state). */
+#define EEPROM_WRITE_CYCLE_NS 5000000
+
 /* Defers the actual qemu_irq_raise() for `irq_idx` by `delay_ns` -- see this file's own struct
  * comment. Only one such event is ever in flight at a time in this strictly-sequential state
  * machine; a fresh request simply restarts the timer for whatever's newest. */
@@ -359,10 +390,27 @@ static void riic_schedule_irq_delay(RZA1HRiicState *s, int irq_idx, uint64_t del
      *     bookkeeping, GIC IRQ delivery) rather than anything about this device model's own
      *     timing values. `TCG_KICK_PERIOD` (100ms) was checked and ruled out as the cause -- far
      *     too coarse to matter at this event rate. Not yet pinned to one exact QEMU function;
-     *     the *magnitude and event-type-independence* of the effect is what's confirmed. */
-    rza1h_debug("riic", "riic%u: schedule irq=%d delay_ns=%" PRIu64 " icount_raw=%" PRId64
-                " host_us=%" PRId64,
-                s->channel, irq_idx, delay_ns, icount_get_raw(), g_get_monotonic_time());
+     *     the *magnitude and event-type-independence* of the effect is what's confirmed.
+     *
+     * Gated explicitly (2026-09-10 follow-up), not left as a bare rza1h_debug() call like every
+     * other site in this file -- rza1h_debug() only gates its own *body* (the fprintf), but C
+     * always evaluates a function's arguments before the call, so icount_get_raw()/
+     * g_get_monotonic_time() were being paid on *every* schedule (potentially thousands per dense
+     * scan) even with RZA1H_DEBUG unset, unlike this file's other call sites (whose arguments are
+     * plain field reads, not function calls -- not worth gating the same way). This is a real,
+     * always-on hot-path cost, not a hypothetical one; explicitly checking rza1h_debug_enabled()
+     * first restores the "silent unless asked" cost this header's own comment promises. Evaluated
+     * per the ring-overflow/round-robin-overhead thread's own handoff (README.md's Status
+     * section) as a cheap, concrete overhead cut to try after concluding the originally-proposed
+     * read-batching design can't reduce round-robin *dispatch count* (N real per-byte guest ISR
+     * entries are unavoidable, batching only affects how many bytes are precomputed, not how many
+     * times the guest is woken) -- this doesn't touch dispatch count either, so expected to be
+     * marginal, but it's a real cost that was actually being paid, not a speculative one. */
+    if (rza1h_debug_enabled("riic")) {
+        rza1h_debug("riic", "riic%u: schedule irq=%d delay_ns=%" PRIu64 " icount_raw=%" PRId64
+                    " host_us=%" PRId64,
+                    s->channel, irq_idx, delay_ns, icount_get_raw(), g_get_monotonic_time());
+    }
 
     s->pending_irq = irq_idx;
     s->pending_irq_conditional = false; /* any plain (non-conditional) schedule call clears a
@@ -518,6 +566,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             rza1h_debug("riic", "riic%u: START condition", s->channel);
             s->phase = RIIC_WAIT_ADDR;
             s->sp_pending = false;
+            s->eeprom_write_pending = false; /* fresh transaction -- see EEPROM_WRITE_CYCLE_NS's
+                                                * own comment */
             s->sr2 |= SR2_START;
             riic_schedule_irq_delay(s, IRQ_STI,
                                     riic_condition_time_ns(s, RIIC_COND_START));
@@ -570,6 +620,15 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                 i2c_end_transfer(s->eeprom_bus);
                 s->phase = RIIC_IDLE;
                 s->sr2 |= SR2_STOP;
+                if (s->eeprom_write_pending) {
+                    /* Real EEPROM write-cycle busy time (2026-09-10) -- only a STOP following
+                     * 1+ real write-data bytes triggers a real internal cell-programming cycle;
+                     * see EEPROM_WRITE_CYCLE_NS's own comment. A bare "write the address, then
+                     * STOP" (no data) doesn't. */
+                    s->eeprom_write_busy_until_ns =
+                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + EEPROM_WRITE_CYCLE_NS;
+                    s->eeprom_write_pending = false;
+                }
                 riic_schedule_irq_delay(s, IRQ_SPI,
                                         riic_condition_time_ns(s, RIIC_COND_STOP));
             }
@@ -610,6 +669,21 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
         s->drt = value;
         switch (s->phase) {
         case RIIC_WAIT_ADDR:
+            /* Real EEPROM write-cycle busy check (2026-09-10) -- see EEPROM_WRITE_CYCLE_NS's own
+             * comment. A real, still-busy-programming EEPROM NAKs *any* address byte addressed
+             * to it, read or write -- checked before ever touching the real i2c core (there's
+             * nothing for eeprom_at24c.c itself to reject; it has no concept of this state), so
+             * this is a synthetic NACK, not a real i2c_start_transfer() rejection. Ends the
+             * transaction the same way a real NACK would (nothing here models a master retrying
+             * automatically -- that's real firmware's own job, exactly as on real hardware). */
+            if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->eeprom_write_busy_until_ns) {
+                rza1h_debug("riic", "riic%u: address NACKed -- EEPROM still in its real write "
+                           "cycle", s->channel);
+                s->sr2 |= SR2_NACK;
+                s->phase = RIIC_IDLE;
+                riic_schedule_irq(s, IRQ_NAKI);
+                break;
+            }
             /* Real hardware: bit0 of the address byte is the R/W
              * direction, exactly matching what this device itself just
              * told the driver to send via the STI handler (see file
@@ -691,6 +765,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             qemu_irq_lower(s->irq[IRQ_TI]);
             qemu_irq_lower(s->irq[IRQ_TEI]);
             i2c_send(s->eeprom_bus, value);
+            s->eeprom_write_pending = true; /* a real write-data byte was sent -- see
+                                              * EEPROM_WRITE_CYCLE_NS's own comment */
             riic_schedule_irq(s, IRQ_TEI); /* re-arm the same TEI-then-conditional-TI chain for
                                              * the next byte (or, if the guest is actually done,
                                              * this offer is simply never acted on -- see the
@@ -764,6 +840,8 @@ static void rza1h_riic_reset(DeviceState *dev)
     s->phase = RIIC_IDLE;
     s->mem_addr = 0;
     s->sp_pending = false;
+    s->eeprom_write_pending = false;
+    s->eeprom_write_busy_until_ns = 0;
     s->pending_irq = -1;
     s->pending_irq_conditional = false;
     ptimer_transaction_begin(s->event_timer);

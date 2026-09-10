@@ -253,6 +253,15 @@ struct RZA1HScifState {
     int      tx_frame_pos;   /* -1 = idle (waiting for 0xFE); 0 = next byte
                                * is the type byte; >0 = mid-frame */
     uint8_t  tx_frame_type;
+
+    /* Real pacing for the virtual front-panel responder's own ack (channel
+     * 3 only) -- 2026-09-10, for-fun/entertainment experiment per the
+     * user's own request, same idiom as dsp_ack_timer above. See
+     * FRONTPANEL_ACK_DELAY_NS's own comment. */
+    ptimer_state *frontpanel_ack_timer;
+    uint8_t  frontpanel_pending_ack_type; /* stashed for the timer callback,
+                                            * since ptimer callbacks only
+                                            * get `opaque`, not an argument */
 };
 
 #define REG_SMR  0x00
@@ -407,6 +416,25 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
  *     fidelity (an actually meaningful reply payload) isn't needed, only
  *     enough real structure for scif3_frame_dispatch_by_type's own length
  *     check to accept it and set its "real frame received" status bit. */
+/* Real pacing for the virtual front-panel ack (2026-09-10) -- added for fun/entertainment, per
+ * the user's own request, to see what effect it has on the earlier hotblocks heat-map's SCIF3
+ * cluster. Exactly the same idiom and the same honest caveat as DSP_ACK_DELAY_NS just below in
+ * this file: no real IC501 datasheet round-trip-time exists to derive this from (this is a
+ * virtual responder, not a modeled physical RL78), so this is a deliberately arbitrary
+ * placeholder, not a datasheet-derived value. Deliberately a full order of magnitude above
+ * DSP_ACK_DELAY_NS (50us) -- 1ms is a round, easily-reasoned stand-in for "an embedded 8/16-bit
+ * MCU's own interrupt-latency-plus-one-scheduler-tick" turnaround, not a tuned/measured value.
+ * First tried at 200us (2026-09-10): live-verified harmless to real boot behavior (identical
+ * trap/r0/timing, 3/3 unplugged trials) but the effect on a *profiled* capture was itself
+ * confounded by the profiling plugin's own overhead (see README-history.md's newest section) --
+ * raised here per the user's own follow-up request, to separate this value more clearly from
+ * DSP_ACK_DELAY_NS. Even if this exceeds the identify handshake's own loop-2 timeout margin (12
+ * ticks -- see scif3_frontpanel_identify_handshake's own decompile in README-history.md), that's
+ * confirmed harmless: loop 2's own timeout fallback just returns without further action, and
+ * scif3_frontpanel_init_and_latch_version's version-latch copy is unconditional either way (see
+ * this file's own front-panel-responder comment and README.md's heat-map Status section). */
+#define FRONTPANEL_ACK_DELAY_NS 1000000
+
 static void rza1h_scif3_frontpanel_ack(uint8_t type)
 {
     AddressSpace *as = &address_space_memory;
@@ -439,6 +467,23 @@ static void rza1h_scif3_frontpanel_ack(uint8_t type)
     status &= 0xFE; /* clear bit 0 -- "frame in progress", set by a real
                       * 0xFE byte's own processing */
     address_space_write(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
+}
+
+/* Fires FRONTPANEL_ACK_DELAY_NS after the outbound frame's terminator byte was seen -- does the
+ * precompute (rza1h_scif3_frontpanel_ack) and delivers the one real terminator byte through the
+ * normal FRDR/RXI path, exactly what the REG_FTDR case used to do synchronously in the same
+ * instruction. Same split as rza1h_scif5_dsp_ack_timer_fire below. */
+static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
+{
+    RZA1HScifState *s = RZA1H_SCIF(opaque);
+
+    rza1h_scif3_frontpanel_ack(s->frontpanel_pending_ack_type);
+    s->frdr = 0xFD; /* the one byte actually delivered through the normal
+                      * RXI path -- see rza1h_scif3_frontpanel_ack's own
+                      * comment for why the other two aren't */
+    s->rx_pending = true;
+    qemu_irq_lower(s->irq_rx);
+    qemu_irq_raise(s->irq_rx);
 }
 
 /* Virtual DSP-link responder (channel 5 only) -- see this file's own
@@ -674,16 +719,23 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
                     if (s->tx_frame_type == 0xF0 || s->tx_frame_type < 0x20) {
                         rza1h_debug("scif",
                             "scif3: front-panel responder: canned "
-                            "ACK for outbound type %#x", s->tx_frame_type);
-                        rza1h_scif3_frontpanel_ack(s->tx_frame_type);
-                        s->frdr = 0xFD; /* the one byte actually delivered
-                                          * through the normal RXI path --
-                                          * see rza1h_scif3_frontpanel_ack's
-                                          * own comment for why the other
-                                          * two aren't */
-                        s->rx_pending = true;
-                        qemu_irq_lower(s->irq_rx);
-                        qemu_irq_raise(s->irq_rx);
+                            "ACK for outbound type %#x (delayed %uns, "
+                            "for-fun experiment -- see FRONTPANEL_ACK_"
+                            "DELAY_NS's own comment)",
+                            s->tx_frame_type,
+                            (unsigned)FRONTPANEL_ACK_DELAY_NS);
+                        /* Deferred (2026-09-10, for-fun/entertainment
+                         * experiment) -- was a synchronous call to
+                         * rza1h_scif3_frontpanel_ack() right here; see
+                         * rza1h_scif3_frontpanel_ack_timer_fire's own
+                         * comment for why this is now a real, if
+                         * arbitrary, delayed reply instead. */
+                        s->frontpanel_pending_ack_type = s->tx_frame_type;
+                        ptimer_transaction_begin(s->frontpanel_ack_timer);
+                        ptimer_set_count(s->frontpanel_ack_timer,
+                                        FRONTPANEL_ACK_DELAY_NS);
+                        ptimer_run(s->frontpanel_ack_timer, 1); /* oneshot */
+                        ptimer_transaction_commit(s->frontpanel_ack_timer);
                     }
                     s->tx_frame_pos = -1;
                 }
@@ -786,6 +838,9 @@ static void rza1h_scif_reset(DeviceState *dev)
     ptimer_transaction_begin(s->dsp_ack_timer);
     ptimer_stop(s->dsp_ack_timer);
     ptimer_transaction_commit(s->dsp_ack_timer);
+    ptimer_transaction_begin(s->frontpanel_ack_timer);
+    ptimer_stop(s->frontpanel_ack_timer);
+    ptimer_transaction_commit(s->frontpanel_ack_timer);
 }
 
 static void rza1h_scif_realize(DeviceState *dev, Error **errp)
@@ -810,6 +865,15 @@ static void rza1h_scif_realize(DeviceState *dev, Error **errp)
     ptimer_transaction_begin(s->dsp_ack_timer);
     ptimer_set_freq(s->dsp_ack_timer, 1000000000);
     ptimer_transaction_commit(s->dsp_ack_timer);
+
+    /* Harmless to create on every instance, same rationale as dsp_ack_timer above -- only ever
+     * armed on the channel-3 instance's own REG_FTDR case. */
+    s->frontpanel_ack_timer = ptimer_init(rza1h_scif3_frontpanel_ack_timer_fire, s,
+                                          PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                          PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->frontpanel_ack_timer);
+    ptimer_set_freq(s->frontpanel_ack_timer, 1000000000);
+    ptimer_transaction_commit(s->frontpanel_ack_timer);
 }
 
 static void rza1h_scif_init(Object *obj)
