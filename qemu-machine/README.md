@@ -274,6 +274,75 @@ unlike the auto-power-on path's own idle state), so *without* a live press this 
 has nothing to wake it, which is now a correctly-modeled real property of this branch rather
 than a modeling gap.
 
+### Follow-up, same day — traced why a live press/release doesn't advance this branch any
+### further: it loops back to wait for another press, gated on a second, still-unmodeled
+### external IRQ. A real, concrete next blocker, structurally identical to the PWRK/IRQ7 case.
+
+Built `tools/trace_pwrk_wait_advance.py` (QMP-only: drives `pwrk-pressed` true→false live, then
+polls PC *and* three resolved live flag bytes at fine granularity) to answer the open question
+directly rather than guess from static analysis alone. Real user-manual text supplied mid-session
+confirmed the scope: turning the radio ON is a plain, short push (not a hold) — matching this
+branch (`power_state_pwrk_wait_and_bringup`) exactly, and cross-checked against the ISR's own
+debounce constant (`DAT_2002a0d8` = 90000, converted via the already-established 32MHz `P0φ`
+tick formula to **90ms** — a plain switch-bounce filter, not anything hold-duration-related). The
+2-second-hold-to-power-OFF and CLEAR+V/M-held-during-POWER "All Reset" combo the manual also
+describes are both real but out of scope here — different code paths, not chased this session.
+
+**First result, and a real self-correction**: a live press/release genuinely re-runs
+`pwrk_irq7_isr` (already known), but the debounce math was mis-derived by hand initially — a
+clean, bounce-free release actually leaves `DAT_2002a0dc+6` (the "press still active" byte, live
+address `0x203901ef`, resolved by reading the actual pointer each `DAT_2002axxx` symbol holds)
+set to **1**, not cleared to 0 as first assumed. Caught directly via live flag-byte polling
+(added to the tool) rather than trusted from the hand derivation — confirmed empirically across
+a full press/release cycle, `press_active` never left 1.
+
+**Real mechanism, fully traced**: after the ISR returns, `power_state_pwrk_wait_and_bringup`
+checks a second flag, `*DAT_2002a0e8` (live address `0x2039030f`, called `civ_state` in the
+tool) for the value `3` before it will run its CI-V/SCIF1 servicing sub-loop at all — the *only*
+place `press_active` can ever be cleared to 0, which is the *only* way the function reaches its
+finalize path (`*DAT_2002a104 = 1`, live address `0x20390311`). `civ_state` is set to `2` right
+before the wait loop and **never becomes 3** in any live trial — so every cycle falls through to
+`FUN_20005d2c()` and loops back to the top, re-entering the wait-for-a-new-press loop (confirmed
+live: PC visits `0x2002993c`/`0x2002994c`/`0x20029950`, the initial press-detect loop, right
+after the ISR returns) rather than progressing. This, not "stuck in the same wfi", is the real
+reason repeated presses don't help on their own.
+
+**Root cause of *why* `civ_state` never reaches 3, found by hex-searching for every literal-pool
+copy of its target address (`0x2039030f`) and decompiling each referencing function**: two
+near-identical handlers, `FUN_20186a58` and `FUN_20188d30`, each set `civ_state = 3` when
+`state==2` and a live port-read bit (`0xFCFE3200+4`, bit `0x40`) reads high. **Confirmed, via the
+real registration call site** (`0x20010fc0`: `mov r4,#0x23; ldr r1,=FUN_20186a58; bl
+0x200b9490` — the same generic ID-based handler-registration idiom as `pwrk_irq7_isr`'s own
+`register_event_handler`), that `FUN_20186a58` is genuinely registered as **GIC ID 35 (external
+`IRQ3`)**'s real interrupt handler (`FUN_20188d30` registers identically for GIC ID 36, `IRQ4`,
+at `0x2001200c`) — not dead code. **Neither `IRQ3` nor `IRQ4` exists anywhere in `gpio.c`'s
+external-IRQ front-end** (confirmed in `rz_a1h.c`: the front-end added this same day for `IRQ7`
+is the *only* `sysbus_connect_irq` off `gpio.c`) — this is a second, structurally identical gap
+to the one just fixed for PWRK, on a different pin.
+
+**A live check also ruled out the one alternate, software-only path**: `FUN_20029510` (called
+from inside the initial press-bringup sequence) posts the matching RTOS event flag in software
+(`FUN_200b8308(0x24)`) without needing real hardware `IRQ4` at all — but only when a small
+struct's `+0x60==0 && +0x5d!=0`. Read live via QMP: `DAT_2002a0ec`'s struct has `+0x60=0` and
+`+0x5d=0` in our current emulated environment, so the condition is false and this shortcut is
+never taken. **One genuinely lucky finding**: the port-bit condition `FUN_20186a58`/
+`FUN_20188d30` actually check (`0xFCFE3200+4` bit `0x40`) already reads **satisfied** in this
+machine's current, unmodified default (`0x00c0 & 0x40 != 0`, confirmed live) — meaning, unlike
+PWRK's own port-default fix, no register-default correction is needed here; the *only* missing
+piece is real hardware `IRQ3`/`IRQ4` delivery itself, exactly parallel to how `IRQ7` needed
+`ICR1`/`IRQRR` wiring.
+
+**Not yet done, the concrete next step if this is picked up again**: identify which real IC-7300
+pin/signal `IRQ3` (and/or `IRQ4`) is on — not obviously one of the front-panel connector's own
+already-identified signals (`FRES`/`P1_0`, `LRXD`/`P6_0`, `PWRK`/`P1_7`, `LTDX`/`P6_1`, per
+`notes/ic7300-signal-chain.md`), so this is likely a different board signal entirely; find the
+`IRQ3`-equivalent of `pwrk_irq7_config_init` (should exist, same pattern) to confirm its real
+`ICR1` sense/edge configuration; then extend `gpio.c`'s external-IRQ front-end the same way
+`IRQ7` was done (a second `qemu_irq` output, wired to GIC ID 35, plus a live QOM property to
+assert it for testing). `tools/trace_pwrk_wait_advance.py` is ready to re-verify once that
+exists — rerun it and watch `civ_state`/`press_active`/`finalized` (it already prints all
+three) rather than just PC.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
