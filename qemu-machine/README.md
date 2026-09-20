@@ -14,6 +14,37 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-21 — REFRAMING THE ACTIVE FRONTIER: proven that `main_idle_loop` (the real
+## "operate the radio" loop) is NOT reached even in the capture that reaches confirmed
+## `idle_loop_wfe_spin` — read this before touching the ring-overflow/SD-card frontier below,
+## it may sit before that frontier in the actual boot sequence
+
+Found while tracing `cold_boot_hw_init`'s own subroutines (see `notes/kernel-rtos.md`): right
+after `cold_boot_hw_init` returns, `cold_boot_mode_dispatch` (`0x2002b1c8`) switches on a mode
+byte (`DAT_2002a4a4`, driven by the already-documented `system_mode_request_dispatch` in
+`notes/kernel-rtos-history.md`'s "SCIF1 service-mode protocol" section) between 4 different
+idle-loop variants — `svc_mode1_idle_loop`/`svc_mode_idle_loop`/`svc_mode5_idle_loop`, or, by
+default, **`main_idle_loop`**, the genuine top-level loop (front panel, CI-V, digital-mode
+decode, NVRAM writeback, UI input — everything). `main_idle_loop` calls a real RTC read over
+**RIIC1** on every single iteration.
+
+**Empirical proof `main_idle_loop` isn't reached**: re-ran the PWRK-hold capture (the one that
+reaches confirmed `idle_loop_wfe_spin`) for a full 60s with `RZA1H_DEBUG=riic`. Result: 13078
+lines of RIIC2 (EEPROM) traffic, **zero** RIIC1 lines. `main_idle_loop` would produce RIIC1
+traffic every iteration if reached — it isn't being reached, despite `idle_loop_wfe_spin` being
+hit. **The real open question, not yet resolved**: does `idle_loop_wfe_spin` distinguish which of
+the 4 loops we're actually in at all, or is it the shared low-level "wait for next tick"
+primitive every one of the 4 loops calls identically at their own top wait-condition (in which
+case this result is consistent with being stuck inside `main_idle_loop`'s own entry wait, never
+reaching its body) — this is genuinely unchecked and the first thing to resolve.
+
+Full derivation, concrete numbered next steps, and the related lower-priority findings (RIIC1
+currently gets a fake EEPROM slave instead of a real RTC model; two more unwired external-IRQ
+gaps; the NVRAM verify cascade's `all_reset`-vs-`partial_reset` outcome not yet checked against
+our own EEPROM image) are in this session's own persistent memory
+(`icom-main-idle-loop-not-reached`), plus `notes/kernel-rtos.md`'s own `cold_boot_hw_init`
+sections for the static-analysis side of it.
+
 ## Status, 2026-09-20 — the ring-overflow thread's core mechanism is FOUND, via two rounds of
 ## fresh-eyes Opus review plus live QEMU `gic_*` tracepoint instrumentation (a new, zero-
 ## perturbation capability). **It's a real device-model bug in `riic.c`, not a GIC issue at
