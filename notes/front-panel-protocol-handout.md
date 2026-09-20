@@ -248,3 +248,73 @@ condition.
    side (`DAT_20037590 + type` writes into the shared front-panel status struct at `0x203dcab6`) —
    if the main CPU ever sends a type it can also *receive*, that's a strong hint the same frame
    shape is used bidirectionally for that specific status, e.g. echoed/acknowledged state.
+
+## 2026-09-20 follow-up: step 1 done — the `bit 0x20`/type=0x00 frame's real payload buffer is
+## found, live, and two of its fields have real, named writers tied to SVC/service-mode state,
+## not general key/encoder telemetry.
+
+**Method**: booted a plain-auto-boot QEMU instance with `-qmp unix:/tmp/qemu_fp.sock,server,nowait`
+(no GDB, zero perturbation risk, this project's established preference) and
+`RZA1H_DEBUG=scif3`, captured the same four frames as before within the first ~10s, then read
+`DAT_200375b4`/`DAT_200375b8`'s live stored pointer values directly via `xp /1xw` over QMP (see
+the plain word-read snippet added this session, close cousin of `tools/qmp_read_mem.py` which
+only does bytes).
+
+**Result — three independent literal-pool symbols resolve to the exact same live address**,
+`0x203dca54`, confirming this project's own standing "same address via a different `DAT_` slot"
+warning applies here too:
+- `DAT_200375b8` (`scif3_driver_pump_tick`'s memcpy source for the bit-0x20/type=0x00 frame)
+- `DAT_20042688` (target of the newly-named `scif3_status_svcmode5_flag_set`/`_clear`)
+- `DAT_20013090` (`iVar3` inside `scif1_svc_status_field_switch`)
+
+A live 48-byte read at `0x203dca54` matched the earlier captured frame's payload byte-for-byte
+at every offset except `+1`, which had advanced from `0x00` (at capture time, ~10s earlier in
+the same boot) to `0x01` — direct, live confirmation this buffer is genuinely dynamic status,
+not a static/config blob.
+
+**Two fields now have real, named producers** (both renamed in Ghidra, plate comment added at
+`0x203dca54` itself):
+- **Offset+0** = an SVC-mode-5 (factory/service mode) active flag. Set to `1` by
+  `scif3_status_svcmode5_flag_set` (`0x20041d8c`, was `FUN_20041d8c`), cleared by
+  `scif3_status_svcmode5_flag_clear` (`0x20041dd8`). Callers: `svc_mode5_idle_loop` (name
+  already existed from an earlier session — the "mode 5" naming lines up with the already-
+  documented `boot_check_mode5_combo` MENU+FUNCTION factory-mode entry, see
+  `notes/kernel-rtos.md`) and `scif1_svc_status_field_switch`'s own `case '2'`.
+- **Offset+1** = written directly inside `scif1_svc_status_field_switch` (`0x20012ddc`, an
+  **SCIF1** — the service-mode link, not SCIF3 — inbound command-byte dispatch switch): chars
+  `'('`→`1`, `')'`→`4`, `'*'`→`2`, anything else resets it to `0`. **This is the exact field
+  caught changing live during a plain, no-service-mode-interaction auto-boot** — meaning this
+  SCIF1-side dispatcher's default/reset path runs during ordinary boot, not only under
+  deliberate factory-mode entry.
+
+**New, concrete, previously-unknown cross-link**: at least one `SCIF3` outbound status field is
+populated from **`SCIF1`** (service-mode link) command handling, not from key/encoder/touch
+input at all. This reframes part of the original "does button data reach the main CPU over
+`SCIF3`" question from earlier in this handout — some of `SCIF3`'s outbound traffic is clearly
+about *service-mode/status echo*, a separate concern from physical-input reporting, and the two
+should probably be tracked as separate sub-questions from here on.
+
+**A second, related producer path found but not fully traced**: `scif3_dynqueue_post_and_flush`
+(`0x2002aed8`, was `FUN_2002aed8`) sets a bit in a *third*, still-unidentified struct
+(`DAT_2002a10c+1 |= 1`) then calls `scif3_dynqueue_flush_sync` (`0x2003754c`, was
+`FUN_2003754c` — the function this handout's own prior section flagged as "`FUN_2003754c`'s
+`FUN_20006308`-driven queue"). Its real body is simpler than assumed: it just sets the
+pump's `bit 0x10` flag and synchronously loops `scif3_driver_pump_tick()` + a queue-non-empty
+check (`FUN_20037514`) until drained — a "post one item, then flush now" helper, not the
+enqueue itself. **Not yet found**: what `DAT_2002a10c+1` actually is, or where the real
+`FUN_20006308` enqueue call (the one matching pump_tick's own dequeue) lives — `scif3_dynqueue_
+post_and_flush` doesn't call `FUN_20006308` directly, so something else must populate whatever
+queue slot it's implicitly referring to. Worth a fresh look specifically for `FUN_20006308`'s
+other call sites (only its dequeue use inside `scif3_driver_pump_tick` has been traced so far).
+
+**Next-session plan, in order**:
+1. Find `FUN_20006308`'s other callers (the actual enqueue side) — `references_to` on
+   `0x20006308` directly, something this session didn't get to.
+2. Resolve `DAT_2002a10c`'s live target and check whether it's a fourth alias for `0x203dca54`
+   or a genuinely separate struct — same "resolve the pointer live" technique used here.
+3. Trace `scif1_svc_status_field_switch`'s own 3 callers (`0x2001302c`/`0x20013048`/`0x2001306c`)
+   to find where the inbound SCIF1 command byte (`*DAT_20013080`) actually originates — likely
+   `scif1`'s own frame-dispatch-by-type analogue, not yet named/traced this session.
+4. The original bytes-2-through-32 of the 33-byte buffer (the `67 80 90 a7 af c3 ca dc 86 aa 20
+   08` block, then trailing zeros) are still completely unaccounted for — same live-pointer-then-
+   `references_to` technique against `0x203dca54+2` etc. once the above threads are closed.

@@ -607,6 +607,17 @@ notes file for the exact bytes, which of `scif3_driver_pump_tick`'s three real s
 likely corresponds to, and the ordered next-session plan (resolve `DAT_200375b4`'s live pointer to
 find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` drives).
 
+### Follow-up, 2026-09-20, continued — that plan's step 1 done: the type=0x00 frame's real payload
+### buffer resolved live (QMP-only, `xp /1xw`, no GDB) to `0x203dca54`, confirmed via three
+### independent `DAT_` symbols aliasing the same address, and two of its fields have real, named
+### producers now (renamed in Ghidra + a plate comment at the address). **New, concrete finding**:
+### at least one `SCIF3` outbound status field is populated from **`SCIF1`** (service-mode link)
+### command handling, not physical-key/encoder input — `scif3_status_svcmode5_flag_set`/`_clear`
+### (factory/service-mode active, tied to the already-known `svc_mode5_idle_loop`) and a byte
+### written inside `scif1_svc_status_field_switch` (the exact field caught changing live during a
+### plain boot). Full detail, plus the still-open `FUN_20006308` real-enqueue-site thread this
+### surfaced, in `notes/front-panel-protocol-handout.md`'s own 2026-09-20 follow-up section.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
