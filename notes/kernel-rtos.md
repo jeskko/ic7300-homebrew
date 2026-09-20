@@ -345,7 +345,7 @@ front-panel-protocol thread.
 | `FUN_200291d8()` → conditionally `nvram_block_3e80_verify_16b`, `cold_boot_reset_mode_frontpanel_flag_check`, `nvram_block_3e80_verify_7b` → `all_reset_system_mode_action` / `partial_reset_system_mode_action` | ✅ **resolved this sweep — the cold-boot reset-mode decision tree** | A cascade of NVRAM settings-block integrity checks (see below) decides between a full and a partial system reset at cold boot. `cold_boot_reset_mode_frontpanel_flag_check` (renamed from `FUN_2002aeb4`) reads bits `0x40`/`0x2` of the confirmed SCIF3 front-panel RX status struct's offset `+0xf` — a real, previously-unknown link between this decision and the front-panel protocol thread. `FUN_2002aeac` (not renamed, trivial) is a stub that unconditionally returns 0. |
 | `nvram_block_3fc0_verify`, `nvram_block_3fc0_repair_write`, `nvram_block_3e80_repair_write`, `nvram_block_3df0_verify`, `nvram_block_3df0_repair_write_a`, `nvram_block_3df0_repair_write_b`, `nvram_settings_180b_save`, `nvram_settings_180b_load`, `nvram_settings_180b_restore_rom_defaults` (all renamed this sweep, from `FUN_200291d8`/`FUN_20029178`/`FUN_200291a8`/`FUN_200292bc`/`FUN_20029198`/`FUN_200291c8`/`FUN_2000790c`/`FUN_20006c74`/`FUN_20008328`) | ✅ **resolved this sweep — a real NVRAM/EEPROM settings-integrity subsystem** | Built on two newly-identified generic primitives, `nvram_read_at_offset`/`nvram_write_at_offset` (renamed from `FUN_2001e510`/`FUN_2001e484` — read/write N bytes at a fixed NVRAM offset through this project's own RPC-backed persistence layer) and `memcmp_generic` (renamed from `FUN_2017c81e`, standard 3-way compare). At least 3 independent fixed-offset settings blocks (`0x3df0`, `0x3e80`/16000, `0x3fc0`), each with its own verify(read+compare)/repair(write) pair, plus a dedicated 180-byte block with save/load/restore-factory-defaults functions. `restore_rom_defaults` copies from a separate ROM-resident default source — the same "seed from a fixed constant" pattern found for the front-panel status buffer earlier the same day. |
 | `nvram_wearleveled_ring_save` / `nvram_wearleveled_ring_load` (renamed from `FUN_2001f7b4`/`FUN_2001f6bc`) | ✅ resolved this sweep | A genuine **wear-leveled EEPROM ring buffer** — base offset `0x2000`, 64-byte slots, 8-slot rotating index (`if (index > 7) index = 0`). Real evidence this firmware does EEPROM wear-leveling somewhere, not just flat fixed-offset storage. |
-| `nvram_multirecord_load_and_verify`, `nvram_writeback_pump_tick`, `nvram_writeback_flush_sync` (renamed from `FUN_2001a104`/`FUN_2001a1ec`/`FUN_2001a2f4`) | ✅ resolved this sweep | A third NVRAM cluster: loads 4 records via chunked `nvram_read_at_offset` calls, computes a total 32-byte-page count across them, and calls an unexplored `FUN_2017c618` (likely a checksum/CRC, given the `0x28a` constant passed) to validate. `nvram_writeback_pump_tick` (the diff-and-send pump, found earlier this session in the front-panel-buffer investigation and initially mis-scoped as narrowly SCIF3-related) and `nvram_writeback_flush_sync` (a synchronous drain loop, structurally identical to `scif3_dynqueue_flush_sync`) are this cluster's own send/flush pair — confirming this whole family is a **generic settings-writeback mechanism reused across multiple subsystems**, not front-panel-specific. |
+| `nvram_multirecord_load_and_verify`, `nvram_writeback_pump_tick`, `nvram_writeback_flush_sync` (renamed from `FUN_2001a104`/`FUN_2001a1ec`/`FUN_2001a2f4`) | ✅ resolved this sweep | A third NVRAM cluster: loads 4 records via chunked `nvram_read_at_offset` calls, computes a total 32-byte-page count across them, and divides `0x28a` by that count via `udiv32_generic` (renamed 2026-09-21 — **not a checksum/CRC as first guessed**, a plain unsigned-division routine; see the follow-up section below). `nvram_writeback_pump_tick` (the diff-and-send pump, found earlier this session in the front-panel-buffer investigation and initially mis-scoped as narrowly SCIF3-related) and `nvram_writeback_flush_sync` (a synchronous drain loop, structurally identical to `scif3_dynqueue_flush_sync`) are this cluster's own send/flush pair — confirming this whole family is a **generic settings-writeback mechanism reused across multiple subsystems**, not front-panel-specific. |
 | `diode_matrix_cold_boot_init` (renamed from `FUN_2003c530`) | ✅ resolved this sweep | Calls the already-known `scan_diode_matrix_p5`/`sync_diode_matrix_to_eeprom`, then classifies a status word into a 0/1/2 result stored into another struct. The diode-matrix cold-boot bootstrap entry point. |
 | `FUN_2002c1e0` | 🟡 shape known | Clears an 808-byte (`0x328`) struct via a `memset`-shaped helper (`FUN_2017c766`, not yet renamed — likely `memset_generic`, sibling to `memmove_generic`/`memcmp_generic`), then two more unexplored calls. Runs as part of the `0x3df0` NVRAM-block repair path. |
 | `FUN_2000a0a8`, `FUN_2000a264`, `FUN_2006756c`, `FUN_20035af4` | 🟡 shape known | Small per-field struct clears, subsystems not identified. Not renamed. |
@@ -357,3 +357,98 @@ peripheral behind the RTC-suspected bit-bang cluster or the two GIC-ID-0x26/0x21
 functions) — those are real, concrete next steps for a follow-up session, not attempted here.
 Ghidra state: 21 renames, several plate comments (notably at `cold_boot_hw_init` itself,
 `0x200605fc`, `0x200293c8`, `0x2007ed9c`), all saved.
+
+## Follow-up, 2026-09-20/21 — independent Opus review of the sweep's own uncertain items. Three
+## hypotheses above were WRONG and are now replaced with confirmed answers; two are now
+## confirmed; two are honestly bounded with proof they can't go further without live RAM access.
+
+Requested specifically to stress-test the sweep's own shakiest calls before they hardened into
+assumed fact — this project's own standing discipline of getting a second opinion on uncertain
+findings. Full detail in the request/response; summarizing the corrected state here.
+
+**Corrected: `FUN_200293c8`/`FUN_200506d0` are external-IRQ pin config, not a 6-channel
+peripheral.** The "6 similarly-offset struct instances" reading was a misread — those six offsets
+are six different GPIO port-mux register groups (PBDC/PFC/PFCE/PFCAE/PIPC/PMC) at the *same* port
+offset, the identical septet idiom already documented on `pwrk_irq7_config_init`, sharing its own
+base pointers. Cross-checked three independent signals (port-mux bit, `INTC.ICR1` sense bits, GIC
+ID) and derived `IRQ_n = GIC ID 32+n` from this project's own confirmed IRQ7=39/IRQ4=36/IRQ3=35
+map: `0x200293c8` configures **external IRQ6** (`P1_6`), `0x200506d0` configures **external IRQ1**
+(`P1_1`) — renamed `ext_irq6_config_init`/`ext_irq1_config_init`. Bonus cross-link:
+`notes/memory-map.md` already has RTC (`IC351`)'s `RTC_IRQ` on `P1_1`-`P1_3`, so **IRQ1 is the RTC
+interrupt line** — nicely ironic given the next finding. Note `ext_irq1_config_init` never
+registers/unmasks a handler (config only) — where that happens is still open.
+
+**Corrected: the RTC bit-bang hypothesis for `FUN_200605fc` was WRONG — it's SSIF (I2S audio)
+bring-up.** Resolved its literal pool directly: `0xE820B000` = `SSICR_0` (already in
+`notes/memory-map.md:189`, whose own docs note `0x2005fdb4` as SSIF0/1's shared init — and this
+function's third instruction calls exactly that), `0xFCFE3200` = `PPR0` (pin-*read* register, so
+the ~20 wait loops are startup pin-state synchronization on I2S clock/word-select lines settling,
+not a bit-banged data protocol), and the DMAC/MTU2-status addresses referenced alongside match
+`notes/ic7300-signal-chain.md`'s own already-noted SSIF+DMAC pairing. The `32000` passed to
+`FUN_20063448` is a coincidental MTU2 interval unrelated to OSTM0's own `CMP=32000` tick source —
+confirmed by decompiling it (writes an MTU2 compare-match target one interval ahead). Independent
+confirmation RTC can't be the answer: the real RTC (`IC351`) is an I2C part on `RIIC1`, not
+bit-banged — its only GPIO tie-in is the `RTC_IRQ` pin just resolved above, a completely different
+function. The misleading RTC plate comment on `FUN_200605fc` has been replaced with this finding;
+`FUN_2006099c` (part of the same SSIF cluster) decompiled and confirmed as a state-block reset,
+not a separate subsystem. `FUN_200b7020`'s earlier guessed connection to this cluster is
+**unsupported** — retracted, no evidence found either way.
+
+**Confirmed: `FUN_2007ed9c`/`FUN_2007ede0` really do belong to `ui_graphics_lifecycle_task`** —
+by real data this time, not the original address-proximity guess. Both store message-buffer
+handles into the same struct (`0x20390634`), which `references_to` shows is read from inside
+`ui_graphics_lifecycle_task`'s own address range. Not renamed (what the buffers carry is still
+unknown), but the linkage itself is now a confirmed fact, documented in plate comments.
+
+**Resolved, all three "never decompiled" candidates — two guesses were wrong**:
+- `FUN_2017c618` is **not a checksum** — it's a textbook unsigned 32-bit restoring-division
+  routine (an `__aeabi_uidiv` equivalent). Renamed `udiv32_generic`. The `nvram_multirecord_load_
+  and_verify` call site is computing a record/page-count division, not an integrity check —
+  correcting that part of the original NVRAM-cluster writeup.
+- `FUN_2017c766` is confirmed a zero-fill wrapper tail-calling the *real* 3-argument memset,
+  found in the same pass: `FUN_2017c758` (arg order `(dst, count, fill)` — renamed `memset_generic`,
+  confirmed with a nonzero fill from another caller), so `FUN_2017c766` becomes
+  `memset_zero_generic`. Sibling to `memmove_generic`/`memcmp_generic`, same runtime cluster.
+- `FUN_20024738` is a **signature-keyed NVRAM boot-mode dispatcher** — reads a 16-byte tag from
+  NVRAM offset `16000`, walks a 4-entry signature+function-pointer table, and calls the match.
+  Connects directly to `FUN_2002aeac` below (same NVRAM offset). Not renamed; enumerating its 4
+  table entries would name all 4 boot modes — flagged as a good next step, not attempted.
+
+**`FUN_2002aeac` reassessed: not merely a trivial stub — an always-false predicate that's
+load-bearing.** Its single, always-`0` return value is genuinely stored and branched on inside
+`cold_boot_hw_init`, permanently selecting one path over an alternative. That alternative's own
+sibling branch ends by writing the *same* 16-byte NVRAM slot `FUN_20024738` (above) reads and
+dispatches on — offset `16000` is a persistent "what should the next boot do" request slot,
+written by reset paths and consumed by the dispatcher. Read as a plausible (not proven)
+deliberately-disabled feature gate, not dead/meaningless code — a genuine constant wouldn't
+normally be persisted and branched on this way.
+
+**Confirmed: `FUN_20005dd8`'s delay unit is microseconds, on `OSTM1` (not `OSTM0`, not
+`dly_tsk`).** Resolved the full register set (`OSTM1TS`/`OSTM1TT`/`OSTM1CNT` at `0xFCFEC414`/
+`...18`/`...04`) and the exact comparison (`us*32 <= counter`, i.e. real microseconds at the
+confirmed 32MHz `P0φ`). So `cold_boot_hw_init`'s own three calls are `10ms`, `30ms`, `100µs` —
+not ticks. Renamed the whole cluster: `ostm1_busywait_delay_us`/`ostm1_counter_start`/
+`ostm1_delay_target_reached`/`ostm1_counter_stop`.
+
+**Honestly bounded, not resolved further — proven to need live RAM access, not more static
+work**: `FUN_2000a0a8`'s (`0x20396AC8`), `FUN_2000a264`'s (`0x20390028`), and `FUN_20035af4`'s
+(`0x203901FD`/`0x203FC621`) target addresses each appear in **exactly one** literal pool
+image-wide (their own) — a real, checked negative result, not "didn't look hard enough." Two
+others got partial answers: `FUN_200b47f0` writes `PSR1` (Port Set/Reset), plausibly driving pin
+`P1_0` high (PSR base inferred, not manual-confirmed); `FUN_200b4800`'s target (`0x203DEF00`) is
+the firmware's big shared global state block (36 literal-pool references image-wide, `cold_boot_
+hw_init` is its only direct caller here); `FUN_2006756c`'s target (`0x2039041C`) is a small
+feature-state block with 2 real readers, one of them the front-panel status-frame builder — the
+specific feature itself still unnamed. Concrete next step for all of these, not attempted:
+a QEMU RAM watchpoint on the unresolved addresses (this project's own established technique,
+see `qemu-machine/README-history.md`'s GDB-perturbation entries for how to do this safely).
+
+**Two caveats the reviewing agent flagged on its own work, worth a manual check before treating
+as fully hardened**: the `P1_6`/`P1_1` pin identifications rest on a stride-4 port-numbering
+pattern derived from 2 already-confirmed data points, not read directly from the RZ/A1H manual;
+`FUN_200b47f0`'s `PSR1` base address (`0xFCFE3100`) is inferred from confirmed neighboring
+registers, same caveat.
+
+Ghidra state: 9 further renames, 17 further plate comments (2 of which explicitly replace
+earlier, now-corrected comments — `0x200605fc`'s RTC guess and `0x2007ed9c`'s proximity-only
+guess), all saved.
