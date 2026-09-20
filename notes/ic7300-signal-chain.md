@@ -391,15 +391,40 @@ Ghidra:
   `DAT_2002a0dc+6` status byte.
 
 **Important scoping caveat**: this whole mechanism sits on `power_state_pwrk_wait_and_bringup`, one of
-two branches `FUN_2002b29c`'s power-state dispatcher chooses between — the other is
-`cold_boot_mode_dispatch` → `cold_boot_hw_init`, the RIIC2/EEPROM path where `qemu-machine`'s emulation
-currently traps (see `qemu-machine/README.md`). A genuine cold power-on takes the `cold_boot_hw_init`
-branch and never reaches this PWRK-wait loop at all — it's specifically the warm/standby-wake path,
-taken when the CPU is already running and software must poll for the button press rather than have
-hardware bring-up proceed unconditionally. So the emulator isn't "close" to this point in the sense of
-sequential progress along one boot path; it's on the *other* branch entirely, and getting the emulator
-here would need forcing the dispatcher's `bVar8`/`*DAT_2002b4d4` condition down the warm-wake side
-rather than just running further.
+two branches `power_state_dispatch`'s (renamed from `FUN_2002b29c`) power-state dispatcher chooses
+between — the other is `cold_boot_mode_dispatch` → `cold_boot_hw_init`, the RIIC2/EEPROM path where
+`qemu-machine`'s emulation currently traps (see `qemu-machine/README.md`). A genuine cold power-on takes
+the `cold_boot_hw_init` branch and never reaches this PWRK-wait loop at all — it's specifically the
+warm/standby-wake path, taken when the CPU is already running and software must poll for the button
+press rather than have hardware bring-up proceed unconditionally. So the emulator isn't "close" to this
+point in the sense of sequential progress along one boot path; it's on the *other* branch entirely, and
+getting the emulator here would need forcing the dispatcher's `bVar8`/`*DAT_2002b4d4` condition down the
+warm-wake side rather than just running further.
+
+**The cold-boot-vs-wait-for-PWRK choice is EEPROM-backed, confirmed 2026-09-20 — matches the user's own
+real-hardware observation exactly** (the radio remembers whether it was powered on when it lost power,
+and auto-powers-on in that case; otherwise it waits for the power key). Traced the full round trip:
+
+- **EEPROM offset `0x3e00`, 1 byte, bit 7 = "was the radio on".**
+- **Read** at every boot by `pwrk_power_state_read_from_eeprom` (renamed from `FUN_2002b274`,
+  `0x2002b274`) — called from `power_state_dispatch` immediately after `riic2_driver_init()` — via the
+  already-known RIIC2 EEPROM read wrappers (`FUN_2001e510`/`FUN_2001dd58`), into `DAT_2002b504`. Bit 7
+  of that byte (`*DAT_2002b504 >> 7`) directly becomes `power_state_dispatch`'s own decision variable
+  (`bVar8`) in the two branches that aren't already-gated by the "already brought up once" RAM flag —
+  `bVar8 == 1` sends the dispatcher into `cold_boot_mode_dispatch` (auto power-on); `bVar8 == 0` sends it
+  into `power_state_pwrk_wait_and_bringup` (wait for `PWRK`).
+- **Written** via `pwrk_power_state_write_to_eeprom_if_changed` (renamed from `FUN_20029c60`,
+  `0x20029c60`) — compares the live flag byte (RAM address `0x20390303`, reached via the
+  `DAT_2002a114` literal-pool pointer) against a shadow copy and only actually calls the EEPROM write
+  wrapper (`FUN_2001e484`/`FUN_2001dcc4`, same offset `0x3e00`) if it changed — a write-through cache
+  that avoids wearing the EEPROM on every check.
+- The live flag itself is set to `1` (`*DAT_2002a114 |= 0x80`) by `cold_boot_hw_init` right after
+  entering the auto-power-on path, and cleared to `0` (`*DAT_2002a114 &= 0x7f`) by
+  `power_state_pwrk_wait_and_bringup` right as it enters the wait-for-`PWRK` path — both immediately
+  followed by a call to the write-if-changed function above, so the EEPROM byte tracks the radio's
+  actual power state continuously, not just at a clean shutdown.
+
+All renamed and plate-commented in the live Ghidra project (saved).
 
 ## Schematic sheet map (2026-08-27 sweep)
 
