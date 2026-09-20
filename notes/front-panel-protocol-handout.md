@@ -318,3 +318,57 @@ other call sites (only its dequeue use inside `scif3_driver_pump_tick` has been 
 4. The original bytes-2-through-32 of the 33-byte buffer (the `67 80 90 a7 af c3 ca dc 86 aa 20
    08` block, then trailing zeros) are still completely unaccounted for — same live-pointer-then-
    `references_to` technique against `0x203dca54+2` etc. once the above threads are closed.
+
+## 2026-09-20 follow-up #2, same day — the `bit 0x10` "dynamic-type queue" was never a queue: it's
+## a delta/diff encoder, and this single finding fully explains the mystery `type=0x01` frame.
+
+**What `references_to` on `0x20006308` turned up**: 4 call sites total. One is the already-known
+`scif3_driver_pump_tick` use; the other 3 (`FUN_2000790c`, `FUN_2001a1ec`, `FUN_2001f7b4`) are in
+a completely unrelated part of the binary and all feed into `FUN_2001e484`→`FUN_2001dcc4`, a
+32-byte-chunked request/wait RPC that looks like NVRAM/EEPROM settings write-back (header fields
+are literally offset+length+data, command code `0x14`, a real `FUN_20062c1c` RTOS wait for
+completion) — **not traced further, flagged only so a future session doesn't re-confuse the two**.
+`0x20006308` is a genuinely generic, widely-shared primitive, not a SCIF3-specific queue.
+
+**Decompiling `0x20006308` itself settles what it actually does**, and it isn't a dequeue at all
+— it's **memcmp-shaped**: walks two buffers forward while bytes match (trimming the common
+*prefix*), then, if more than one differing byte remains, walks backward from the end trimming
+the common *suffix* too. Returns the length of the genuinely-different middle range, with both
+input pointers left pointing at where that range starts in each buffer. **Renamed to
+`diffbuf_find_changed_range`.** (`0x2017c710`, used throughout this project's notes under that
+raw name, is confirmed plain `memmove` — dest,param_1/src,param_2/len,param_3, handles overlap
+both directions — renamed to `memmove_generic`.)
+
+**What this means for `scif3_driver_pump_tick`'s bit-0x10 case, precisely**: `DAT_200375b8`
+(`0x203dca54`, this handout's confirmed live status buffer) is the *current* value; `DAT_200375b4`
+(`0x203dca75`) is a **last-sent shadow copy**, not a second producer. Each pump tick,
+`diffbuf_find_changed_range` finds the smallest byte range that changed since the last send,
+`memmove_generic` copies just that range from the live buffer into the shadow (bringing the
+shadow up to date), and `scif3_send_frame` transmits it with **wire "type" = that range's byte
+OFFSET into the buffer** — not a semantic command code as originally assumed.
+
+**This directly and fully explains the originally-mysterious `type=0x01`, 1-byte-payload frame**
+from the very first capture: it means "the byte at offset 1 changed, new value 0x01" — and offset
++1 is exactly the field this handout already traced to `scif1_svc_status_field_switch` (SCIF1
+service-command dispatch), caught live going `0x00`→`0x01` in the same boot window. Every piece
+now agrees: the SCIF1 dispatcher wrote `0x01` at offset+1, the very next pump tick diffed it,
+and sent a targeted 1-byte `type=0x01` frame — captured, traced, and mechanistically closed in
+one sitting.
+
+**Ghidra state**: `diffbuf_find_changed_range` and `memmove_generic` renamed; plate comments on
+both plus a refreshed one at `0x203dca54` itself (now correctly describing the shadow-buffer
+relationship instead of calling `0x203dca75` a second producer). Saved.
+
+**What's still open, roughly in order**:
+1. Bytes 2-32 of the buffer (the `67 80 90 a7 af c3 ca dc 86 aa 20 08` block + trailing zeros) —
+   unchanged from follow-up #1's own open item, now with a precise tool to chase it: **force or
+   wait for one of those specific offsets to change, capture the resulting `type=<offset>` frame
+   live, and cross-reference `references_to` on `0x203dca54+<offset>` the same way this session
+   did for offsets 0 and 1.** Since the mechanism is now fully understood, decoding the rest of
+   this buffer is a matter of repeating this exact technique per offset, not further reverse
+   engineering of the send path itself.
+2. `scif1_svc_status_field_switch`'s own 3 callers (`0x2001302c`/`0x20013048`/`0x2001306c`) —
+   still not traced, would show where the inbound SCIF1 command byte itself originates.
+3. The bit-0x20 case (always sends the full 33 bytes, no diffing) and bit-0x08 case (the
+   already-fully-decoded `"ICOM INC. (C)2016"` XOR string) are both already understood and don't
+   need further work.

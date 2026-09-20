@@ -618,6 +618,16 @@ find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` dr
 ### plain boot). Full detail, plus the still-open `FUN_20006308` real-enqueue-site thread this
 ### surfaced, in `notes/front-panel-protocol-handout.md`'s own 2026-09-20 follow-up section.
 
+### Follow-up, 2026-09-20, continued once more — that "enqueue site" thread resolved to a
+### non-answer in the best way: `0x20006308` (renamed `diffbuf_find_changed_range`) turned out to
+### be **memcmp-shaped**, not a queue at all — a generic delta primitive that finds the smallest
+### changed byte range between two buffers. `scif3_driver_pump_tick`'s "dynamic type" case diffs
+### the live SCIF3 status buffer against a last-sent shadow copy and transmits just the changed
+### range, with wire **"type" = that range's byte offset**. This fully explains the original
+### mystery `type=0x01` frame (offset+1 changed to `0x01` — exactly the SCIF1-dispatch field
+### traced in the previous follow-up) end to end. Full derivation in
+### `notes/front-panel-protocol-handout.md`'s 2nd 2026-09-20 follow-up section.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
