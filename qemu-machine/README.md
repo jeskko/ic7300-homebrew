@@ -14,6 +14,98 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-20 — the ring-overflow thread's core mechanistic tension (why does SGI0
+## starve for ~30ms of virtual time when naive GIC priority semantics predict it should
+## interleave constantly?) is very likely RESOLVED, via a fresh-eyes Opus review followed by a
+## live decisive test and a source-level firmware trace. Genuinely reframes the whole thread.
+
+**The Opus review's leading hypothesis, independently verified true**: this project's own
+earlier "real RZ/A1H silicon only implements 5 GIC priority bits" fix (`num-priority-bits=5` in
+`rz_a1h.c`, confirmed correct against Renesas' own driver source) has a real, previously-unseen
+interaction with `arm_gic.c`'s priority-mask comparison. `gic_fullprio_mask()` (`arm_gic.c:647`)
+computes `~0U << (8-5) = 0xF8` and this mask is applied at write-time to **both** per-interrupt
+priority (`gic_dist_set_priority`, line 674) **and** the CPU interface's own priority-mask
+register, `GICC_PMR` (`gic_set_priority_mask`, line 709). The delivery test itself
+(`arm_gic.c:200`) is a **strict** `best_prio < s->priority_mask[cpu_iface]`. SGI0's own
+firmware-configured priority, `0xFE`, truncates to `0xF8` under this mask — so if `GICC_PMR`
+ever also settles at `0xF8`, `0xF8 < 0xF8` is permanently false and SGI0 becomes **structurally
+undeliverable** via the normal automatic assert-the-IRQ-line path, with no dependence on
+priority *ordering* at all (which is why the earlier "5-bit fix doesn't change relative
+ordering, so it can't be the cause" reasoning — true for ordering, not for this boundary case —
+missed it).
+
+**Live decisive test, GDB-free (`tools/trace_sgi0_gic_state_qmp.py`, already built, just never
+had its own `PMR=` field highlighted in write-ups before)**: reran it. `GICC_PMR` reads
+`0xf8` on **every single sample of the entire run, including the overflow trap moment itself**:
+```
+t=  0.100s  ... PMR=0xf8 RPR=0xff CPSR.I=0
+t=  3.111s  ... PMR=0xf8 RPR=0x10 CPSR.I=1
+t=  3.317s  ... PMR=0xf8 RPR=0x10 CPSR.I=0   SGI0_pend=1
+t=  4.038s  *** OVERFLOW TRAP ***  r0=2 SGI0_pend=1 SGI0_active=0 PMR=0xf8 RPR=0x10 CPSR.I=0
+```
+`PMR` never once takes any other value. This directly confirms the collision — and note the
+`t=3.317s`/overflow lines: `RPR` (running priority) is *not* idle at those instants (`0x10`,
+matching RIIC2's priority), so this specific data doesn't need the earlier "RPR was idle and it
+still wasn't delivered" framing to make the case — the permanent `PMR==best_prio` boundary
+failure is suficient on its own, and holds regardless of what else is running.
+
+**Traced the actual firmware code, source-level — and it is NOT a firmware bug.**
+`irq_nesting_enter`/`irq_nesting_exit_and_refire` (`0x20188354`/`0x2018849c`, already-named,
+bracket every nested IRQ dispatch) contain, verified via raw disassembly not decompiled C:
+```
+ldr  r1, [GICC_base_ptr]
+ldr  r1, [r1, #4]        ; save current PMR
+strb r1, [saved_byte]
+movs r1, #0xff
+str  r1, [r2, #4]        ; PMR = 0xFF
+ldr  r1, [r1, #4]        ; read PMR back (post-truncation)
+subs r1, r1, #1          ; readback - 1
+str  r1, [r2, #4]        ; PMR = readback-1
+```
+This is a **byte-for-byte match to Renesas' own official CMSIS/HAL reference macro for this
+exact SoC**, found in the vendored `scratch/r01an5093ej0170-rza1-swpkg/.../rt_HAL_CA.h:104-106`:
+```c
+priority = GICI_ICCPMR;
+GICI_ICCPMR = 0xff;
+GICI_ICCPMR = GICI_ICCPMR - 1;
+```
+This is a standard, portable, textbook-correct idiom for computing "the least-restrictive mask
+value this specific implementation's priority-field width can represent" — precisely so code
+works correctly on GIC implementations with fewer than 8 real priority bits. It is not a bug;
+if anything it's defensive correctness. `irq_nesting_exit_and_refire` always restores the
+*saved* (pre-nesting) value afterward, so this dance is transient per-nesting-level, not what
+sets the resting `0xf8` baseline observed above — the actual one-time GIC/PMR bring-up call that
+establishes that resting value has not yet been located (checked all other static references to
+the literal GICC base pointer; none besides these two functions and their shared caller
+`irq_context_switch_id0`, which just invokes `irq_nesting_enter` as an ordinary ISR-entry
+bracket). **Open loose end**, not yet closed.
+
+**Why this reframes the whole thread**: if a genuinely standard, portable priority-mask idiom
+plus a deliberate firmware choice to park SGI0 at the numerically lowest representable priority
+value is *why* SGI0 can't be automatically delivered, this is very likely a property real
+RZ/A1H silicon shares too (real hardware almost certainly implements the identical 5-bit
+priority field for `PMR` that it does for `IPRIORITYR` — the two must share a field width for
+priority comparison to mean anything at all) — **not** a QEMU-specific modeling artifact. That
+flips the working assumption from "probably at least partly an emulation-architecture artifact"
+back toward "a real structural property of this exact firmware/silicon combination" — which
+sharpens, rather than answers, "would real hardware also overflow": the real question becomes
+whatever *does* let SGI0 get serviced in practice (most likely the nested "exit-and-refire" tail
+logic incidentally picking it up via a manual `GICC_IAR` read while already inside some other
+ISR, not the normal automatic delivery path) — how reliably does *that* mechanism keep up on
+real hardware's exact timing vs. this emulation's, during the dense RIIC2 scan specifically.
+
+**Concrete next steps, not yet done**: (1) find the true one-time PMR-bringup call to close the
+still-open "why does it rest at exactly 0xf8" loose end; (2) turn on QEMU's own `gic_*`
+tracepoints (`--trace 'gic_*' -d int`, zero perturbation, zero GDB/QMP polling) to watch
+`gic_update_bestirq`'s own `best_irq`/`best_prio`/`priority_mask`/`running_priority` fire in
+real time and directly confirm SGI0 is repeatedly computed as `best_irq` yet never asserted —
+the single most direct remaining confirmation, proposed by the same review and not yet run; (3)
+decide, with the user, whether a real fix (scoping `gic_fullprio_mask()`'s masking to
+`IPRIORITYR` writes only, not `PMR` writes, since real GIC architecture may or may not intend
+PMR to be truncated the same way — needs the actual ARM GIC architecture reference or the real
+RZ/A1H manual's own GIC appendix to settle, not yet checked) is worth attempting, given this
+project's standing caution against touching core QEMU internals lightly.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
