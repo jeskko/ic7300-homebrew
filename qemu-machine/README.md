@@ -401,6 +401,21 @@ SCIF3 front-panel responder (`scif.c`) does, but for a different, so-far-unmodel
 handshake. `tools/trace_pwrk_wait_advance.py --civ-busy-pulse` is ready to re-verify once
 either lead pans out.
 
+**A real reframing worth checking before chasing that further**: decompiled `civ_rx_frame_stage_
+and_dispatch`'s own callee, `civ_dispatch_lookup_validate` (`0x2000b03c`) — this is the actual,
+already-identified real CI-V command dispatcher (cross-checked against the IC-7300's own CI-V
+manual in an earlier session), and it only acts on *real incoming CI-V protocol bytes*; it
+doesn't set `*0x20390031` itself either, and neither does anything else this session found. A
+standalone radio with nothing connected to `[REMOTE]`/USB would never generate such bytes — which
+raises the real possibility that requiring `*0x20390031` (and therefore `*DAT_2002a104=1`) is the
+wrong success criterion for this investigation. This loop's own behavior (wake on `IRQ3`/`IRQ7`,
+briefly service any pending CI-V/front-panel work, return to `wfi`) may simply **be** this
+branch's correct, permanent steady-state — a different, event-driven flavor of idle from the
+auto-power-on branch's RTOS-scheduler-driven `idle_loop_wfe_spin`, not a boot step that needs to
+reach 100% and `return`. `*DAT_2002a104` may instead mean "power-off-hold completed" (matching
+the user-supplied manual text: holding `POWER` 2 seconds powers off), not "power-on finished" —
+not confirmed either way this session, flagged for whoever picks this up next.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
