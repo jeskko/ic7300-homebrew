@@ -262,6 +262,19 @@ struct RZA1HScifState {
     uint8_t  frontpanel_pending_ack_type; /* stashed for the timer callback,
                                             * since ptimer callbacks only
                                             * get `opaque`, not an argument */
+
+    /* Bus logger (2026-09-20) -- generic per-channel TX frame assembly for
+     * observability, deliberately independent of the channel-3/5 virtual-
+     * responder state above (which drives real reply behavior and is
+     * already fragile enough per this file's own comments -- this is
+     * logging-only, touches nothing behavioral). Every channel here uses
+     * the same 0xFE/.../0xFD framing convention (CI-V/SCIF0, service-mode/
+     * SCIF1, front-panel/SCIF3, DSP-link/SCIF5 all confirmed sharing one
+     * driver template -- notes/ic7300-signal-chain.md), so this applies
+     * uniformly rather than being gated to specific channels. See
+     * scif_bus_log_tx()'s own comment for how to enable it. */
+    uint8_t  bus_tx_buf[40];
+    int      bus_tx_len; /* -1 = idle (waiting for 0xFE) */
 };
 
 #define REG_SMR  0x00
@@ -316,6 +329,50 @@ struct RZA1HScifState {
  * +0x13 the 4-byte raw RX buffer, +0x18 the decoded (post-rbit) reply
  * word scif5_classify_reply reads. */
 #define SCIF5_STRUCT_PTR_ADDR    0x200b1c84
+
+/* Bus logger (2026-09-20), per the user's own request for a per-bus-selectable serial
+ * traffic log, starting with the front-panel bus (channel 3). Layered on top of
+ * rza1h_debug.h's existing name-matching (see that header's own comment): `RZA1H_DEBUG=scif`
+ * still means "every SCIF channel" as before, and `RZA1H_DEBUG=scif<N>` (e.g. `scif3` for the
+ * front panel, `scif0` for CI-V) now additionally selects one channel on its own -- pass
+ * either or both (comma-separated) to rza1h_debug.h's own existing syntax. Deliberately TX-
+ * side only for now: the RX side's virtual responders (channel 3/5, above) precompute their
+ * replies directly into guest RAM rather than feeding them through FRDR byte-by-byte (see
+ * their own comments for why -- real, hard-won timing this logger has no business touching),
+ * so a generic byte-level RX accumulator can't see full reply frames the same way; TX is the
+ * genuinely uncomplicated direction and is what "what gets sent to the front panel" asks for
+ * first anyway. */
+static void scif_bus_log_tx(RZA1HScifState *s, uint8_t byte)
+{
+    char tag[8];
+
+    snprintf(tag, sizeof(tag), "scif%u", s->channel);
+    if (!rza1h_debug_enabled("scif") && !rza1h_debug_enabled(tag)) {
+        return;
+    }
+
+    if (byte == 0xFE) {
+        s->bus_tx_len = 0;
+    } else if (s->bus_tx_len >= 0 && s->bus_tx_len < (int)sizeof(s->bus_tx_buf)) {
+        s->bus_tx_buf[s->bus_tx_len++] = byte;
+    }
+
+    if (byte == 0xFD && s->bus_tx_len > 0) {
+        /* bus_tx_buf already holds [type, payload..., 0xFD] -- the leading 0xFE isn't
+         * stored (it only resets the accumulator above), so "fe " is prepended here but
+         * the trailing 0xFD is already the buffer's own last byte, not appended again. */
+        GString *hex = g_string_new("fe ");
+        int i;
+
+        for (i = 0; i < s->bus_tx_len; i++) {
+            g_string_append_printf(hex, "%02x ", s->bus_tx_buf[i]);
+        }
+        rza1h_debug(tag, "scif%u: TX frame type=0x%02x [%s] (%d bytes)",
+                   s->channel, s->bus_tx_buf[0], g_strchomp(hex->str), s->bus_tx_len + 1);
+        g_string_free(hex, TRUE);
+        s->bus_tx_len = -1;
+    }
+}
 
 /* Real RZ/A1H SCIF asynchronous-mode bit-rate formula -- the standard Renesas SCI/SCIF BRG
  * design shared across this whole chip family (H8/SH/RX/RZ all use the identical formula):
@@ -659,9 +716,18 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
         byte = value;
         /* Always surfaced, chardev or not -- the whole point of this
          * roadmap item is *observability*, and most testing won't bother
-         * wiring a real -chardev per channel. */
-        rza1h_debug("scif", "scif%u: TX %02x ('%c')",
-                   s->channel, byte, (byte >= 0x20 && byte < 0x7f) ? byte : '.');
+         * wiring a real -chardev per channel. Per-channel-selectable (see
+         * scif_bus_log_tx's own comment) -- RZA1H_DEBUG=scif still means
+         * every channel, RZA1H_DEBUG=scif<N> selects just one. */
+        {
+            char _tag[8];
+            snprintf(_tag, sizeof(_tag), "scif%u", s->channel);
+            if (rza1h_debug_enabled("scif") || rza1h_debug_enabled(_tag)) {
+                rza1h_debug(_tag, "scif%u: TX %02x ('%c')",
+                           s->channel, byte, (byte >= 0x20 && byte < 0x7f) ? byte : '.');
+            }
+        }
+        scif_bus_log_tx(s, byte);
         if (qemu_chr_fe_backend_connected(&s->chr)) {
             qemu_chr_fe_write_all(&s->chr, &byte, 1);
         }
@@ -797,7 +863,13 @@ static void rza1h_scif_receive(void *opaque, const uint8_t *buf, int size)
     /* No overrun modeling (LSR.ORER) -- can_receive() already refuses a
      * new byte until the previous one is read, so QEMU's chardev core
      * won't call this while one is still pending. */
-    rza1h_debug("scif", "scif%u: RX %02x (real -chardev backend)", s->channel, buf[0]);
+    {
+        char _tag[8];
+        snprintf(_tag, sizeof(_tag), "scif%u", s->channel);
+        if (rza1h_debug_enabled("scif") || rza1h_debug_enabled(_tag)) {
+            rza1h_debug(_tag, "scif%u: RX %02x (real -chardev backend)", s->channel, buf[0]);
+        }
+    }
     s->frdr = buf[0];
     s->rx_pending = true;
 }
@@ -831,6 +903,7 @@ static void rza1h_scif_reset(DeviceState *dev)
     s->rx_pending = false;
     s->tx_frame_pos = -1;
     s->tx_frame_type = 0;
+    s->bus_tx_len = -1;
     s->tx_busy = false;
     ptimer_transaction_begin(s->tx_timer);
     ptimer_stop(s->tx_timer);
