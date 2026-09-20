@@ -304,3 +304,56 @@ nameable real-world purpose; `kernel_start`'s own descriptor and `thunk_FUN_2007
 identity remain genuine static-analysis dead ends needing live JTAG; `first_task_entry` is
 genuinely kernel-internal machinery rather than an unresolved mystery — a different, third category,
 not a loose end.
+
+## Living reference: `cold_boot_hw_init`'s own call-by-call sweep (2026-09-20)
+
+`cold_boot_hw_init` (the task-catalog table above already covers the one task it activates,
+`ui_graphics_lifecycle_task`) is a long, linear sequence of hardware/subsystem bring-up calls in
+its own right — most were still bare `FUN_` names. Swept every direct call in this function's own
+body (not deeper call graphs, except where noted) at the user's request, to see how many could be
+identified. Full derivation, live-QMP work, and the front-panel cross-link in
+`notes/front-panel-protocol-handout.md` and `qemu-machine/README-history.md`'s dated entries where
+applicable — this table is the organized result, kept current as understanding improves.
+
+**Headline finding**: a real NVRAM/EEPROM settings-integrity subsystem, previously completely
+unmapped, drives this function's own cold-boot reset-mode decision (`all_reset_system_mode_action`
+vs. `partial_reset_system_mode_action`) — and one of its checks reads bits from the confirmed
+SCIF3 front-panel status struct, a genuine, previously-unknown cross-link to today's separate
+front-panel-protocol thread.
+
+| Call (in order) | Status | What it does |
+|---|---|---|
+| `FUN_200293c8(0)` | 🟡 shape known | Sets/clears bit `0x40` across 6 similarly-offset struct instances, toggles a couple of hardware bits, registers + enables GIC interrupt ID `0x26`. 6-instance shape suggests a multi-channel peripheral (ADC? a UART-channel-context array?); ID `0x26` not yet cross-checked against this project's own IRQ map. Not renamed. |
+| `pwrk_power_state_write_to_eeprom_if_changed` | ✅ already named | — |
+| `port_bulk_gpio_init_pass2` | ✅ already named | — |
+| `FUN_20005dd8(10000)` / `(30000)` / `(100)` | 🟡 shape known | Generic busy-wait/delay primitive (arm a countdown via `FUN_20005d78`, poll `FUN_20005d88` until expired, stop via `FUN_20005dc8`) — shape matches an ITRON `dly_tsk`-style relative-time delay. Not renamed (units not confirmed). |
+| `FUN_200b47f0` | 🟡 shape known | One-line: copies a fixed config word into offset `+0x104` of a struct also touched by the next call. |
+| `scif3_frontpanel_init_and_latch_version` | ✅ already named | — |
+| `scif3_dynqueue_post_and_flush` | ✅ named this session (front-panel thread) | — |
+| `FUN_200b4800` | 🟡 shape known | Clears ~30 individually-selected fields (not a bulk memset) of the same struct `FUN_200b47f0` touches, spanning offsets up to `+0x306` — a real, moderately complex status/context struct reset. Subsystem not identified. |
+| `FUN_2007ed9c` / `FUN_2007ede0` | 🟡 shape known | ITRON message-buffer-creation shape (`FUN_20186e98`, no following `itron_act_tsk`). Address sits just before `ui_graphics_lifecycle_task`'s own entry point — plausibly that task's own resource setup (see plate comment at `0x2007ed9c`), not confirmed. |
+| `itron_act_tsk(DAT_2002b4e8, 0)` | ✅ already known | Activates `ui_graphics_lifecycle_task` — see the task-catalog table above. |
+| `bmp_capture_task_bootstrap` (renamed from `FUN_200aa5d4`) | ✅ resolved this sweep | Creates `bmp_capture_task`'s ITRON resources and activates it — cross-confirmed directly against the existing task-catalog row. |
+| `spectrum_scope_fft_task_bootstrap` (renamed from `FUN_200096c8`) | ✅ resolved this sweep | Same shape, for `spectrum_scope_fft_task` — cross-confirmed against the task catalog. |
+| `FUN_200506d0` | 🟡 shape known | Near-identical shape to `FUN_200293c8` above, targeting GIC interrupt ID `0x21` instead of `0x26` — likely a sibling peripheral or the other half of the same one. Not renamed. |
+| *(inline busy-wait, `while (*flag < 0x32)`)* | — | Not a call. |
+| `FUN_200b5b64` / `FUN_200b5be0` / `FUN_200b5ea4` / `FUN_200b5f38` | 🟡 extensively pre-documented | DMAC channel 0 (+ MTU2 channel 0) configuration and completion busy-wait — the subject of a huge portion of this project's own `README-history.md` (the ring-overflow investigation). Not renamed here; `FUN_200b5f38`'s exact current behavior may be stale given the later DMAC completion-race fix — worth a fresh look before trusting old characterizations, not attempted this sweep. |
+| `scif5_dsp_link_driver_init`, `scif5_wait_hsk1_ready`, `dsp_boot_handshake`, `dsp_cmd_table_init`, `dsp_identity_query_record0/1/2`, `rspi2_driver_init` | ✅ already named | — |
+| `FUN_200b7020` | 🟡 shape known | 7-byte rolling-record comparison + checksum-shaped accumulation, calls `FUN_200b6bcc`/`FUN_200b6d60`. RTC (real-time clock chip) suspected given the shape (date/time-record rollover detection) — not confirmed. |
+| `FUN_2005f8ac`, `FUN_2005fcb4`, `FUN_2005f9b0`, `FUN_2005fac4`, `FUN_200609c0` | 🟡 shape known | Small per-field clears of what looks like one shared driver's state struct(s), all in the same code-address neighborhood as the next row. RTC suspected, not confirmed. |
+| `FUN_200605fc` | 🟡 shape known, plate comment added | Disables IRQs, bit-bangs ~20 alternating clock/status-poll cycles against a small register pair (`FUN_20360b0c`/`FUN_20360b24`, this project's own generic single-bit helpers), re-enables IRQs. Strongest candidate: a software-bit-banged serial link to a simple external chip — the IC-7300's real-time clock is the leading hypothesis. Worth a dedicated follow-up session (resolve the live `DAT_` addresses, correlate with a real RTC read/set). |
+| `FUN_200291d8()` → conditionally `nvram_block_3e80_verify_16b`, `cold_boot_reset_mode_frontpanel_flag_check`, `nvram_block_3e80_verify_7b` → `all_reset_system_mode_action` / `partial_reset_system_mode_action` | ✅ **resolved this sweep — the cold-boot reset-mode decision tree** | A cascade of NVRAM settings-block integrity checks (see below) decides between a full and a partial system reset at cold boot. `cold_boot_reset_mode_frontpanel_flag_check` (renamed from `FUN_2002aeb4`) reads bits `0x40`/`0x2` of the confirmed SCIF3 front-panel RX status struct's offset `+0xf` — a real, previously-unknown link between this decision and the front-panel protocol thread. `FUN_2002aeac` (not renamed, trivial) is a stub that unconditionally returns 0. |
+| `nvram_block_3fc0_verify`, `nvram_block_3fc0_repair_write`, `nvram_block_3e80_repair_write`, `nvram_block_3df0_verify`, `nvram_block_3df0_repair_write_a`, `nvram_block_3df0_repair_write_b`, `nvram_settings_180b_save`, `nvram_settings_180b_load`, `nvram_settings_180b_restore_rom_defaults` (all renamed this sweep, from `FUN_200291d8`/`FUN_20029178`/`FUN_200291a8`/`FUN_200292bc`/`FUN_20029198`/`FUN_200291c8`/`FUN_2000790c`/`FUN_20006c74`/`FUN_20008328`) | ✅ **resolved this sweep — a real NVRAM/EEPROM settings-integrity subsystem** | Built on two newly-identified generic primitives, `nvram_read_at_offset`/`nvram_write_at_offset` (renamed from `FUN_2001e510`/`FUN_2001e484` — read/write N bytes at a fixed NVRAM offset through this project's own RPC-backed persistence layer) and `memcmp_generic` (renamed from `FUN_2017c81e`, standard 3-way compare). At least 3 independent fixed-offset settings blocks (`0x3df0`, `0x3e80`/16000, `0x3fc0`), each with its own verify(read+compare)/repair(write) pair, plus a dedicated 180-byte block with save/load/restore-factory-defaults functions. `restore_rom_defaults` copies from a separate ROM-resident default source — the same "seed from a fixed constant" pattern found for the front-panel status buffer earlier the same day. |
+| `nvram_wearleveled_ring_save` / `nvram_wearleveled_ring_load` (renamed from `FUN_2001f7b4`/`FUN_2001f6bc`) | ✅ resolved this sweep | A genuine **wear-leveled EEPROM ring buffer** — base offset `0x2000`, 64-byte slots, 8-slot rotating index (`if (index > 7) index = 0`). Real evidence this firmware does EEPROM wear-leveling somewhere, not just flat fixed-offset storage. |
+| `nvram_multirecord_load_and_verify`, `nvram_writeback_pump_tick`, `nvram_writeback_flush_sync` (renamed from `FUN_2001a104`/`FUN_2001a1ec`/`FUN_2001a2f4`) | ✅ resolved this sweep | A third NVRAM cluster: loads 4 records via chunked `nvram_read_at_offset` calls, computes a total 32-byte-page count across them, and calls an unexplored `FUN_2017c618` (likely a checksum/CRC, given the `0x28a` constant passed) to validate. `nvram_writeback_pump_tick` (the diff-and-send pump, found earlier this session in the front-panel-buffer investigation and initially mis-scoped as narrowly SCIF3-related) and `nvram_writeback_flush_sync` (a synchronous drain loop, structurally identical to `scif3_dynqueue_flush_sync`) are this cluster's own send/flush pair — confirming this whole family is a **generic settings-writeback mechanism reused across multiple subsystems**, not front-panel-specific. |
+| `diode_matrix_cold_boot_init` (renamed from `FUN_2003c530`) | ✅ resolved this sweep | Calls the already-known `scan_diode_matrix_p5`/`sync_diode_matrix_to_eeprom`, then classifies a status word into a 0/1/2 result stored into another struct. The diode-matrix cold-boot bootstrap entry point. |
+| `FUN_2002c1e0` | 🟡 shape known | Clears an 808-byte (`0x328`) struct via a `memset`-shaped helper (`FUN_2017c766`, not yet renamed — likely `memset_generic`, sibling to `memmove_generic`/`memcmp_generic`), then two more unexplored calls. Runs as part of the `0x3df0` NVRAM-block repair path. |
+| `FUN_2000a0a8`, `FUN_2000a264`, `FUN_2006756c`, `FUN_20035af4` | 🟡 shape known | Small per-field struct clears, subsystems not identified. Not renamed. |
+| `tuner_jack_signal_precheck`, `emergency_screen_checkbox_state_sync`, `boot_check_mode1_combo`, `boot_check_mode5_combo`, `boot_check_challenge_response` | ✅ already named | — |
+
+**What this sweep did NOT do**: descend a second level into every helper (e.g. `FUN_2017c618`'s
+own checksum algorithm, `FUN_2006099c`/`FUN_20024738`/`FUN_200247d4`'s own bodies, the exact
+peripheral behind the RTC-suspected bit-bang cluster or the two GIC-ID-0x26/0x21 channel-init
+functions) — those are real, concrete next steps for a follow-up session, not attempted here.
+Ghidra state: 21 renames, several plate comments (notably at `cold_boot_hw_init` itself,
+`0x200605fc`, `0x200293c8`, `0x2007ed9c`), all saved.
