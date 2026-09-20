@@ -573,29 +573,45 @@ static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
  * instead of hand-replicating its effect is deliberate, matching this
  * function's own "run the real code" philosophy elsewhere in this file).
  *
- * Sends a universal class-2 ("trivial ack, no payload processing" --
- * scif5_classify_reply's own top-nibble dispatch) reply regardless of
- * which command was sent: matches this project's established permissive-
- * peripheral philosophy (mmc.c's virtual SD card, riic.c's virtual
- * EEPROM, rza1h_scif3_frontpanel_ack above) -- a plausible canned ACK is
- * enough to unblock boot, not real DSP protocol fidelity. Some callers
- * (the `0xe0000000`/`0xe0000001` command class, per notes/multi-cpu-
- * images-history.md's "SCIF5 command API" section) separately compare the
- * reply's top nibble against 9 or 0xE and will treat a class-2 reply as a
- * soft failure of their own -- that's a real, known simplification, not a
- * bug: it only affects those specific commands' own retry/error handling,
- * never this busy-wait itself (any resolved reply clears it).
+ * 2026-09-21 CORRECTION -- the class-2 ack above was NOT harmless: live GDB
+ * tracing (icom-main-idle-loop-not-reached thread) confirmed it makes
+ * `main_idle_loop` unreachable for a genuinely long, but bounded, time.
+ * `dsp_identity_query_cmd0`-`cmd5` (the `0xE0000000`-`0xE0000005` identity/
+ * version-query protocol, all 6 confirmed structurally identical) don't
+ * accept a class-2 reply as anything but "not done yet" -- ONLY top nibble
+ * `0xF` is accepted (9 is aliased to 1 for storage, never treated as
+ * success; that supersedes this comment's own older "9 or 0xE" claim,
+ * which was based on a different, unrelated pair of callers --
+ * `dsp_page_transfer_verify`'s firmware-update chunk-verify protocol,
+ * expects `0xE` and isn't on the boot path). Each of the 6 commands retries
+ * up to 18 times (~30s) before giving up and moving to the next one --
+ * with every single reply always class-2, ALL 6 always burn their full
+ * budget, adding up to ~3 minutes of real boot time before
+ * `cold_boot_hw_init` (which calls all 3 query-record orchestrators
+ * unconditionally) can finish -- not a deadlock, but far longer than any
+ * capture this project had ever run (60-90s) before this was found, which
+ * is why it looked unreachable. Sending a class-`0xF` reply instead (see
+ * `raw012[0]` below) satisfies all 6 commands' identical accept check on
+ * their very first real reply and removes this stall entirely, at zero
+ * cost to the "permissive canned ACK, not real DSP protocol fidelity"
+ * philosophy this responder already follows elsewhere (mmc.c's virtual SD
+ * card, riic.c's virtual EEPROM, rza1h_scif3_frontpanel_ack above) -- the
+ * payload bytes' actual real-DSP *meaning* (version numbers? a part ID?)
+ * is not recoverable from `body.bin` alone (its only consumer,
+ * `factory_file_load`, is an on-demand SD-card menu action, not boot code)
+ * and is left as an open question for whoever wants real protocol fidelity
+ * here rather than just an unblocking ack.
  *
- * The 3 precomputed bytes (0x04, 0x00, 0x00) plus the 4th delivered byte
- * (0x00) assemble to raw_word_LE = 0x00000004; scif5_rx_isr's own `rbit`
- * turns that into 0x20000000 -- top byte 0x20, high nibble 2. Worked out
- * by hand (rbit is self-inverse: rbit32(0x20000000) = 0x00000004) rather
- * than guessed. */
+ * The 3 precomputed bytes (0x0f, 0x00, 0x00) plus the 4th delivered byte
+ * (0x00) assemble to raw_word_LE = 0x0000000f; scif5_rx_isr's own `rbit`
+ * turns that into 0xf0000000 -- top byte 0xf0, high nibble 0xf. Worked out
+ * by hand (rbit is self-inverse: rbit32(0xf0000000) = 0x0000000f) rather
+ * than guessed -- same technique the original 0x04/0x20000000 pairing used. */
 static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
 {
     AddressSpace *as = &address_space_memory;
     uint32_t struct_base;
-    uint8_t raw012[3] = { 0x04, 0x00, 0x00 };
+    uint8_t raw012[3] = { 0x0f, 0x00, 0x00 };
     uint8_t count = 3;
 
     address_space_read(as, SCIF5_STRUCT_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
@@ -609,7 +625,7 @@ static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
     address_space_write(as, struct_base + 0xc, MEMTXATTRS_UNSPECIFIED,
                         &count, 1);
 
-    rza1h_debug("scif", "scif5: DSP-link responder: canned class-2 ack");
+    rza1h_debug("scif", "scif5: DSP-link responder: canned class-0xf ack");
     s->frdr = 0x00; /* the one byte actually delivered through the normal
                       * RXI path -- see this function's own comment */
     s->rx_pending = true;
