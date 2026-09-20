@@ -14,36 +14,57 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Status, 2026-09-21 — REFRAMING THE ACTIVE FRONTIER: proven that `main_idle_loop` (the real
-## "operate the radio" loop) is NOT reached even in the capture that reaches confirmed
-## `idle_loop_wfe_spin` — read this before touching the ring-overflow/SD-card frontier below,
-## it may sit before that frontier in the actual boot sequence
+## Status, 2026-09-21 — `main_idle_loop`-not-reached thread: ROOT CAUSE LIVE-CONFIRMED. A stuck
+## SCIF5/DSP job-ring flag (`0x203906ed`) blocks the real loop's own entry wait forever, parking
+## the CPU on the genuine RTOS idle task instead — read this before touching the ring-overflow/
+## SD-card frontier below
 
-Found while tracing `cold_boot_hw_init`'s own subroutines (see `notes/kernel-rtos.md`): right
-after `cold_boot_hw_init` returns, `cold_boot_mode_dispatch` (`0x2002b1c8`) switches on a mode
-byte (`DAT_2002a4a4`, driven by the already-documented `system_mode_request_dispatch` in
-`notes/kernel-rtos-history.md`'s "SCIF1 service-mode protocol" section) between 4 different
-idle-loop variants — `svc_mode1_idle_loop`/`svc_mode_idle_loop`/`svc_mode5_idle_loop`, or, by
-default, **`main_idle_loop`**, the genuine top-level loop (front panel, CI-V, digital-mode
-decode, NVRAM writeback, UI input — everything). `main_idle_loop` calls a real RTC read over
-**RIIC1** on every single iteration.
+Started from the same observation as before: `cold_boot_mode_dispatch` (`0x2002b1c8`) dispatches
+into one of 4 idle-loop variants, default = **`main_idle_loop`** (the genuine top-level loop —
+front panel, CI-V, digital-mode decode, NVRAM writeback, UI input, a real RTC read over RIIC1
+every iteration) — and a PWRK-hold capture showed 13078 lines of RIIC2 traffic but **zero** RIIC1
+lines over 60s, proving it wasn't reached even though PC reaches confirmed `idle_loop_wfe_spin`.
 
-**Empirical proof `main_idle_loop` isn't reached**: re-ran the PWRK-hold capture (the one that
-reaches confirmed `idle_loop_wfe_spin`) for a full 60s with `RZA1H_DEBUG=riic`. Result: 13078
-lines of RIIC2 (EEPROM) traffic, **zero** RIIC1 lines. `main_idle_loop` would produce RIIC1
-traffic every iteration if reached — it isn't being reached, despite `idle_loop_wfe_spin` being
-hit. **The real open question, not yet resolved**: does `idle_loop_wfe_spin` distinguish which of
-the 4 loops we're actually in at all, or is it the shared low-level "wait for next tick"
-primitive every one of the 4 loops calls identically at their own top wait-condition (in which
-case this result is consistent with being stuck inside `main_idle_loop`'s own entry wait, never
-reaching its body) — this is genuinely unchecked and the first thing to resolve.
+**Both open questions from that finding are now resolved, static + live evidence agreeing
+exactly:**
 
-Full derivation, concrete numbered next steps, and the related lower-priority findings (RIIC1
-currently gets a fake EEPROM slave instead of a real RTC model; two more unwired external-IRQ
-gaps; the NVRAM verify cascade's `all_reset`-vs-`partial_reset` outcome not yet checked against
-our own EEPROM image) are in this session's own persistent memory
-(`icom-main-idle-loop-not-reached`), plus `notes/kernel-rtos.md`'s own `cold_boot_hw_init`
-sections for the static-analysis side of it.
+1. **`idle_loop_wfe_spin` is a genuinely separate RTOS idle task**, not inline code any loop calls
+   directly — confirmed via its own task-creation code (`FUN_20187f0c`→`FUN_201876a8`→
+   `FUN_2018772c`, which builds a real initial CPU stack frame with `idle_loop_wfe_spin` as the
+   saved PC, textbook ITRON/FreeRTOS task-priming).
+2. **`main_idle_loop`'s own top wait-loop is a real blocking kernel wait, not a busy-spin.** Its
+   `while (A||B||C) FUN_20062c1c();` calls a function Ghidra's decompile corrupts (the project's
+   known ARM/Thumb disassembly bug) — cross-checked directly against `arm-none-eabi-objdump` on
+   `scratch/unpacked/142/body.bin` and found a real 3-instruction ARM stub (`mvn r1,#0` /
+   `mov r0,#1` / tail-branch) that veneers into Thumb code executing a genuine **`svc 0`** with
+   `r0=1` (wait-object id), `r1=0xFFFFFFFF` (`TMO_FEVR`/wait-forever) — the project's own
+   long-standing, never-resolved "how does `SWI(0)` dispatch" question, now answered at least for
+   this one call site: it's a real infinite-timeout blocking wait.
+
+Condition C in that wait (`FUN_200b521c`) gates on two byte flags, resolved via their real
+double-indirected addresses: **`0x203906ed`** and `0x203906ee` (both must read 0 to proceed).
+`0x203906ed` turned out to be `shared_job_ring_dispatch`'s own ring-active flag (`DAT_200b1cac`) —
+a *different* ring from the already-fixed RIIC2/EEPROM overflow ring — backing the SCIF5 DSP-link
+command/reply protocol this file's own `scif.c` module comment already documents at length.
+
+**Live-confirmed the whole chain in one shot** (`tools/trace_main_idle_wait_flags.py`, QMP-only,
+zero perturbation): PWRK-hold capture, polling both flags + PC every 2s for 40+ seconds —
+`0x203906ed` flips to 1 at t≈8s (during DSP/SCIF5 bring-up) and **never clears** again; PC sits at
+`0x200b93ac` (`idle_loop_wfe_spin`) in every sample from t=10s onward bar 3 brief IRQ-bookkeeping
+excursions. Static prediction and live behavior match exactly.
+
+**Remaining open question, narrower than before**: `shared_job_ring_dispatch`'s case 1 (DSP-
+command-pending) has its own bounded retry-budget countdown in `scif5_classify_reply`, so it
+should eventually let the ring drain even without a real DSP reply — yet it's stuck 32+ seconds
+straight. Either something keeps re-enqueueing jobs faster than any one drains, the retry budget
+is longer than that, or this is a materially different exchange than the one `scif.c`'s own
+2026-09-09 DSP-ack timing fix already resolved. Next step: a reactively-armed trace (same
+"poll-to-detect, breakpoint-only-once-armed" technique as `trace_job_ring_producer.py`) on
+`shared_job_ring_dispatch` itself during the 7-40s window.
+
+Full derivation in this session's own persistent memory (`icom-main-idle-loop-not-reached`), plus
+`notes/kernel-rtos.md`'s `cold_boot_hw_init` sections and `notes/multi-cpu-images-history.md`'s
+"SCIF5 RX path closed" section for the DSP-link protocol's own static-analysis background.
 
 ## Status, 2026-09-20 — the ring-overflow thread's core mechanism is FOUND, via two rounds of
 ## fresh-eyes Opus review plus live QEMU `gic_*` tracepoint instrumentation (a new, zero-
