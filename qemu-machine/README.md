@@ -408,13 +408,53 @@ manual in an earlier session), and it only acts on *real incoming CI-V protocol 
 doesn't set `*0x20390031` itself either, and neither does anything else this session found. A
 standalone radio with nothing connected to `[REMOTE]`/USB would never generate such bytes — which
 raises the real possibility that requiring `*0x20390031` (and therefore `*DAT_2002a104=1`) is the
-wrong success criterion for this investigation. This loop's own behavior (wake on `IRQ3`/`IRQ7`,
-briefly service any pending CI-V/front-panel work, return to `wfi`) may simply **be** this
-branch's correct, permanent steady-state — a different, event-driven flavor of idle from the
-auto-power-on branch's RTOS-scheduler-driven `idle_loop_wfe_spin`, not a boot step that needs to
-reach 100% and `return`. `*DAT_2002a104` may instead mean "power-off-hold completed" (matching
-the user-supplied manual text: holding `POWER` 2 seconds powers off), not "power-on finished" —
-not confirmed either way this session, flagged for whoever picks this up next.
+wrong success criterion for this investigation.
+
+### Follow-up, same day — the reframing above is now CONFIRMED, not just suspected. `civ_state`
+### is a real CI-V privilege tier (service/factory-mode-shaped), matching a fact this project
+### already independently confirmed in an *entirely different* session months ago, and completely
+### unrelated to whether this boot branch has reached a normal working state.
+
+The user pointed out, from real-world radio operating knowledge, that holding the CI-V bus busy
+is one known gateway into the IC-7300's service mode at power-on. This project already has that
+exact fact on record, fully investigated and closed independently: `notes/kernel-rtos-history.md`
+(30th-session "Factory/service mode" section) confirms the real IC-7300 service-mode entry is
+front-panel **MENU+FUNCTION held** *and* the **REMOTE/CI-V jack shorted** (`CRXD`/`P6_10` reading
+low), checked as a one-shot GPIO level by `boot_check_mode1_combo` — called from
+`cold_boot_hw_init`, the *other* boot branch, not `power_state_pwrk_wait_and_bringup` at all. That
+specific function isn't what this session's `IRQ3` work touches.
+
+But re-reading this session's own earlier decompiles of `civ_dispatch_lookup_validate` and
+`civ_dispatch_invoke_handler` with that fact in mind resolves the open question directly:
+`civ_state==3` (`*DAT_2000b230`, the same address as `civ_state`) is a real, distinct CI-V
+**privilege tier** in the actual command dispatcher — `civ_dispatch_lookup_validate` requires a
+specific permission bit (`puVar9[0] & 0x10`) on a command's table entry to allow it through *while
+`civ_state==3`* (a different gate than the ordinary local/remote permission bits 1/2 used
+otherwise), and `civ_dispatch_invoke_handler` skips the normal busy/interlock checks (radio-
+transmitting, menu-open, etc. — `FUN_2002c588`/`FUN_20066720`/`FUN_2000ac68`/`FUN_20061654`)
+entirely once in that state. This is exactly the shape of a real service/factory CI-V mode, not
+"link established" or "front panel ready."
+
+**Practical conclusion for this whole thread**: `IRQ3`/`P7_11` (this session's own finding) is the
+warm-wake path's mechanism for entering that same elevated CI-V mode — real, correctly modeled,
+and empirically confirmed to work — but it was never gating *ordinary* power-on completion.
+Re-reading the real assembly at `0x20029ba4`-`0x20029bb8` confirms this directly: even with
+`civ_state` staying at its everyday value of `2` (no CI-V-busy ever asserted, service mode never
+entered), the function *still* just falls through to the mask-and-loop-back path rather than ever
+reaching `*DAT_2002a104=1` — finalize was never on the ordinary path at all, with or without this
+session's `IRQ3` fix. **The observed wfi → wake-on-`IRQ7`-or-`IRQ3` → briefly service → `wfi`
+cycle is this branch's own correct, permanent, working steady-state** for a radio that woke via
+PWRK — a different, event-driven flavor of idle from the auto-power-on branch's RTOS-scheduler-
+driven `idle_loop_wfe_spin`, not a boot sequence stuck partway. `*DAT_2002a104` most likely means
+something else entirely (a real candidate, not confirmed: "power-off-hold completed", matching the
+manual's 2-second-hold-to-power-off) — genuinely a different question from "did this branch boot
+successfully," which it now looks like it already does.
+
+**This closes the active PWRK-wait resume point** for practical purposes: both external-IRQ gaps
+this branch needed (`IRQ7` for the initial wake/press-cycle, `IRQ3` for the CI-V-privilege-mode
+path) are now real, modeled, and live-confirmed; the remaining unknown (exactly what `finalize`
+represents) is a genuinely separate, lower-priority question rather than a blocker on this
+branch's own basic correctness.
 
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
