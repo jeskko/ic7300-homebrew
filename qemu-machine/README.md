@@ -132,6 +132,39 @@ progress — not just "the crash stopped happening" — matching this whole proj
 pattern of each fixed blocker revealing the next one. `FUN_200b3c5c` is a fresh, unidentified
 frontier, not chased further this session.
 
+### FIXED, same day, continued — the next blocker (`FUN_200b3c5c`) traced and fixed too. Boot now
+### reaches a genuine, stable, self-sustaining idle steady-state — the furthest this whole
+### `qemu-machine/` project has ever gotten, by a wide margin.
+
+`FUN_200b3c5c` (the internal antenna-tuner relay network's own cold-boot init, calling
+`tuner_relay_serial_bus_init` then setting all 4 relay-command "dirty" bits and waiting for the
+byte to clear back to 0) traced to `tuner_relay_serial_bus_init`'s own
+`register_event_handler(0xa0, tuner_relay_tstb_strobe_dispatch)` call. `0xa0` = **160 decimal =
+TGI4B**, confirmed against `scratch/r01an5093ej0170-rza1-swpkg`'s `INTC_ID_TGI4B` — MTU2 channel
+4's compare-match-B interrupt, never modeled in `mtu2.c` (only `TGI4A`/`TGI4C` existed). Traced
+the real arming call (`FUN_200b3844`, the relay-shift-out helper) writing
+`TGRB_4 = TCNT_4 + 0x480` — the identical "explicit register write while channel already
+running" arming style as the already-modeled `TGI4A`, just its own compare register/status bit.
+Derived `TGRB_4`'s real offset (`0x21e`, undocumented until now) directly from the decompiled
+pointer arithmetic — lands exactly 2 bytes past the already-confirmed `TGRA_4` (`0x21c`), the
+expected real MTU2 layout.
+
+**Fixed**: added a fourth `RZA1HMtu2Event` (`ch4b`) to `mtu2.c`, modeled identically to `ch4a`
+(same `TCR_4`/`TIER_4`/`TSR_4` sharing, own `TGRB_4`/bit-1 pair, `arms_on_tstr=false`), wired to
+GIC ID 160 in `rz_a1h.c`/`rz_a1h.h` alongside the existing `TGI4A`/`TGI4C` connections.
+
+**Confirmed working**: PC sampling over 40s showed the `FUN_200b3c5c` busy-wait gone, replaced
+by real varying execution (the ring producer, `irq_exception_dispatch`, other cluster code)
+interspersed with `0x200b93ac` — **not** a new trap (that's `0x200b93fc`, 80 bytes later and a
+bare `b .`) but a completely standard ARM `dsb; sev; wfe; wfe; b` idle-loop idiom, i.e. the
+RTOS's own idle task legitimately waiting for the next event. Reran the ring/GIC tracer for a
+full 60s: **zero overflows**, ring pressure rising to `pending=15` several times and always
+fully draining back to `write==read` shortly after — genuine, healthy, self-sustaining periodic
+operation, not a fluke. This is the furthest any session of this whole `qemu-machine/` project
+has ever reached — a real, stable steady-state, not just "further before the next wall."
+Whatever comes next (front-panel/display bring-up, CI-V, etc.) is unexplored territory for a
+future session.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

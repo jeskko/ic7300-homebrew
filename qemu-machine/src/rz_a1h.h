@@ -97,6 +97,7 @@
 #define RZA1H_MTU2_SIZE 0x00000400
 #define RZA1H_MTU2_TGI3A_IRQ 154
 #define RZA1H_MTU2_TGI4A_IRQ 159 /* added 2026-09-09, see mtu2.c's own comment */
+#define RZA1H_MTU2_TGI4B_IRQ 160 /* added 2026-09-20, see mtu2.c's own comment */
 #define RZA1H_MTU2_TGI4C_IRQ 161 /* added 2026-09-09, same session, see mtu2.c */
 #define TYPE_RZA1H_MTU2 "rza1h-mtu2"
 
