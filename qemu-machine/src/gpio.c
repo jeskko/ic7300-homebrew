@@ -99,25 +99,36 @@ struct RZA1HGpioState {
  * `SR2`/`mtu2.c`'s `TSR`) rather than pulse it, matching the standard Renesas architecture
  * where the chip-specific IRQ front-end does its own edge detection and presents a plain
  * level to the downstream ARM-architected distributor, cleared by writing 0 to the
- * front-end's own pending-flag bit. Real, live-confirmed `ICR1` value this firmware
- * programs for IRQ7 (bits 14/15) is `0b10` = rising edge -- i.e. this fires on PWRK's
- * *release* (`P1_7` going low-to-high), not the initial press -- matches `pwrk_irq7_isr`'s
- * own real role (a release/re-press detector, armed only after the initial press already
- * got bring-up going via a separate, plain `PPR1`-polling busy-wait, not this interrupt).
+ * front-end's own pending-flag bit.
+ *
+ * **CORRECTED, same day, after a fresh-eyes review caught a real bit-arithmetic error**: the
+ * `ICR1` value both `pwrk_irq7_config_init` and IRQ3's own config function (`FUN_20010ea8`)
+ * program is bit-`N`0S=1/bit-`N`1S=0 (bit14=1/bit15=0 for IRQ7, bit6=1/bit7=0 for IRQ3) --
+ * with `IRQnS0` as the LSB of the 2-bit sense field, that value is binary `01`, not `10` as
+ * first (wrongly) read here. Cross-checked directly against the vendored Renesas reference
+ * driver already in this repo (`scratch/r01an5093ej0170-rza1-swpkg/.../r_switch_driver.c`),
+ * which sets the *identical* bit for its own `IRQ3`/`IRQ5` with an explicit comment: `// IRQ3
+ * config = '01' = Falling Edge`. **Both lines are falling-edge, not rising-edge** -- since
+ * PWRK is active-low, `IRQ7` genuinely fires on the *press* (high-to-low), not the release.
+ * This also means `pwrk_irq7_isr` is not purely a "release/re-press detector" as first
+ * described -- it is the *only* place `press_active` (the flag whose value at
+ * `power_state_pwrk_wait_and_bringup`'s own finalize check decides whether bring-up
+ * completes) is set based on hold duration: if `P1_7` is still low for the ISR's own full
+ * ~90ms debounce window (it enters on the press, so this is testing a held press, not a
+ * bounce), `press_active` is cleared to 0 -- an entirely ordinary "hold the power key long
+ * enough" completion path, independent of `civ_state`/`IRQ3` entirely. See
+ * qemu-machine/README.md's PWRK Status sections for the full correction and re-test.
  *
  * IRQ3's own real handler (`FUN_20186a58`, confirmed via its real `register_event_handler`-
  * equivalent call site) is the gate `power_state_pwrk_wait_and_bringup`'s own CI-V/SCIF1
- * servicing sub-loop needs (`civ_state` from `2` to `3`) -- without it that function loops
- * back to wait for another press forever instead of ever finalizing bring-up (see
- * qemu-machine/README.md's PWRK Status sections). Its own ICR1 sense-bits (bits 6/7) are
- * programmed with the identical `0b10` (rising-edge) pattern as IRQ7. The real pin is one
- * of several RZ/A1H alt-function candidates for IRQ3 (`P1_3`/`P1_9`/`P4_11`/`P6_4`/`P6_11`/
- * `P7_11`) -- `notes/ic7300-signal-chain.md`'s own port table plus the already-confirmed
- * `P6_13`/`P7_12` redundant-wiring precedent (two CPU pins tied to one real net, one for
- * UART RX, one for a secondary role) points at `P7_11` (`CRXD`/`CBSY`, the CI-V bus-busy
- * line) as the most likely real candidate -- not independently confirmed at the pin-mux
- * level, so this is a QOM-property test knob (`civ-bus-busy`) rather than a claim this
- * project has traced firmware's own `P7_11` alt-function-select write. */
+ * servicing sub-loop needs (`civ_state` from `2` to `3`) -- a real, separate CI-V privilege-
+ * tier mechanism, not part of the ordinary power-on completion path above. The real pin is
+ * now CONFIRMED, not just the most likely of several candidates: `FUN_20010ea8` (IRQ3's own
+ * config function, structurally identical to `pwrk_irq7_config_init`) does the same 6-
+ * register port-mux septet write, at the identical `0xFCFE7100` (PBDC) base, at port 7's own
+ * offset (`+0x1c`), bit `0x800` (bit 11) -- **`P7_11`**, matching `notes/
+ * ic7300-signal-chain.md`'s `CRXD`/`CBSY` label exactly, and called from
+ * `power_state_dispatch` (`0x2002b29c`) itself, before either boot branch splits off. */
 #define INTC_EXT_ICR0  0x0
 #define INTC_EXT_ICR1  0x2
 #define INTC_EXT_IRQRR 0x4
@@ -384,29 +395,29 @@ static bool rza1h_gpio_get_pwrk_pressed(Object *obj, Error **errp)
 static void rza1h_gpio_set_pwrk_pressed(Object *obj, bool pressed, Error **errp)
 {
     RZA1HGpioState *s = RZA1H_GPIO(obj);
-    bool was_released = (s->pin_level[1] & 0x80) != 0;
+    bool was_pressed = (s->pin_level[1] & 0x80) == 0;
 
     if (pressed) {
         s->pin_level[1] &= ~0x80; /* pulled low -- pressed */
-    } else {
-        s->pin_level[1] |= 0x80; /* released -- idle high */
-        if (!was_released) {
-            /* Rising edge (low -> high) -- see the INTC external-IRQ front-end's own
-             * plate comment for why this specific edge, not the press itself, is what
-             * real firmware's ICR1 configuration fires IRQ7 on. */
+        if (!was_pressed) {
+            /* Falling edge (high -> low) -- see the INTC external-IRQ front-end's own
+             * plate comment for the corrected ICR1 polarity: real firmware's ICR1
+             * configuration fires IRQ7 on the PRESS, not the release. */
             s->irqrr |= INTC_EXT_IRQ7F;
             qemu_irq_raise(s->irq7);
         }
+    } else {
+        s->pin_level[1] |= 0x80; /* released -- idle high */
     }
 }
 
 /* Live CI-V-bus-busy assertion for testing (2026-09-20) -- the IRQ3 counterpart to
  * rza1h_gpio_set_pwrk_pressed() above, same rationale (no other host-side way to simulate
- * this line changing while a boot is running). `true` pulls P7_11 low (bus asserted busy);
- * `false` releases it back to idle-high, raising IRQ3 on that rising edge -- mirroring
- * PWRK's own release-fires-the-interrupt convention exactly, per the shared `0b10` ICR1
- * sense-bit programming both lines use. Toggle via QMP `qom-set ... civ-bus-busy true`
- * (then `false`), or `-global rza1h-gpio.civ-bus-busy=on` to start already busy. */
+ * this line changing while a boot is running). `true` pulls P7_11 low (bus asserted busy),
+ * raising IRQ3 on that falling edge -- see the extirq front-end's own plate comment for the
+ * corrected ICR1 polarity (both IRQ7/IRQ3 are falling-edge, not rising). `false` releases it
+ * back to idle-high with no interrupt. Toggle via QMP `qom-set ... civ-bus-busy true` (then
+ * `false`), or `-global rza1h-gpio.civ-bus-busy=on` to start already busy. */
 static bool rza1h_gpio_get_civ_bus_busy(Object *obj, Error **errp)
 {
     RZA1HGpioState *s = RZA1H_GPIO(obj);
@@ -417,16 +428,16 @@ static bool rza1h_gpio_get_civ_bus_busy(Object *obj, Error **errp)
 static void rza1h_gpio_set_civ_bus_busy(Object *obj, bool busy, Error **errp)
 {
     RZA1HGpioState *s = RZA1H_GPIO(obj);
-    bool was_idle = (s->pin_level[7] & 0x800) != 0;
+    bool was_busy = (s->pin_level[7] & 0x800) == 0;
 
     if (busy) {
         s->pin_level[7] &= ~0x800;
-    } else {
-        s->pin_level[7] |= 0x800;
-        if (!was_idle) {
+        if (!was_busy) {
             s->irqrr |= INTC_EXT_IRQ3F;
             qemu_irq_raise(s->irq3);
         }
+    } else {
+        s->pin_level[7] |= 0x800;
     }
 }
 

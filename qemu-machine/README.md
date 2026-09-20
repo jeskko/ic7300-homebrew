@@ -456,6 +456,84 @@ path) are now real, modeled, and live-confirmed; the remaining unknown (exactly 
 represents) is a genuinely separate, lower-priority question rather than a blocker on this
 branch's own basic correctness.
 
+### CORRECTION, same day — a fresh-eyes review (asked for explicitly, on Opus, given only a
+### written summary and told to be skeptical and verify everything itself) found the "closed"
+### conclusion above rests on a real bug: the ICR1 edge polarity was read backwards. Fixing it
+### and re-testing properly gives a MUCH better result than either conclusion this thread
+### reached today — this branch genuinely DOES reach the same stable RTOS idle steady-state
+### (`idle_loop_wfe_spin`) that the auto-power-on branch does. This was the original question
+### this whole thread set out to answer, back at the very start of the day.
+
+**The bug, found and independently re-verified**: `pwrk_irq7_config_init`'s real `ICR1` write
+sequence (clear bit14, clear bit15, **set** bit14, clear bit15) leaves the 2-bit sense field at
+value `01`, not `10` — a plain bit-ordering arithmetic mistake in this file's own earlier
+write-up, not a firmware ambiguity. Independently confirmed against the Renesas reference driver
+already vendored in this repo (`scratch/r01an5093ej0170-rza1-swpkg/.../r_switch_driver.c:137`):
+`INTC.ICR1 |= 0x0040; // IRQ3 config = '01' = Falling Edge` — the *literal same bit* our own
+firmware sets for `IRQ3`, with an explicit vendor comment settling the encoding. **Both `IRQ7`
+and `IRQ3` are falling-edge, not rising-edge.** Since `PWRK` is active-low, `IRQ7` genuinely fires
+on the *press* (high-to-low), not the release as this file previously stated throughout.
+
+**Why this mattered in practice**: with the (wrong) rising-edge model, `pwrk_irq7_isr` only ever
+ran at the instant of *release* — by which point `PPR1` already read "released," so the ISR's own
+hold-duration check (`if (bit != 0) break;`) exited on its very first instruction, before the
+90ms-equivalent debounce timer could ever matter. `press_active` was therefore observed set to 1
+on *every* trial regardless of how long a press lasted — not a firmware property, an artifact of
+testing the wrong edge. This directly explains this file's own earlier claim ("a clean release
+leaves `press_active` at 1... confirmed empirically, never left 1") — that was real data, just
+data about a bug, not about the firmware.
+
+**Also found empirically while re-testing (a second, real gap, distinct from the polarity bug)**:
+`FUN_20005d88`'s debounce threshold is measured against `OSTM1`'s live free-running counter
+(`0xFCFEC404`, confirmed genuinely advancing during the hold — `ostm.c`'s own real `ptimer`-backed
+model, not stuck), scaled to nanoseconds of `QEMU_CLOCK_VIRTUAL` time. Under `-icount shift=auto`,
+virtual time paces with instructions *retired*, not real wall-clock seconds — this project has
+hit this exact effect from other angles many times before. A tight busy-wait loop retires few
+instructions per host-time slice, so the ~90ms-of-virtual-time debounce threshold this specific
+ISR uses took **~4.5 real seconds** to elapse in this trial, not 90ms of real time — a real,
+reproducible scaling factor for this specific code path, not a hang. (Empirically: `OSTM1_CNT`
+grew ~479,000/real-second against this virtual-time-derived counter early in the hold, vs. a
+target of 2,880,000 — extrapolating gives ~6s, matching the observed ~4.5s order of magnitude.)
+
+**Fixed** (`src/gpio.c`): both `rza1h_gpio_set_pwrk_pressed()` and `rza1h_gpio_set_civ_bus_busy()`
+now raise their respective IRQ on the falling edge (the press / the bus-busy assertion) instead of
+the release / bus-idle transition. Plate comments corrected throughout. Also recorded (see the
+same fresh-eyes review): `IRQ3`'s real pin (`P7_11`) is now **confirmed**, not just the best of
+six analogous candidates — `FUN_20010ea8` (IRQ3's own config function, previously not located)
+does the identical 6-register port-mux septet write `pwrk_irq7_config_init` does for `IRQ7`, at
+the same `0xFCFE7100` (PBDC) base, port 7's own offset (`+0x1c`), bit `0x800` (bit 11) — an exact
+match, and it's called from `power_state_dispatch` (`0x2002b29c`) itself, before either boot
+branch splits off.
+
+**Rebuilt and re-tested, corrected edge polarity, holding `pwrk-pressed=true` (not releasing
+it)**: `press_active` (`0x203901ef`) reads `0` at t≈4.5s (real time) into the hold — the debounce
+window matters, this is not a hang. **PC then leaves `power_state_pwrk_wait_and_bringup`
+entirely** and, over a full 60s follow-on trial, lands on `0x200b93ac` (`idle_loop_wfe_spin`, the
+exact same address the auto-power-on branch settles into) in 69 of 120 half-second samples — the
+clear majority, with the remaining samples scattered across varied, real addresses (genuine RTOS
+background activity, not a stuck loop), matching this whole project's own already-established
+signature for "reached a genuine, stable, self-sustaining idle steady-state" on the other branch.
+**This is the actual, correct answer to the question this whole thread opened with**: yes, the
+PWRK-wait branch reaches the same kind of steady state the auto-power-on branch does, once driven
+by a correctly-modeled press held long enough for the real debounce to elapse.
+
+One loose end, not chased further: the `finalize` flag (`*0x20390311`, `0x20390311`) never read
+`1` in any poll during the 60s trial despite PC clearly having passed through and beyond that
+exact code path — most likely a "handle once" signal consumed/cleared by whatever runs right
+after (matching this project's own established pattern for other one-shot mode-request flags),
+not evidence the write didn't happen; the PC-address confirmation above is the load-bearing
+result, not this flag.
+
+**Retraction, for the record**: this file's own immediately-preceding "CLOSED... this loop's cycle
+IS the steady state" conclusion was real motivated reasoning — a true-but-unrelated fact
+(`civ_state`'s CI-V-privilege-tier role) was used to explain away an observation (`press_active`
+never clearing) that actually had a separate, boring root cause (a polarity bug in this project's
+own test harness). The `civ_state`/CI-V-privilege-tier finding itself stands and is real; it just
+was never the reason `finalize` wasn't being reached. Worth remembering: an explanation that's
+independently true is not the same as an explanation that's actually load-bearing for the
+observation at hand — this project has hit that exact shape of mistake before (see the
+GIC-priority-mask retraction earlier this same day) and hit it again here within hours.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
