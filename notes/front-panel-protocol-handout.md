@@ -169,3 +169,82 @@ against are:
   per fix, applied by running the script in Ghidra's Script Manager — see `tools/README.md`).
 - RL78 tooling (see "Hardware identity" above) — sitting ready, only useful once/if a real `IC501` image
   turns up.
+
+## 2026-09-20 update: a real live traffic capture tool now exists, and it already caught new,
+## undecoded outbound content — a strong, concrete next entry point into this handout's own
+## still-open "type→offset→bit mapping" question (see above).
+
+**New tool, built and working**: `qemu-machine/src/scif.c` now has a per-channel-selectable serial
+bus logger (`RZA1H_DEBUG=scif<N>`, e.g. `scif3` for exactly this front-panel bus — `RZA1H_DEBUG=scif`
+still means every channel, unchanged). It assembles TX bytes from `0xFE` to `0xFD` and logs one
+readable line per complete outbound frame (`scif%u: TX frame type=0x.. [hex bytes] (N bytes)`), on
+top of the existing per-byte log — no GDB, no perturbation risk, just the device model's own
+`fprintf`. **Deliberately TX-only for now**: the channel-3/5 virtual responders (this file's own
+`rza1h_scif3_frontpanel_ack`/`rza1h_scif5_...`) precompute their RX replies directly into guest RAM
+rather than feeding them through `FRDR` byte-by-byte (real, hard-won timing the logger has no
+business touching — see those functions' own comments), so a generic RX accumulator can't see full
+reply frames the same way TX can; building that is a real, separate next step if the RX side ever
+matters here.
+
+**A first live capture already caught 4 distinct outbound frames during a plain auto-boot run**:
+```
+scif3: TX frame type=0xf0 [fe f0 fd] (3 bytes)      -- the already-known boot identify handshake
+scif3: TX frame type=0xf1 [fe f1 fd] (3 bytes)      -- the already-known keepalive ping
+scif3: TX frame type=0x00 [fe 00 00 00 00 00 67 80 90 a7 af c3 ca dc 86 aa 20 08 00 00 00 00 00
+                            00 00 00 00 00 00 00 00 00 00 00 00 00 fd] (36 bytes)
+scif3: TX frame type=0x01 [fe 01 01 fd] (4 bytes)
+```
+The last two are **new, real, undecoded content** — genuine payload bytes this project hasn't
+traced the meaning of yet, sitting squarely inside this handout's own still-open "rest of the
+type→offset→bit mapping" question from 2026-09-07.
+
+**Where this data comes from, already narrowed down this same session (2026-09-20) via
+`scif3_driver_pump_tick`'s own decompile — the complete, exhaustively-enumerated outbound driver,
+only 3 real call sites into `scif3_send_frame` exist anywhere in the whole binary, all inside this
+one function**:
+```c
+void scif3_driver_pump_tick(void)  // 0x200373ac
+{
+    ...
+    if (bit 0x20 set) { scif3_send_frame(0, DAT_200375b4, 0x21); }       // <-- matches the type=0x00, 33-byte frame exactly (0x21=33)
+    else if (bit 0x10 set) { /* dynamic type via FUN_20006308, a queue */ scif3_send_frame(computed_type, ...); }
+    else if (bit 0x08 set) { scif3_send_frame(0x21, &local_18, 0x13); }  // already fully decoded: XOR-0x55 "ICOM INC. (C)2016"
+    else { /* 0xF0/0xF1 handshake, already known */ }
+}
+```
+The captured `type=0x00`/33-byte frame is almost certainly the `bit 0x20` case — the byte count
+matches exactly (`0x21` = 33, plus `fe`/type/`fd` = 36 total, exactly what was captured). The
+`type=0x01` 1-byte-payload frame doesn't obviously match any of the three literal cases above at a
+glance — worth re-checking against the `bit 0x10` (dynamic-type) case specifically, since that one's
+own type value is *computed*, not a fixed literal, and could plausibly resolve to `0x01` under some
+condition.
+
+**Concrete next-session plan, in order of expected payoff**:
+1. **Resolve `DAT_200375b4`/`DAT_200375b8`'s live pointer values** (same technique used throughout
+   this project: `xp /1xw <pool addr>` against a running boot) to find the *real* RAM address of the
+   `bit 0x20` frame's 33-byte payload buffer, then find **who writes into that buffer** before the
+   send (a `references_to` on the resolved live address, or on the pool addresses of any other
+   symbol that shares the same underlying target — this project has hit "the same address reached
+   via a different literal-pool slot, or via register-relative offset from a different base" more
+   than once, so check both). That writer is very likely the actual "status/state we're telling the
+   front panel about" producer — a strong, direct answer to "what does this frame mean" once found.
+2. **Trace `FUN_2003754c`'s own `FUN_20006308`-driven queue** (the `bit 0x10` dynamic-type path) —
+   what gets enqueued, by whom, and under what type values. This is also the path
+   `power_state_pwrk_wait_and_bringup` itself uses (confirmed this session: called when entered with
+   `civ_state==1`), so tracing it doubles as still-open groundwork for that thread too.
+2b. Recall separately that `power_state_pwrk_wait_and_bringup` sends this frame then does a genuine
+   RTOS wait-for-flag (`FUN_20062c1c` → `FUN_20187010(1, 0xffffffff)`, not a raw spin) on a byte at
+   `DAT_2002a0dc+3` before continuing — if a fresh session wants to check whether this is a real,
+   satisfiable wait or a latent hang risk under different conditions than this project's own test
+   coverage so far, that flag's real setter is a related, not-yet-traced thread.
+3. **Capture more of the picture live**: rerun `RZA1H_DEBUG=scif3` (or `scif3,scif0` etc. for a
+   wider bus view) over a longer boot/idle window (including a `--hold-pwrk`-style long run, if the
+   PWRK-wait branch's own frame differs from auto-boot's) to see whether new frame types appear once
+   the system is further along (e.g. once real UI drawing might start — see the separate,
+   still-open `qemu-machine/` VDC5-framebuffer thread from this same session) — more real captured
+   traffic is cheap and directly narrows which of the undecoded `0x00`-`0x1F` types actually get
+   used in practice, rather than needing to reason about all 32 in the abstract.
+4. Cross-reference any newly-decoded type against `scif3_frame_dispatch_by_type`'s own **inbound**
+   side (`DAT_20037590 + type` writes into the shared front-panel status struct at `0x203dcab6`) —
+   if the main CPU ever sends a type it can also *receive*, that's a strong hint the same frame
+   shape is used bidirectionally for that specific status, e.g. echoed/acknowledged state.

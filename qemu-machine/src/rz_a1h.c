@@ -258,6 +258,23 @@ static void rza1h_init(MachineState *machine)
     add_plain_ram_region(sysmem, "rza1h.cpg-deep-standby",
                          RZA1H_CPG_DEEP_STANDBY_BASE, RZA1H_CPG_DEEP_STANDBY_SIZE);
 
+    /* VDC50 (real LCD/display controller, base+register layout confirmed against
+     * ~/Downloads/rza1.svd) + LVDS (its output serializer, a small sub-block at the same
+     * page, +0x630) -- 2026-09-20, found via `-d unimp` tracing: firmware genuinely
+     * configures multiple graphics planes (GR0-3, GR_VIN, GR_OIR) during boot, previously
+     * silently swallowed by the generic unimplemented-device catch-all (writes discarded,
+     * reads always 0) with zero way to inspect what firmware actually configured. No real
+     * display/timing/compositing behavior is modeled here -- same "accept any config,
+     * remember it, no side effects" convention as CPG above -- but unlike the generic
+     * catch-all, a plain RAM region actually STORES writes, so external tools (see
+     * tools/vdc5_framebuffer_peek.py) can read back GRn_FLM2 (framebuffer base)/FLM3
+     * (stride)/FLM6 (format+width) via QMP and decode the real guest-RAM framebuffer
+     * firmware points a graphics plane at -- a real, non-invasive way to see what the
+     * radio would actually be showing on its LCD, without modeling VDC5's own compositing/
+     * scaling/timing pipeline at all. */
+    add_plain_ram_region(sysmem, "rza1h.vdc50",
+                         RZA1H_VDC50_BASE, RZA1H_VDC50_SIZE);
+
     /* mtu2.c -- upgraded from a bare RAM region to a real device, 2026-09-09,
      * once body.bin's own cold-boot task-readiness busy-wait was found
      * depending on a real periodic interrupt (GIC ID 154, TGI3A) that only

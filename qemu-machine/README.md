@@ -534,6 +534,79 @@ independently true is not the same as an explanation that's actually load-bearin
 observation at hand — this project has hit that exact shape of mistake before (see the
 GIC-priority-mask retraction earlier this same day) and hit it again here within hours.
 
+### Follow-up, same day — the shared `idle_loop_wfe_spin` itself examined directly (real
+### disassembly, not decompiled C): confirmed a bare `dsb/sev/wfe/wfe/b` idiom with zero
+### embedded condition, live-confirmed `CPSR.I=0` (IRQs genuinely enabled) while parked there.
+
+Per the user's own question ("what is that loop waiting for"). The loop body
+(`0x200b939c`-`0x200b93ac`) has no polled flag at all — by construction it can only be woken by the
+architectural `WFE` wake condition (any pending interrupt, or an explicit `SEV`), not one specific
+IRQ. The real "idle vs. run a task" decision happens entirely in the interrupt/RTOS dispatch layer
+above this snippet — a normal RTOS context switch loads a different task's saved PC/SP directly, it
+doesn't "return through" this loop's own code. Matches this whole project's own already-established
+observation (auto-boot branch's ring-pressure-rising-and-draining cycle) exactly.
+
+### Follow-up, same day — a full `-d unimp` survey of both boot branches, prompted by "have we
+### detected any unimplemented peripherals being touched before reaching idle". Found a real,
+### substantial, previously-uncharacterized gap: the LCD/display controller (`VDC50`+`LVDS`) is
+### actively configured by firmware and wasn't modeled at all. Built an MVP for it.
+
+Ran both boot branches with `-d unimp -D <log>` to completion. **Auto-boot branch**: 293
+unimplemented-device hits, all during one-time boot config — the log stops growing entirely once
+steady idle is reached (confirmed over 15s). **PWRK-wait branch (held)**: only 25 hits before the
+first `wfi` (this branch does much less hardware bring-up before parking), but grows to 294 over
+the following ~15s once the button is held and finalize fires — and its own tail matches the
+auto-boot log's tail **byte-for-byte** (identical `io-e8100000` magic-value sequence,
+`0xa0000054`/`0xa0010130`/`0xa00f8000`/`0x84cb34fe`/...) — real, concrete confirmation both
+branches converge on the exact same downstream feature/task bring-up code once "boot" completes,
+not just the same final PC address.
+
+**Mapped every touched region against `~/Downloads/rza1.svd`**: `spi-status-and-neighbors` =
+`SPIBSC0` (boot-flash controller, expected/cosmetic); `io-e8200000` = `SSIF0`/`SSIF1` (DSP audio
+link, expected — the DSP itself isn't emulated); `io-e8100000`'s repeated single-register-push
+pattern doesn't match anything in this SVD (unidentified, not forced); **`io-fcfe0000`'s 212 hits
+resolve almost entirely to `VDC50`+`LVDS`** (33 + 32 distinct registers) — the RZ/A1H's real
+LCD/display controller, genuinely being configured (multiple graphics planes `GR0`-`GR3` +
+video-input/overlay layers `GR_VIN`/`GR_OIR`, panel timing via `TCON_*`, output format via `OUT_*`)
+and previously silently discarded by the generic catch-all.
+
+**Built an MVP** (`rz_a1h.c`): swapped the generic unimplemented-device catch-all for this specific
+0x1000-byte block for a plain `add_plain_ram_region()` (same convention as `CPG`) — no
+display/timing/compositing behavior modeled, but writes now actually stick instead of being
+discarded, so external tools can read back what firmware configured. Confirmed via `-d unimp`: zero
+log lines for this range after the swap.
+
+**Built `tools/vdc5_framebuffer_peek.py`**: polls all 6 graphics planes' `GRn_FLM2` (framebuffer
+base address)/`FLM3` (stride)/`FLM6` (format+width) — bit-packing confirmed against the vendored
+Renesas VDC5 driver source (`scratch/r01an5093ej0170-rza1-swpkg/.../r_vdc_l_register.c`) — and once
+any plane's `FLM2` goes nonzero, dumps that guest-RAM region and decodes it to a real PNG using the
+real `VDC_GR_FORMAT_*` encoding (RGB565/RGB888/ARGB8888/RGBA8888 implemented; CLUT/YCbCr recognized
+but not decoded yet). **Not yet caught**: over up to 120s of real time (a lot of virtual time under
+`-icount`) on both boot branches, no plane's `FLM2` ever went nonzero. Found a real, generic VDC5
+driver module in the firmware (`FUN_20074a4c` and neighbors — plane position/color-key/enable
+setup, matching the vendor reference driver's own structure closely) but this specific function
+doesn't set `FLM2` itself; the actual setter, and whether display drawing is gated behind a real
+VDC5 vsync/underrun interrupt this project hasn't identified an ID for (which a plain-RAM model
+can never generate, so anything waiting on it would block forever), are both open. Concrete next
+step: trace `FUN_20074a4c`'s own callers/siblings to find the `FLM2` setter and settle the
+interrupt question one way or the other.
+
+### Follow-up, same day — per the user's own request, a per-channel-selectable SCIF bus logger
+### added, and a first live capture of real front-panel (`SCIF3`) traffic already found new,
+### undecoded content. Full write-up and concrete next steps in
+### `notes/front-panel-protocol-handout.md`'s own 2026-09-20 section — this is just the pointer.
+
+`RZA1H_DEBUG=scif<N>` (e.g. `scif3`) now selects one SCIF channel's TX log + one assembled-frame
+summary line per complete `0xFE...0xFD` frame; `RZA1H_DEBUG=scif` still means every channel,
+backward compatible. TX-only deliberately — the channel-3/5 virtual responders precompute RX
+replies directly into guest RAM rather than through `FRDR` byte-by-byte, so a generic RX
+accumulator can't see full reply frames the same way. A first capture on a plain auto-boot already
+caught two new, real, previously-undecoded outbound frames (type `0x00`, 33-byte payload; type
+`0x01`, 1-byte payload) alongside the two already-known handshake frames (`0xF0`/`0xF1`) — see the
+notes file for the exact bytes, which of `scif3_driver_pump_tick`'s three real send paths each
+likely corresponds to, and the ordered next-session plan (resolve `DAT_200375b4`'s live pointer to
+find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` drives).
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
@@ -2375,10 +2448,11 @@ section for a first look at what it already revealed):
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
 | MTU2 | `mtu2.c` | Real channel 3's `TGI3A` (GIC 154), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), and two more purely-polled compare-match events sharing one status byte (`0xFCFF0305` bits 2/0, targets `0x30c`/`0x308`, no GIC ID — host-wall-clock deadlines, not a live counter) — **all five confirmed load-bearing** (ch3 unblocks `cold_boot_hw_init`'s task-readiness wait — see `mtu2_ch3_periodic_housekeeping_tick` in Status above — ch4 unblocks `dsp_boot_handshake`, the fourth unblocks `scif5_cmd_transmit_now`, the fifth unblocks a DMA-descriptor-setup routine). Every other channel/register/event still plain storage (`regs[]` passthrough). **`MTU2_FREQ_HZ` confirmed real at 32MHz** (P0φ/1, same real clock as OSTM — the original 25MHz was an empirical placeholder, corrected once `-icount` made a real-clock re-check necessary) |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR/STI/TI/TEI/RI/SPI protocol, real bit-rate-generator-paced timing — **formula corrected 2026-09-10** to implement all 5 real SCLE/NFE/CKS-dependent variants (manual §18.3.12/13), not just the SCLE=0 case, and to reset `FER`/`BRL`/`BRH`/`MR1` to their real hardware power-on defaults; confirmed against the real firmware-programmed register values (`CKS=1`⇒IICφ=16MHz, `FER` left at its real `SCLE=1,NFE=1` reset default) — real rate ≈340kHz, comfortably inside the GT24C128B datasheet's own min/max windows at either supported voltage; START/RESTART/STOP conditions also corrected (`riic_condition_time_ns()`) to their real, much-shorter §18.12 timing instead of a full byte time. **EEPROM data-plane rebuilt 2026-09-10 (same day, later)**: replaced a hand-rolled, read-only byte array (found via this project's own A/B differential test to silently drop every write and wrap at the wrong address-space size) with a real `hw/i2c/core.c` `I2CBus` + `hw/nvram/eeprom_at24c.c` slave (16KB, 2-byte addressing, real 7-bit address 0x50 — confirmed via decompile), plus a genuinely new write-data-loop protocol state machine (decompiled from the real firmware write driver, `FUN_2001dcc4`/`FUN_2001da80`/`FUN_2001db50`) that the old model never had at all — live-validated end to end (write then read-back over a fresh transaction, `tools/test_riic_eeprom_write.py`). See README.md's Status section and README-history.md for the full derivation (including a live regression found and fixed along the way) — only RIIC2 exercised by any traced boot path so far, the real physical EEPROM `IC351`/`GT24C128B` (note: not the same thing as the diode matrix in `notes/diode-matrix.md`, which is a separate, GPIO-scanned resistor array — an earlier session's own label here conflated the two) |
-| SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel, now real baud-rate-accurate pacing (`FSR.TDFE`/`TEND`, `PCLK`=32MHz, see Status above — 2026-09-10). Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers, and now paced by a real (placeholder) delay too — see Status above) |
+| SCIF0-7 (UART) | `scif.c` | TX with real, level-triggered TXI IRQ per channel, now real baud-rate-accurate pacing (`FSR.TDFE`/`TEND`, `PCLK`=32MHz, see Status above — 2026-09-10). Real RXI backing two virtual responders: a front-panel one on channel 3, and a DSP-link one on channel 5 (the latter triggered by a second, tiny MMIO region at `0xFCFE3120` on the channel-5 instance only, not by SCIF registers, and now paced by a real (placeholder) delay too — see Status above). **Per-channel bus logger added 2026-09-20**: `RZA1H_DEBUG=scif<N>` (e.g. `scif3` for the front panel) logs just that channel's TX bytes plus one assembled-frame summary line per complete `0xFE...0xFD` frame; `RZA1H_DEBUG=scif` still means every channel. TX-only for now — see `notes/front-panel-protocol-handout.md`'s 2026-09-20 section for why, and for a first real captured-traffic analysis already in progress |
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
 | RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
+| VDC50 (LCD/display controller) + LVDS | `rz_a1h.c`'s `add_plain_ram_region()` | Added 2026-09-20 (found via `-d unimp`: firmware genuinely configures multiple graphics planes during boot, previously silently discarded). Plain storage only, no display/timing/compositing behavior modeled — but unlike the generic catch-all it was carved out of, writes now stick, so `tools/vdc5_framebuffer_peek.py` can read back `GRn_FLM2`/`FLM3`/`FLM6` and decode a real framebuffer once firmware points one at real content (not yet observed within 120s on either boot branch — see Status above for the open "gated on an unmodeled VDC5 interrupt?" question) |
 
 ## Directory layout
 

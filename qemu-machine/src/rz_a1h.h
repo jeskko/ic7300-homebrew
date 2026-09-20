@@ -94,6 +94,14 @@
 #define RZA1H_CPG_DEEP_STANDBY_BASE 0xFCFF1800
 #define RZA1H_CPG_DEEP_STANDBY_SIZE 0x00000020
 
+/* VDC50 (real base per ~/Downloads/rza1.svd) + its LVDS output block (a small sub-block at
+ * +0x630 within the same page) -- see rza1h_init()'s own comment for why this is a plain
+ * RAM region (register-storage only, no display/timing behavior modeled) rather than a
+ * real device. Size covers every offset this project has actually observed touched
+ * (up to GR_OIR_BASE at +0xfcc) plus headroom to the next 4KB page boundary. */
+#define RZA1H_VDC50_BASE            0xFCFF7400
+#define RZA1H_VDC50_SIZE            0x00001000
+
 /* Matches emu/peripherals/mtu2.py's BASE/SIZE. Upgraded from a bare RAM
  * region (2026-09-09) to a real device for channel 3 specifically, once
  * body.bin's own cold-boot task-readiness busy-wait was found depending on
