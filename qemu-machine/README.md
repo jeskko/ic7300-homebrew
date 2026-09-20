@@ -343,6 +343,64 @@ assert it for testing). `tools/trace_pwrk_wait_advance.py` is ready to re-verify
 exists — rerun it and watch `civ_state`/`press_active`/`finalized` (it already prints all
 three) rather than just PC.
 
+### Follow-up, same day — IRQ3 pin identified (user supplied the RZ/A1H alt-function pin
+### table), `gpio.c` extended, and the hypothesis CONFIRMED live: `civ_state` genuinely
+### flips `2`→`3`. One further, deeper layer found underneath, not yet closed.
+
+User supplied the RZ/A1H's real alt-function candidate-pin table for `IRQ0`-`IRQ7` (several
+candidate pins per IRQ number, as expected for this chip family). Cross-referencing all six
+`IRQ3` candidates (`P1_3`/`P1_9`/`P4_11`/`P6_4`/`P6_11`/`P7_11`) against `notes/
+ic7300-signal-chain.md`'s already-complete port table picked out **`P7_11`** (`CRXD`/`CBSY`) as
+the strongest candidate — it directly parallels this same firmware's own already-confirmed
+`P6_13`/`P7_12` pattern (one real net redundantly wired to two CPU pins: one for UART RX, one
+for a secondary role), and `CBSY` ("CI-V bus busy") fits `civ_state`'s own name and role exactly.
+
+**Built and wired** (`src/gpio.c`, `src/rz_a1h.c`, `src/rz_a1h.h`): a second `qemu_irq` output
+on the same INTC external-IRQ front-end used for `IRQ7`, generic `IRQRR` bit-3 (`IRQ3F`)
+handling in the existing read/write ops (no new register block needed — `ICR1`/`IRQRR` already
+cover all 8 lines generically), a `P7_11` idle-high reset default (same "unmodeled real input
+defaults to its real idle level" reasoning as `P1_6`/`P8_9`/`P1_7`), and a new `civ-bus-busy`
+QOM boolean property mirroring `pwrk-pressed`'s own structure exactly (`true`=busy/asserted,
+`false`=idle, fires `IRQ3` on the idle-transition rising edge, matching both lines' identical
+`0b10` `ICR1` sense-bit programming). Builds clean.
+
+**Confirmed live, isolated from any PWRK press** (parked at the wfi landing point, no button
+touched at all): a bare `civ-bus-busy` pulse alone wakes the CPU, and `civ_state`
+(`0x2039030f`) is caught at `3` on the very next poll — direct proof `FUN_20186a58` (`IRQ3`'s
+real registered handler) ran and did exactly what its own decompile predicted. **The hypothesis
+is confirmed, not just plausible.**
+
+**But it doesn't stick** — within a few hundred ms, `civ_state` reads back `2` and PC has
+cycled through the wait-for-a-new-press loop back to the identical wfi. Read the real assembly
+(not just decompiled C, which had restructured this section confusingly) at `0x20029ba4`-
+`0x20029c1c` to get the exact mechanism precisely: the outer loop re-enters the CI-V service
+body (`0x20029b60`: `civ_rx_frame_stage_and_dispatch`/`scif1_svc_rx_service`/etc.) as long as
+**both** `press_active` (`0x203901ef`) is nonzero **and** `civ_state==3`; once either the
+2-second — actually a 200-tick — timeout inside that loop fires, or `civ_state` stops reading
+`3`, it falls to `0x20029bbc`, masks `IRQ0`/`3`/`4`/`6`/`7`, and checks `press_active` one more
+time: **only if that's `0` does it finalize** (`*0x20390311=1`, the same address as before) —
+otherwise it re-arms and loops back to wait for another press. `press_active` is only ever
+cleared inside that CI-V loop body, gated on a *third* flag (`*DAT_2002a100`, live address
+`0x20390031`) becoming nonzero.
+
+**This third flag is where the trail goes cold for now**: a hex search for every literal-pool
+copy of `0x20390031` found the *only* reference to this exact pool slot is the one read-and-
+clear site already described (confirmed via `references_to` on the pool address itself, not
+just the target) — nothing else in `body.bin` writes it through this same absolute-constant
+path. Other hits from the raw-address search (`menu_item_value_set_by_format_type` and others)
+turned out to be false leads: they access *different byte offsets* within what's apparently a
+small shared multi-field scratch record based at the same address, not this specific field —
+a reminder that this technique can't see writers that compute the address via register-relative
+offsets from a different base pointer instead of loading the same absolute literal.
+
+**Concrete next step**: decompile `civ_rx_frame_stage_and_dispatch` (`0x2000b258`) and
+`scif1_svc_rx_service` (`0x20012854`) directly to see whether either one is the real setter of
+`*0x20390031` via a relative-offset path this search couldn't find, or whether finishing this
+branch genuinely needs a virtual SCIF1 responder — the same kind of thing the already-built
+SCIF3 front-panel responder (`scif.c`) does, but for a different, so-far-unmodeled protocol
+handshake. `tools/trace_pwrk_wait_advance.py --civ-busy-pulse` is ready to re-verify once
+either lead pans out.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

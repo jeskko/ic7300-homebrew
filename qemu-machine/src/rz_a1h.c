@@ -242,6 +242,9 @@ static void rza1h_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0,
                        qdev_get_gpio_in(gic,
                            RZA1H_EXT_IRQ7_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 1,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_EXT_IRQ3_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     /* l2c.c's own address (0x3ffff000) isn't inside any unimplemented-device
      * range above -- it was simply unmapped before this, so a plain (non-

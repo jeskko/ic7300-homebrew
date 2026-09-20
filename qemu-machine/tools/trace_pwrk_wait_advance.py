@@ -87,6 +87,10 @@ def set_pwrk_pressed(s: socket.socket, pressed: bool):
     qmp_cmd(s, "qom-set", path=GPIO_PATH, property="pwrk-pressed", value=pressed)
 
 
+def set_civ_bus_busy(s: socket.socket, busy: bool):
+    qmp_cmd(s, "qom-set", path=GPIO_PATH, property="civ-bus-busy", value=busy)
+
+
 def describe(pc: int) -> str:
     if pc == WFI_LANDING:
         return "AT the known wfi landing point"
@@ -107,6 +111,9 @@ def main():
                           " window_s observation")
     ap.add_argument("--press-gap", type=float, default=0.2,
                      help="seconds pwrk-pressed stays true before release")
+    ap.add_argument("--civ-busy-pulse", action="store_true",
+                     help="also pulse civ-bus-busy true->false right after the PWRK release,"
+                          " to test whether that's what's needed to advance civ_state")
     args = ap.parse_args()
 
     sock_path = "/tmp/qemu_pwrk_advance.sock"
@@ -148,6 +155,12 @@ def main():
             time.sleep(args.press_gap)
             set_pwrk_pressed(s, False)
             print("released -- rising edge should fire IRQ7 now")
+
+            if args.civ_busy_pulse:
+                set_civ_bus_busy(s, True)
+                time.sleep(0.1)
+                set_civ_bus_busy(s, False)
+                print("civ-bus-busy pulsed true->false -- rising edge should fire IRQ3 now")
 
             start = time.time()
             last_pc = None
