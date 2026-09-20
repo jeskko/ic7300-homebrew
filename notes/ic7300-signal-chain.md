@@ -372,6 +372,35 @@ pin table (both show only unrelated alternates: `RIIC0SCL`/`TCLKA`/`IRQ0`/etc. f
 front-panel reset line and a physical power-button read. Not traced further this session (no obvious
 register-level lead the way the UART/audio signals had).
 
+**`PWRK` handler located, 2026-09-20.** Firmware actually uses `P1_7`'s alt-function IRQ7 (the option
+listed above turns out to be exactly what's used, not a red herring) — found by tracing
+`register_event_handler(0x27, ...)` (`0x27` = 39 decimal = the real RZ/A1H GIC ID for IRQ7, confirmed
+against `scratch/r01an5093ej0170-rza1-swpkg`'s `INTC_ID_IRQ7=39`), cross-checked independently by a
+direct search for a `PPR1` (`g_ppr_register_base+4`) bit `0x80` test. Three functions, all renamed in
+Ghidra:
+- **`power_state_pwrk_wait_and_bringup`** (`0x20029ca4`) — the actual wait-for-power-key-press loop
+  (`0x20029918`): busy-waits on `PPR1` bit `0x80` (`P1_7`/`PWRK`) reading `0` (active-low, plain
+  pull-up + switch-to-ground). On press, sets a status byte (`DAT_2002a0dc+6` = 1), brings up the
+  front-panel/SCIF1 drivers, arms the release-detect interrupt, then runs a CI-V/SCIF1 servicing loop
+  gated on that same status byte staying nonzero.
+- **`pwrk_irq7_config_init`** (`0x20029800`) — configures `P1_7`'s port-mux to IRQ7, programs the INTC
+  `ICR1` IRQ7 sense bits, and registers `pwrk_irq7_isr` as GIC ID 39's handler.
+- **`pwrk_irq7_isr`** (`0x20029774`) — the actual IRQ7 ISR: acks the raw `INTC IRQRR` pending flag
+  (bit 7 = `IRQ7F`), checks `PPR1` bit `0x40` (`P1_6`/`PDV`, the brownout detector) as a safety
+  interlock, then debounces by polling `PPR1` bit `0x80` again with a timeout, updating the same
+  `DAT_2002a0dc+6` status byte.
+
+**Important scoping caveat**: this whole mechanism sits on `power_state_pwrk_wait_and_bringup`, one of
+two branches `FUN_2002b29c`'s power-state dispatcher chooses between — the other is
+`cold_boot_mode_dispatch` → `cold_boot_hw_init`, the RIIC2/EEPROM path where `qemu-machine`'s emulation
+currently traps (see `qemu-machine/README.md`). A genuine cold power-on takes the `cold_boot_hw_init`
+branch and never reaches this PWRK-wait loop at all — it's specifically the warm/standby-wake path,
+taken when the CPU is already running and software must poll for the button press rather than have
+hardware bring-up proceed unconditionally. So the emulator isn't "close" to this point in the sense of
+sequential progress along one boot path; it's on the *other* branch entirely, and getting the emulator
+here would need forcing the dispatcher's `bVar8`/`*DAT_2002b4d4` condition down the warm-wake side
+rather than just running further.
+
 ## Schematic sheet map (2026-08-27 sweep)
 
 Swept all 17 pages of `/data/misc/icom/7300/doc/IC-7300_Schematic_Diagram_2.pdf`
