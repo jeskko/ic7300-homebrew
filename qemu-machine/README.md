@@ -650,6 +650,24 @@ find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` dr
 ### tried): a GDB hardware watchpoint on the buffer from true boot `t=0`. Full detail in
 ### `notes/front-panel-protocol-handout.md`'s 4th 2026-09-20 follow-up section.
 
+### Follow-up, 2026-09-20, continued a 6th time — before running a planned GDB hardware
+### watchpoint (the front-panel buffer's own next step above), got a second opinion first on this
+### project's long-standing, previously-unexplained "GDB polling perturbs guest behavior in ways
+### QMP polling doesn't" tension — flagged as an open mystery in multiple places in this file and
+### in `README-history.md` since 2026-09-10. **Now resolved**: an independent review that actually
+### read the vendored QEMU source found four confirmed mechanisms (a breakpoint degrades its whole
+### containing 4KB page to one-instruction-per-TB, changing interrupt-scheduling order; single-
+### stepping masks IRQs and stops the virtual timer by explicit design; a watchpoint slows its
+### whole page and skips the interrupt check on every hit; `-icount shift=auto` turns any of that
+### page-local slowdown into a real change in emulated CPU speed) — none of them the pause itself,
+### all with exact `qemu-src` file:line citations. Full write-up in `README-history.md`'s own
+### 2026-09-20 entry, right after the original "still-open tension" section; the two older
+### "genuinely open" notes earlier in this file are now marked RESOLVED with a pointer there.
+### **Not yet acted on**: the front-panel buffer's own watchpoint plan above hasn't been re-run
+### with the new precautions (pinned `-icount shift=N`, single-page range) or replaced with the
+### zero-perturbation `address_space_write` instrumentation technique this review also surfaced —
+### that decision is still open, deliberately deferred by the user pending this write-up.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**
@@ -2459,6 +2477,15 @@ section for a first look at what it already revealed):
 ## QMP-only trace this session reproduced cleanly. **This is a working, well-corroborated theory,
 ## not something confirmed by reading QEMU's own `gdbstub.c`/`icount.c` source this session** —
 ## genuinely open if a fully source-level-confirmed answer is wanted.
+##
+## **RESOLVED, 2026-09-20** — this theory (the "burst release on resume" mechanism) was checked
+## directly against source later the same 2026-09-10 session and refuted: the freeze is real but
+## provably drift-free, so nothing "queues up." The actual mechanism is different and was fully
+## source-confirmed in a later, dedicated review: a breakpoint/watchpoint changes code generation
+## and interrupt-check granularity for its whole containing 4KB page for as long as the guest
+## keeps running — not the pause itself. Full derivation, with exact `qemu-src` file:line
+## citations for all four confirmed mechanisms, in `README-history.md`'s own 2026-09-20 entry
+## (right after its "still-open tension" section).
 ##
 ## Two wrong leads were chased and retracted the same session they came up, not left standing —
 ## an SVC-dispatch misattribution (the address was actually the generic IRQ vector — now directly

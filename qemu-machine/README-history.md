@@ -3304,6 +3304,129 @@ finding; (3) the real ARM `arm_gic` device model's own state machine (not checke
 all) could have some `cpu_synchronize_state`-adjacent or interrupt-delivery-timing interaction
 specific to a stopped-CPU window that none of the three generic mechanisms above would surface.
 
+## 2026-09-20: the GDB/QMP-perturbation tension above is RESOLVED -- an independent Opus review,
+## grounded in actually reading the vendored QEMU 11.1.1 source, found the real mechanisms. The
+## pause itself was never the culprit; the presence of a breakpoint/watchpoint changes code
+## generation and interrupt-check granularity for as long as the guest runs, which has no QMP
+## analogue at all. Requested specifically because a GDB hardware watchpoint was about to be used
+## for the first time on a fresh thread (the front-panel `SCIF3` status-buffer investigation, see
+## `notes/front-panel-protocol-handout.md`) and this project's own standing discipline is to get a
+## second opinion before trusting a new GDB-based technique on a still-open question.
+
+**Four confirmed mechanisms, each with exact file:line citations against `qemu-src/`, account for
+every observation in the section above without needing anything exotic:**
+
+**(A) A single breakpoint degrades its entire containing 4KB page to one-instruction-per-TB, not
+just the breakpointed address.** `accel/tcg/cpu-exec.c:296-358`, `check_for_breakpoints_slow()`:
+any PC in the same page as a set breakpoint gets `CF_NO_GOTO_TB | CF_BP_PAGE | (count=1)` --
+translation-block chaining off, one instruction per TB. Since `cpu_handle_interrupt()`
+(`cpu-exec.c:780`) runs at every TB boundary, this means the pending-IRQ check now runs *between
+every single instruction* on that page instead of once per (previously many-instruction) TB. A
+pending GIC IRQ that would have been taken at the end of a 30-instruction TB is now taken at the
+exact instruction it became pending -- a real interrupt-scheduling-order change, zero clock drift
+involved. **This alone explains every "a breakpoint suppressed the race/stall" observation above**
+(the `id0`-entry breakpoint, the `FUN_20186c4c` producer-chain breakpoint) -- and note the
+page-wide blast radius: a breakpoint doesn't just instrument one function, it silently
+re-translates ~4KB of surrounding code too.
+
+**(B) GDB single-stepping masks IRQs and stops the virtual timer, by explicit design, not as a
+side effect.** `gdbstub/gdbstub.c:76-77` sets `SSTEP_NOIRQ | SSTEP_NOTIMER` (masked by accel
+support); `accel/tcg/tcg-all.c:152-161` shows TCG advertises both flags whenever
+`replay_mode == REPLAY_MODE_NONE` -- i.e. always, in every config this project runs.
+`cpu-exec.c:831-834` then masks `CPU_INTERRUPT_HARD` out of the interrupt-request word during a
+step when `SSTEP_NOIRQ` is set, and `tcg-accel-ops-rr.c:276-277` disables `QEMU_CLOCK_VIRTUAL`
+entirely for the step's duration when `SSTEP_NOTIMER` is set. **This is the complete explanation**
+for every "single-stepping showed the isolated invocation working, but hid the real interleaving
+bug" finding elsewhere in this project's history, and for the flat ~80ms/step measurement in the
+DMAC/icount case study above (external interrupts literally cannot arrive during a step).
+
+**(C) Watchpoints slow their whole containing page and skip the interrupt check entirely on the
+instruction that triggers them.** `cpu_watchpoint_insert()` (`system/watchpoint.c`) does a
+page-local `tlb_flush_page()` if the range fits one page, a **global** `tlb_flush(cpu)` if it
+straddles a page boundary; `TLB_WATCHPOINT` (`accel/tcg/cputlb.c:1168,1177`) then makes *every*
+access to that whole page take the slow path, not just accesses to the watched bytes. On a hit
+(GDB's `Z2` doesn't set `BP_STOP_BEFORE_ACCESS`), `accel/tcg/watchpoint.c:128-137` re-executes the
+triggering instruction alone in a `CF_NOIRQ` TB, and `cpu-exec.c:784-790` shows `cpu_handle_
+interrupt()` returns immediately without checking anything when that flag is set -- the interrupt
+check is skipped outright for that one instruction.
+
+**(D) `-icount shift=auto` turns (A)/(C)'s throughput hit into an actual, real change in emulated
+CPU speed relative to its own peripherals -- and this is genuinely NOT the same claim this
+section's own "adaptive tuner desync" hypothesis already refuted.** The earlier refutation showed
+a *pause* can't desync `icount_adjust()`'s comparison (both sides freeze via the same
+`do_vm_stop()`/`cpu_disable_ticks()` call). That's still true and still irrelevant here: (A)/(C)
+cut host emulation throughput by roughly 10-50x on the instrumented page **while the guest is
+actively running**, `icount_adjust()` (`accel/tcg/icount-common.c:178-215`) correctly observes
+real icount falling behind wall clock during that slowdown, and retunes `icount_time_shift` --
+which changes the guest's own instructions-per-virtual-nanosecond by a factor of 2 per adjustment
+step (`ICOUNT_WOBBLE` = 100ms, checked every 100ms-1s). A 10-50x throughput hit on a hot page blows
+past that threshold within about a second. This is the exact knob that decides producer/consumer
+ring-buffer races, and it has no QMP-read analogue because an `address_space_read()` changes
+neither translation nor throughput.
+
+**Weaker, secondary mechanism for pure memory-read polling (no breakpoint set at all)**, e.g.
+`trace_sgi0_gic_state.py`'s `interrupt()`+`read_memory()` pattern, where (A)-(C) don't apply:
+`icount_get_limit()` (`accel/tcg/tcg-accel-ops-icount.c:44-50`) bounds the icount quantum by the
+sooner of the `QEMU_CLOCK_VIRTUAL` deadline **and the `QEMU_CLOCK_REALTIME` deadline** -- and
+`QEMU_CLOCK_REALTIME` is host wall clock, NOT frozen by `vm_stop` (only `VIRTUAL`/`VIRTUAL_RT`
+are). Every GDB pause shifts that clock's phase relative to guest virtual time, which can shift
+where the next quantum boundary (and thus the next interrupt check) lands in the instruction
+stream. Consistent with the project's own "4 extra polled words suppresses it, 1 extra word
+doesn't" finding (more round trips = longer pause = larger phase shift per poll) -- flagged by the
+reviewing agent as directionally right but not independently re-measured this pass, so treat as
+corroborating, not independently confirmed to the same standard as (A)-(D).
+
+**Dead ends from this section's own "not yet chased" list, now closed:**
+- `arm_gic.c`/`arm_gic_common.c`: no wall-clock reads, no `vm_change_state` handler, no stopped-CPU
+  interaction of any kind -- verified by direct read. Not the mechanism.
+- The suspected `tools/gdbrsp.py` software-breakpoint opcode-patch bug: **doesn't exist** --
+  `gdbrsp.py` uses real `Z0`/`z0` RSP packets, no opcode patching in this codebase at all, and
+  QEMU's own `Z0` handling isn't an opcode patch either (it's `cpu_breakpoint_insert`, i.e.
+  mechanism (A) above). Cross it off.
+- A `bdrv_drain_all()`/block-backend reordering theory (not previously listed, but a natural
+  thing to check inside `do_vm_stop()`): this machine has zero block backends anywhere in
+  `qemu-machine/src/`. No-op, not applicable.
+
+**Practical rule going forward, replacing the old "still-open tension" framing**: a breakpoint
+perturbs the whole 4KB page it sits in; a single step disables IRQs and the virtual timer outright;
+a watchpoint slows its whole page and skips the interrupt check on every hit it triggers; and
+`-icount shift=auto` converts any of that page-local slowdown into a real, project-relevant change
+in emulated CPU speed. None of these four is exotic or QEMU-specific-bug-shaped -- they're all
+normal, intentional, documented QEMU behavior that simply has no counterpart in a QMP read. The
+project's existing discipline (prefer QMP for anything timing-sensitive; keep any GDB
+breakpoint/watchpoint bounded/one-shot; pin `-icount shift=N` instead of `auto` for any run
+where a GDB technique is in play, to remove (D) from the picture entirely; always cross-check a
+GDB-based finding against a fully GDB-free re-capture before trusting it) turns out to have been
+the right instinct throughout, now with a real mechanistic reason behind each part of it rather
+than just an empirical pattern.
+
+**New techniques worth adopting, surfaced by this review, not yet used by this project**:
+- **QEMU record/replay** (`-icount shift=N,rr=record,rrfile=...` then `rr=replay`) is the real
+  structural fix, not just a mitigation: `accel/tcg/tcg-all.c:153-161` adds `SSTEP_NOIRQ |
+  SSTEP_NOTIMER` **only when `replay_mode == REPLAY_MODE_NONE`**, with QEMU's own comment
+  explaining why -- under replay, events come from the log and must not be suppressed by the
+  debugger. So during replay, single-stepping does NOT mask IRQs or stop timers, and `can_reverse
+  = true` in replay-play mode gives genuine reverse-continue. Record a run GDB-free, then attach
+  GDB to the replay -- a debugger that provably cannot perturb the original run. Feasibility looks
+  real for this machine specifically: no `replay_add_blocker()` calls anywhere in `qemu-machine/
+  src/`, and no block backends to wrap in `blkreplay`. Not yet spiked/tried.
+- **A TCG plugin** (this project already has real ones, see `tools/hotblocks_profile.py`) using
+  `qemu_plugin_register_vcpu_mem_cb` + `qemu_plugin_mem_is_store` + an address filter answers "does
+  anything write this address" without ever touching the GDB socket, calling `vm_stop`, or
+  changing interrupt-check granularity -- a strictly lower-perturbation alternative to a watchpoint
+  for exactly this class of question. Still slows the guest somewhat uniformly (pair with a pinned
+  `-icount shift=N`), and shares the watchpoint's blind spot below.
+- **Neither a watchpoint nor a TCG plugin can see DMA/device-model writes.**
+  `cpu_check_watchpoint()`'s only three callers are all in `accel/tcg/cputlb.c` -- CPU accesses
+  through the softmmu TLB only. A device model's own `address_space_write()`/`dma_memory_write()`
+  (e.g. from `dmac.c`, `mmc.c`, `riic.c`, `spi_boot.c`) bypasses both entirely and silently. For any
+  future "who writes this address, and static analysis + live capture found nothing" question, the
+  only technique that covers every writer (CPU and device alike) with zero observer effect is this
+  project's own already-proven host-side `fprintf` technique (the same one that resolved the
+  DMAC/icount false alarm below) -- patched directly into the relevant `address_space_write`/
+  `dma_memory_write` call site(s) in the vendored tree, or into the specific device model
+  suspected.
+
 ## 2026-09-10, same session: step 2 of the handoff -- both open EEPROM-caller questions resolved,
 ## via a GDB-free re-confirmation that reveals the earlier GDB-based finding was itself the
 ## artifact, plus a real read/write labeling bug in this file caught along the way
