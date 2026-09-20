@@ -69,6 +69,13 @@
 #define RZA1H_GPIO_BASE            0xFCFE3000
 #define RZA1H_GPIO_SIZE            0x00005000
 #define RZA1H_GPIO_IBC_REL_OFFSET  0x4000
+
+/* INTC external-IRQ front-end (ICR1/IRQRR) -- see gpio.c's own plate comment for the
+ * derivation (real, confirmed base, diverges from the generic Renesas reference
+ * package's own documented INTC struct base). Only IRQ7 (PWRK) is modeled. */
+#define RZA1H_INTC_EXT_BASE        0xFCFEF800
+#define RZA1H_INTC_EXT_SIZE        0x00000008
+#define RZA1H_EXT_IRQ7_IRQ         39
 #define TYPE_RZA1H_GPIO "rza1h-gpio"
 
 /* l2c.c -- matches emu/peripherals/l2c.py's BASE/SIZE (real PL310 base). */

@@ -14,6 +14,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -69,6 +70,86 @@ struct RZA1HGpioState {
      * PBDC/PIPC/SNCR) -- keyed by raw offset within this device, like
      * gpio.py's self._storage dict keyed by absolute address. */
     uint8_t storage[RZA1H_GPIO_SIZE];
+
+    /* INTC external-IRQ front-end (2026-09-20) -- a genuinely separate small register
+     * block/MMIO region from the port registers above, see its own ops' plate comment. */
+    MemoryRegion iomem_extirq;
+    qemu_irq irq7;
+    uint16_t icr0, icr1;
+    uint16_t irqrr;
+};
+
+/* --- INTC external-IRQ front-end (2026-09-20) ---
+ * A small, separate register block for this real IC-7300 firmware's own external-IRQ
+ * sense/pending logic (ICR1 sense-select, IRQRR pending/ack) -- confirmed via direct
+ * decompile (pwrk_irq7_config_init/pwrk_irq7_isr, notes/ic7300-signal-chain.md's "PWRK
+ * handler located" section) to sit at a DIFFERENT base (0xFCFEF800, derived directly
+ * from the real pointer values those functions use) than the generic Renesas reference
+ * package's own documented `INTC` struct base (0xE8201000 -- this project's already-
+ * modeled GIC distributor's own base). A real, confirmed divergence from the generic
+ * sample header, not a mistake -- this real firmware's own ICR1/IRQRR pointers land 2
+ * bytes apart (0xFCFEF802/0xFCFEF804) exactly matching the reference struct's own
+ * *field* layout, just at a different base address.
+ *
+ * Only IRQ7 (PWRK, GIC ID 39) is modeled -- the only one this project has actually
+ * traced firmware using. Live-checked `GICD_ICFGR2`: ID 39 is left at the `arm_gic`
+ * default (level-triggered, `0b00`) -- real firmware never touches it -- so this
+ * front-end must itself hold the GIC-facing line asserted (a real, software-clearable
+ * latch, exactly like `riic.c`'s `SR2`/`mtu2.c`'s `TSR`) rather than pulse it, matching
+ * the standard Renesas architecture where the chip-specific IRQ front-end does its own
+ * edge detection and presents a plain level to the downstream ARM-architected
+ * distributor, cleared by writing 0 to the front-end's own pending-flag bit. Real,
+ * live-confirmed `ICR1` value this firmware programs for IRQ7 (bits 14/15) is `0b10` =
+ * rising edge -- i.e. this fires on PWRK's *release* (`P1_7` going low-to-high), not
+ * the initial press -- matches `pwrk_irq7_isr`'s own real role (a release/re-press
+ * detector, armed only after the initial press already got bring-up going via a
+ * separate, plain `PPR1`-polling busy-wait, not this interrupt). */
+#define INTC_EXT_ICR0  0x0
+#define INTC_EXT_ICR1  0x2
+#define INTC_EXT_IRQRR 0x4
+#define INTC_EXT_IRQ7F 0x80
+
+static uint64_t rza1h_gpio_extirq_read(void *opaque, hwaddr offset, unsigned size)
+{
+    RZA1HGpioState *s = RZA1H_GPIO(opaque);
+
+    switch (offset) {
+    case INTC_EXT_ICR0: return s->icr0;
+    case INTC_EXT_ICR1: return s->icr1;
+    case INTC_EXT_IRQRR: return s->irqrr;
+    default: return 0;
+    }
+}
+
+static void rza1h_gpio_extirq_write(void *opaque, hwaddr offset, uint64_t value,
+                                    unsigned size)
+{
+    RZA1HGpioState *s = RZA1H_GPIO(opaque);
+
+    switch (offset) {
+    case INTC_EXT_ICR0: s->icr0 = value; break;
+    case INTC_EXT_ICR1: s->icr1 = value; break;
+    case INTC_EXT_IRQRR: {
+        /* Real hardware: write 0 to a bit clears that flag, write 1 is a no-op -- same
+         * AND-style convention already established for riic.c's SR2/mtu2.c's TSR. */
+        uint16_t cleared = s->irqrr & ~(uint16_t)value;
+
+        s->irqrr &= value;
+        if (cleared & INTC_EXT_IRQ7F) {
+            qemu_irq_lower(s->irq7);
+        }
+        break;
+    }
+    default: break;
+    }
+}
+
+static const MemoryRegionOps rza1h_gpio_extirq_ops = {
+    .read = rza1h_gpio_extirq_read,
+    .write = rza1h_gpio_extirq_write,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
 static uint64_t load_le(const uint8_t *p, unsigned size)
@@ -256,6 +337,10 @@ static void rza1h_gpio_reset(DeviceState *dev)
      * same justified-exception reasoning as P1_6/P8_9 above. See rza1h_gpio_set_pwrk_pressed()
      * for how to actually simulate a live press for testing. */
     s->pin_level[1] |= 0x80;
+
+    s->icr0 = s->icr1 = 0;
+    s->irqrr = 0;
+    qemu_irq_lower(s->irq7);
 }
 
 /* Live PWRK press/release for testing (2026-09-20) -- not a real hardware input this project
@@ -274,11 +359,19 @@ static bool rza1h_gpio_get_pwrk_pressed(Object *obj, Error **errp)
 static void rza1h_gpio_set_pwrk_pressed(Object *obj, bool pressed, Error **errp)
 {
     RZA1HGpioState *s = RZA1H_GPIO(obj);
+    bool was_released = (s->pin_level[1] & 0x80) != 0;
 
     if (pressed) {
         s->pin_level[1] &= ~0x80; /* pulled low -- pressed */
     } else {
         s->pin_level[1] |= 0x80; /* released -- idle high */
+        if (!was_released) {
+            /* Rising edge (low -> high) -- see the INTC external-IRQ front-end's own
+             * plate comment for why this specific edge, not the press itself, is what
+             * real firmware's ICR1 configuration fires IRQ7 on. */
+            s->irqrr |= INTC_EXT_IRQ7F;
+            qemu_irq_raise(s->irq7);
+        }
     }
 }
 
@@ -290,6 +383,11 @@ static void rza1h_gpio_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &rza1h_gpio_ops, s,
                           TYPE_RZA1H_GPIO, RZA1H_GPIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+
+    memory_region_init_io(&s->iomem_extirq, obj, &rza1h_gpio_extirq_ops, s,
+                          TYPE_RZA1H_GPIO ".extirq", RZA1H_INTC_EXT_SIZE);
+    sysbus_init_mmio(sbd, &s->iomem_extirq);
+    sysbus_init_irq(sbd, &s->irq7);
 
     object_property_add_bool(obj, "pwrk-pressed", rza1h_gpio_get_pwrk_pressed,
                              rza1h_gpio_set_pwrk_pressed);

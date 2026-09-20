@@ -226,6 +226,54 @@ One-liner to regenerate the test image if needed: flip bit 7 of byte `0x3e01` in
 `riic2_eeprom.img` (see the Python snippet in this session's own transcript, or just re-derive:
 `data[0x3e01] &= 0x7f`).
 
+### Follow-up, same day — actually wired `IRQ7` for real and confirmed live: a genuine PWRK
+### press/release *does* wake the CPU out of that `wfi`, and real firmware's own ISR runs.
+
+The "new frontier" above turned out to be an incomplete emulation gap, not a dead end — the
+model only had a *readable* `PPR1` bit for `PWRK`, with no path from a pin transition to an
+actual GIC interrupt. Real `P1_7` feeds two genuinely separate things on real hardware: the
+plain GPIO port's own read-back register, and a dedicated RZ/A1H-specific external-IRQ
+front-end (`ICR1` sense-select, `IRQRR` pending/ack) that turns a qualifying edge into `IRQ7`
+(GIC ID 39). Only the first ever existed in this emulation.
+
+**Built the missing piece.** Traced `ICR1`/`IRQRR`'s real, live pointer values
+(`pwrk_irq7_config_init`/`pwrk_irq7_isr`) to `0xFCFEF802`/`0xFCFEF804` — a genuine, confirmed
+divergence from the generic Renesas reference package's own documented `INTC` struct base
+(`0xE8201000`, which is this project's already-modeled GIC distributor's own base — real
+firmware's pointers land at a different base entirely, though the same relative field layout).
+Live-checked `GICD_ICFGR2`: ID 39 is left at the `arm_gic` default (level-triggered) — real
+firmware never touches it — so the front-end has to hold the line asserted and only release it
+when firmware clears `IRQRR`'s own flag bit, exactly like `riic.c`'s `SR2`/`mtu2.c`'s `TSR`. Also
+confirmed live that this firmware's own `ICR1` value for `IRQ7` selects rising-edge sensing —
+fires on release, not the initial press, matching `pwrk_irq7_isr`'s already-understood role.
+Added a second `MemoryRegion` + a real `qemu_irq` output to `gpio.c` (the natural home — same
+physical pin), wired to GIC ID 39 in `rz_a1h.c` alongside the existing connections; the
+`pwrk-pressed` property now raises `IRQ7` on the release (rising) edge.
+
+**Confirmed live, rigorously — not just "the wiring compiles"**: a naive first test (press,
+short delay, release, then poll `PC`/`IRQRR` at ~0.3-0.5s granularity) looked like nothing
+happened, PC still parked at the same address. Didn't trust that — added temporary `gic_set_irq`
+instrumentation (a debug build only, reverted after) and caught the real sequence: our raise
+*does* reach the GIC (confirmed, real level change registered), and is followed, essentially
+immediately, by a **second `gic_set_irq` call lowering the same line — originating from a genuine
+guest-side MMIO write** (confirmed via `addr2line` against the actual call stack:
+`memory_region_dispatch_write` → `subpage_write`, the real dispatch path for a CPU store
+instruction, not a host-side function call). That's real firmware's own `pwrk_irq7_isr` clearing
+`IRQRR` as its documented first action — i.e. the "nothing happened" read was wrong: the CPU
+*did* wake, ran the real ISR, and returned to idle fast enough that the earlier coarse polling
+never caught it in the act. Re-ran with fast (20ms) sampling right after a press/release and
+directly caught `PC=0x200297d8` — squarely inside `pwrk_irq7_isr`'s own body (`0x20029774`-
+`0x200297ff`) — with `IRQRR` reading back cleared afterward and the CPU returning to the exact
+same `wfi` landing point. **A real press-then-release genuinely wakes the CPU, runs real
+firmware, and returns to idle cleanly.**
+
+This also sharpens (rather than closes) the still-real "never wakes again" observation: real
+firmware's own `pwrk_irq7_isr` is only ever *armed* by a genuine PWRK event — nothing else on
+this specific boot branch currently drives it (no periodic MTU2/other tick is active here,
+unlike the auto-power-on path's own idle state), so *without* a live press this WFI genuinely
+has nothing to wake it, which is now a correctly-modeled real property of this branch rather
+than a modeling gap.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

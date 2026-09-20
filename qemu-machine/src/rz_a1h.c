@@ -233,6 +233,16 @@ static void rza1h_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(gpio), 0, RZA1H_GPIO_BASE, 0);
 
+    /* INTC external-IRQ front-end (ICR1/IRQRR), 2026-09-20 -- a second, separate MMIO
+     * region + IRQ output on the same gpio.c device (its own real hardware domain, the
+     * P1_7/PWRK pin), added once live PWRK-press testing needed IRQ7 (GIC ID 39) to
+     * actually reach the CPU instead of only changing a passively-read register -- see
+     * gpio.c's own plate comment for the real, confirmed base-address derivation. */
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(gpio), 1, RZA1H_INTC_EXT_BASE, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(gpio), 0,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_EXT_IRQ7_IRQ - RZA1H_GIC_NUM_INTERNAL));
+
     /* l2c.c's own address (0x3ffff000) isn't inside any unimplemented-device
      * range above -- it was simply unmapped before this, so a plain (non-
      * overlap) mapping is correct and sufficient here. */
