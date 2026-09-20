@@ -165,6 +165,67 @@ has ever reached — a real, stable steady-state, not just "further before the n
 Whatever comes next (front-panel/display bring-up, CI-V, etc.) is unexplored territory for a
 future session.
 
+### Side exploration, same day — forced the OTHER power-state branch (PWRK-wait, never before
+### exercised) for general interest: confirmed reachable, added a live "press the button" test
+### capability, and found a genuinely new, further frontier gap on that branch.
+
+Per the user's own curiosity (do we know if we're at the PWRK-wait point yet, and could we force
+it and try triggering the key ourselves) — see the answer given earlier the same day in this
+README's history for the full "why not" (the auto-power-on-vs-wait-for-PWRK branch is decided by
+one EEPROM-persisted bit, and our virtual EEPROM happens to say "was on"). Tried actually forcing
+the other branch:
+
+- **Flipped the EEPROM bit.** `pwrk_power_state_read_from_eeprom` reads offset `0x3e00`, but
+  `riic.c`'s own long-established "dummy read after switching to receive mode" driver quirk
+  shifts the effective delivered byte to `mem_addr+1` — so the real byte that matters is at file
+  offset `0x3e01` (`0xff` in the working `riic2_eeprom.img`). Built a **separate** test image
+  (`riic2_eeprom_pwrk_test.img`, not committed, not gitignore-tracked, trivially regenerable —
+  see the one-liner below) with that byte's bit 7 cleared. Confirmed live: boot now parks at
+  `0x20029b18`, inside `power_state_pwrk_wait_and_bringup` (`0x20029914-0x20029de7`) — the
+  branch never once exercised by any prior session of this whole project.
+
+- **Found and fixed a real, adjacent gap before the experiment could even be meaningful**:
+  `gpio.c`'s `pin_level[1]` (Port 1) never had bit `0x80` (`P1_7`/`PWRK`) set at reset at all —
+  defaulting to 0 (the driver's active-low convention means this reads as "already pressed" from
+  the very first check), which would have made the wait loop exit trivially at `t=0` rather than
+  actually waiting. Added the same "justified exception" reset default already used for
+  `P1_6`/`PDV` and `P8_9`/`HSK1` — `pin_level[1] |= 0x80` (idle-high, unpressed) — a real
+  correctness fix in its own right, not just an experiment enabler.
+
+- **Added a genuine, reusable live-press capability**: a `pwrk-pressed` QOM boolean property on
+  `gpio.c` (`rza1h_gpio_get/set_pwrk_pressed()`), the only way to simulate this button being
+  physically pressed since `riic.c`'s own `PPR` write handler correctly ignores guest writes
+  (real hardware read-only) and there was no other host-side hook. Settable at launch
+  (`-global rza1h-gpio.pwrk-pressed=on`) or live via QMP `qom-set`.
+
+- **Result, genuinely interesting**: read the raw disassembly of the wait loop carefully (not
+  just decompiled C, which had obscured the real structure) — `power_state_pwrk_wait_and_bringup`
+  has a **built-in timeout that proceeds into bring-up regardless of whether a press was ever
+  seen**: a real press (`PPR1` bit `0x80` reading low) jumps into the same debounce-timeout check
+  a plain timeout-without-a-press eventually falls through to anyway. Tested both directly, fine-
+  grained (0.2s polling): booting with `-global rza1h-gpio.pwrk-pressed=on` from `t=0` and
+  booting with the pin correctly left unpressed the whole time produced **identical PC traces and
+  identical timing** (~1.4s under `-icount shift=auto` to reach the same landing point,
+  `0x20029b18`) — the observable behavior in this emulation is currently dominated entirely by
+  the debounce/timeout logic, not by the raw press signal, so this specific live-press capability
+  doesn't (yet) produce a visibly different trace on this exact path. Kept anyway — a real,
+  reusable capability for whenever a future session finds a scenario where it does matter (e.g.
+  the release-detect `pwrk_irq7_isr` path, or a scenario with a real, unbounded wait).
+
+- **New frontier found, not chased further**: once past that landing point (`0x20029b18`, inside
+  a `WaitForInterrupt()`/`wfi`), the CPU **never wakes again** — confirmed via a full 60s trial,
+  PC frozen at the identical address for the entire run, `ps` showing only ~4% CPU (a genuine
+  halted `wfi`, not a hot spin) — unlike the auto-power-on path's own idle state, which cycles
+  normally on MTU2's periodic ticks. This branch has never been exercised by any prior session,
+  so an unmodeled dependency here (something this specific code path needs to actually receive an
+  interrupt and continue) is expected, matching this whole project's established pattern — a
+  fresh, real, further frontier for whenever this branch is picked up again, not the main
+  auto-power-on path this session's other fixes were about.
+
+One-liner to regenerate the test image if needed: flip bit 7 of byte `0x3e01` in a copy of
+`riic2_eeprom.img` (see the Python snippet in this session's own transcript, or just re-derive:
+`data[0x3e01] &= 0x7f`).
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

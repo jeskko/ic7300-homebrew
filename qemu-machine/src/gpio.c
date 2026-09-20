@@ -246,6 +246,40 @@ static void rza1h_gpio_reset(DeviceState *dev)
      * default -- without it, `scif5_wait_hsk1_ready` never sees it ready and busy-waits its full
      * ~16-minute software timeout instead (see qemu-machine/README.md's Status section). */
     s->pin_level[8] |= 0x200;
+
+    /* P1_7 ("PWRK") is the front-panel power key -- a plain pull-up + switch-to-ground button,
+     * confirmed active-low (2026-09-20, see notes/ic7300-signal-chain.md's "PWRK handler
+     * located" section and power_state_pwrk_wait_and_bringup's own busy-wait, 0x20029918:
+     * `while ((PPR1 & 0x80) != 0) ...`). Idle/unpressed reads high on real hardware; defaulting
+     * to the generic all-zero convention here would read as "already pressed" from the very
+     * first check, letting that wait loop exit trivially at t=0 instead of genuinely waiting --
+     * same justified-exception reasoning as P1_6/P8_9 above. See rza1h_gpio_set_pwrk_pressed()
+     * for how to actually simulate a live press for testing. */
+    s->pin_level[1] |= 0x80;
+}
+
+/* Live PWRK press/release for testing (2026-09-20) -- not a real hardware input this project
+ * has any other way to drive, and this project's own PPR write handler correctly ignores guest
+ * writes (PPR is real-hardware read-only), so a host-side QOM property is the only way to
+ * simulate a user physically pressing the button while a boot is running. Toggle via QMP:
+ * `qom-set /machine/unattached/device[N] pwrk-pressed true` (find N via `qom-list`/
+ * `info qom-tree`), or `-global rza1h-gpio.pwrk-pressed=on` to start already pressed. */
+static bool rza1h_gpio_get_pwrk_pressed(Object *obj, Error **errp)
+{
+    RZA1HGpioState *s = RZA1H_GPIO(obj);
+
+    return (s->pin_level[1] & 0x80) == 0;
+}
+
+static void rza1h_gpio_set_pwrk_pressed(Object *obj, bool pressed, Error **errp)
+{
+    RZA1HGpioState *s = RZA1H_GPIO(obj);
+
+    if (pressed) {
+        s->pin_level[1] &= ~0x80; /* pulled low -- pressed */
+    } else {
+        s->pin_level[1] |= 0x80; /* released -- idle high */
+    }
 }
 
 static void rza1h_gpio_init(Object *obj)
@@ -256,6 +290,9 @@ static void rza1h_gpio_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &rza1h_gpio_ops, s,
                           TYPE_RZA1H_GPIO, RZA1H_GPIO_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+
+    object_property_add_bool(obj, "pwrk-pressed", rza1h_gpio_get_pwrk_pressed,
+                             rza1h_gpio_set_pwrk_pressed);
 }
 
 static void rza1h_gpio_class_init(ObjectClass *oc, const void *data)
