@@ -907,6 +907,19 @@ detail (the extra `0xe4` ID vs. SCIF0's 3) for a possible clue about what's on t
 see below; (d) live JTAG, once available, would likely resolve the mode-6/7/8 trigger question quickly by
 watching `DAT_2002a158` during radio operation.
 
+**Cross-link found 2026-09-20, from the completely separate front-panel/SCIF3 thread — this partially
+answers this section's own "not proven connected to any documented feature" caveat.** `scif1_svc_status_
+field_switch` (`0x20012ddc`, already named/decompiled above) has a `case '2'` this section's own writeup
+didn't call out individually: it calls `scif3_status_svcmode5_flag_set` (`0x20041d8c`, named that session),
+which sets offset+0 of the *SCIF3* front-panel outbound status buffer (`0x203dca54`) — the same buffer
+`scif3_driver_pump_tick` diff-encodes and transmits to the front-panel MCU (`IC501`) over `SCIF3`. So: this
+SCIF1 calibration/self-test link's own dispatcher, on at least one specific command, **does have an observable
+downstream effect** — it's echoed outward to the front panel as a status bit. Doesn't resolve the "who
+triggers service mode" dead end above, but it does mean this protocol isn't fully isolated/dead-ended the way
+this section originally framed it. Full derivation (live QMP pointer resolution, the 3-way `DAT_` alias
+confirmation, and the sibling `scif3_status_svcmode5_flag_clear`) in
+`notes/front-panel-protocol-handout.md`'s 2026-09-20 follow-up sections — not repeated here.
+
 ## SCIF1 and SCIF5 physical pins resolved via each driver's own port-mux code (2026-08-29, next session)
 
 Picked up the user's tangent suggestion: rather than keep guessing pins from the schematic/datasheet

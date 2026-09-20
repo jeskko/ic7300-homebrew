@@ -628,6 +628,16 @@ find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` dr
 ### traced in the previous follow-up) end to end. Full derivation in
 ### `notes/front-panel-protocol-handout.md`'s 2nd 2026-09-20 follow-up section.
 
+### Follow-up, 2026-09-20, continued a 4th time — the last open item (where the inbound SCIF1
+### command byte comes from) turned out to already be solved, by `notes/kernel-rtos-history.md`'s
+### own much older (2026-08-29) "SCIF1 service-mode protocol" section, which this front-panel
+### thread had simply never been cross-linked to. That section's own real, physically-confirmed
+### finding (SCIF1 = a second CI-V-shaped calibration/self-test link, gated behind a system-wide
+### service mode) now gets a concrete external side-effect from today's work: at least one of its
+### commands is echoed outward to the front-panel MCU over `SCIF3`. Both files now cross-link each
+### other; full detail in `notes/front-panel-protocol-handout.md`'s 3rd 2026-09-20 follow-up
+### section and `kernel-rtos-history.md`'s own SCIF1 section addendum.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

@@ -372,3 +372,47 @@ relationship instead of calling `0x203dca75` a second producer). Saved.
 3. The bit-0x20 case (always sends the full 33 bytes, no diffing) and bit-0x08 case (the
    already-fully-decoded `"ICOM INC. (C)2016"` XOR string) are both already understood and don't
    need further work.
+
+## 2026-09-20 follow-up #3, same day — item 2 above was already solved, by an entirely separate,
+## much older thread this handout had never cross-linked to. No new tracing needed, just a link.
+
+Decompiling the 3 callers turned out to be unnecessary: `0x2001302c`/`0x20013048`/`0x2001306c` are
+all inside `scif1_svc_command_dispatch` (`0x20012f5c`) itself — its own literal pool (dumped via a
+plain `listing` call) resolves `DAT_20013080`→`0x20390050` (the real command-byte address),
+`DAT_20013088`→`0x203dcab6` (**the already-confirmed SCIF3 inbound RX status struct** — a fourth
+independent alias for it, on top of the three already known), and `DAT_20013090`→`0x203dca54`
+(this handout's own outbound buffer, static-literal-confirmed, matching the earlier live-QMP
+read exactly). So `scif1_svc_command_dispatch` **reads** from the SCIF3 RX struct and its
+"finalize" step (`scif1_svc_status_field_switch`) **writes** into the SCIF3 TX/status buffer — a
+real, concrete, bidirectional SCIF1↔SCIF3 link, not just the one outbound field found earlier.
+
+**Who calls `scif1_svc_command_dispatch`, and where the real command byte comes from, turns out to
+already be fully documented** in `notes/kernel-rtos-history.md`'s **"SCIF1 service-mode protocol"**
+section (2026-08-29, 30th session, well before this handout existed) — a whole separate
+investigation this front-panel thread simply hadn't been cross-referenced against until now.
+Summary of what that section already established (see it directly for full derivation, not
+repeated here): `scif1_svc_command_dispatch` is called only from `svc_mode_idle_loop`
+(`0x20053270`, the *general* service-mode idle loop — a sibling of `svc_mode5_idle_loop`, not the
+same function); `SCIF1` is a real, physically-confirmed **second CI-V-shaped calibration/self-test
+link** (`P6_13`+`P7_12` RX, `P6_12` TX, reachable over the same USB `CP2102` bridge as CI-V, on
+different pins); it's gated behind a system-wide "service mode" driven by `system_mode_request_
+dispatch`, itself gated on `DAT_2002a158` (values `1`-`9`,`0xb`); and modes `6`/`7`/`8` specifically
+inject a *synthetic* starting command via `scif1_svc_post_synthetic_command` at exactly this
+handout's own three call sites — already found and named as a group by that 2026-08-29 session,
+before this handout's own SCIF1 involvement was known. **Who ultimately writes `DAT_2002a158`
+itself remains that section's own flagged "genuine dead end"** (real effort already spent: a
+`references_to` sweep and a full-image literal-pool `objdump` grep, both zero hits — most likely
+an RTOS message/event mechanism, not a direct write; that section's own next step (d) is "live
+JTAG, once available, would likely resolve this quickly").
+
+**The one genuinely new fact this session adds to that older thread**: it was flagged there as
+"not proven connected to any documented feature" — this handout's own `scif3_status_svcmode5_flag_
+set`/`scif1_svc_status_field_switch` finding (follow-up #1, above) now gives it exactly that: a
+real, observable, external side-effect (an outbound status bit echoed to the front-panel MCU over
+`SCIF3`). Cross-linked in both directions — see `kernel-rtos-history.md`'s own SCIF1 section for
+the pointer back here.
+
+**Net effect on this handout's own open-items list**: item 2 is closed (answer: solved by an older
+thread, now linked, with one remaining sub-question — `DAT_2002a158`'s writer — inherited as a
+shared open item with that section, not specific to the front panel). Items 1 (buffer offsets
+2-32) and the `DAT_2002a10c`/dynqueue loose end from follow-up #1 remain the real next steps.
