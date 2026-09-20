@@ -638,6 +638,18 @@ find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` dr
 ### other; full detail in `notes/front-panel-protocol-handout.md`'s 3rd 2026-09-20 follow-up
 ### section and `kernel-rtos-history.md`'s own SCIF1 section addendum.
 
+### Follow-up, 2026-09-20, continued a 5th time — tried to decode the SCIF3 status buffer's
+### remaining static bytes (offsets 2-32) via more live capture; a real, honest negative result
+### instead. Two full live windows (auto-boot to its own ~50s crash, and a 100s PWRK-wait-branch
+### idle run reaching genuine `idle_loop_wfe_spin`) both show **zero** new frame types beyond the
+### original 4 — these bytes never change during passive idle. A named-looking lead
+### (`scif3_frontpanel_init_and_latch_version`) was live-resolved and ruled out (it touches a
+### different address, `0x203dca96`, not this buffer). Working hypothesis: this may be the
+### buffer's compiled-in `.data` default rather than anything a "producer" writes at runtime — a
+### `flash.bin` literal-byte search neither confirmed nor refuted it. Real next step (not yet
+### tried): a GDB hardware watchpoint on the buffer from true boot `t=0`. Full detail in
+### `notes/front-panel-protocol-handout.md`'s 4th 2026-09-20 follow-up section.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

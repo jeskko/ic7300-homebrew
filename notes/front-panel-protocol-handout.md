@@ -416,3 +416,63 @@ the pointer back here.
 thread, now linked, with one remaining sub-question — `DAT_2002a158`'s writer — inherited as a
 shared open item with that section, not specific to the front panel). Items 1 (buffer offsets
 2-32) and the `DAT_2002a10c`/dynqueue loose end from follow-up #1 remain the real next steps.
+
+## 2026-09-20 follow-up #4, same day — item 1 (buffer offsets 2-32) genuinely doesn't yield to more
+## live capture; a promising-looking lead was checked and ruled out; recording an honest negative
+## result rather than leaving stale "just capture more traffic" framing in place.
+
+**Two full live-capture windows, ~150s of real execution combined, zero new frame types**:
+- Auto-boot branch, `RZA1H_DEBUG=scif3`, run to its own ~50s ring-overflow crash point (this
+  project's own known, unrelated frontier — see `qemu-machine/README.md`'s Status section): still
+  only the same 4 frames (`0xf0`/`0xf1` handshake, `type=0x00`, `type=0x01`) as the very first
+  capture. No new offsets fired.
+- **PWRK-wait branch, held for a full 100s of genuine post-boot idle** (`idle_loop_wfe_spin`, per
+  [[icom-pwrk-handler-located]] — this branch doesn't hit the ring-overflow trap at all, so it's a
+  much longer real window): same script pattern as `tools/vdc5_framebuffer_peek.py --hold-pwrk`
+  (wait for PC `0x20029B18`, `qom-set pwrk-pressed=true` over QMP, no GDB). **Still exactly the
+  same 4 frames, nothing more, across the entire 100s of idle.** This is a real, meaningful
+  negative result, not just "wasn't captured yet" — during passive idle with no user interaction,
+  bytes 2-32 of the status buffer genuinely never change.
+
+**A promising-looking lead, checked and ruled out**: `scif3_frontpanel_init_and_latch_version`
+(`0x2002af80`, an existing name from an earlier session) copies 12 bytes from `DAT_2002b4d8`
+into `DAT_2002b4e4`, and the name alone looked like a strong candidate for "the thing that fills
+in the static identity-shaped bytes 4-15." **Live-resolved and ruled out**: `DAT_2002b4d8` →
+`0x203dcab6` (this project's own confirmed SCIF3 **inbound RX** struct, yet another independent
+alias for it) and `DAT_2002b4e4` → `0x203dca96` — a *different* address, `0x42` bytes past this
+handout's own `0x203dca54` TX buffer, entirely outside its tracked 33-byte span. So this function
+does copy real identify-handshake data around at boot, but into a separate staging area, not into
+the bytes this handout is trying to explain. Genuinely ruled out, not just unlikely.
+
+**Working hypothesis for why no writer has been found, static or live** (not confirmed, offered
+honestly as the most likely explanation rather than left unstated): bytes 2-32 may simply be this
+global buffer's **compiled-in initial `.data` value** — content baked into the flash image and
+bulk-copied to RAM once by generic C-runtime startup code (a ROM-to-RAM `.data` copy loop with a
+runtime-computed destination, the same class of "computed address, not a literal `references_to`
+can find" blind spot this project has hit repeatedly, e.g. `0x200301f2`'s key-code writer in this
+handout's own original section) — rather than a discrete, semantically-named "producer" at all.
+If true, these bytes may only ever change on **real hardware**, in response to a real front-panel
+reply this emulation's own RX responder (which precomputes replies directly into guest RAM rather
+than modeling genuine byte-by-byte `FRDR` traffic, per this handout's own tooling notes) doesn't
+faithfully reproduce — meaning no amount of further live QEMU capture would find it either.
+
+**Next steps if this specific thread continues, in order of expected payoff**:
+1. **A GDB hardware watchpoint on `0x203dca54`-`0x203dca75` (write access) during a full boot**,
+   via `tools/gdbrsp.py`'s existing breakpoint primitives — genuinely not yet tried for this
+   buffer. A watchpoint catches indirect/computed writes a static `references_to` sweep can't, so
+   this is a real, different technique from everything tried so far, not a repeat.
+2. ~~Check `flash.bin` directly for whether `0x203dca54`'s known static content appears as literal
+   bytes in the image's own `.data` initializer region~~ — **done, inconclusive, not a real
+   answer**: a raw byte-string search of `flash.bin` for `67 80 90 a7 af c3 ca dc 86 aa 20 08`
+   found nothing. Weak evidence at best either way — the very first capture this whole thread ever
+   took was already several hundred ms into boot (`t=90835.84` vs. QEMU's own `t=0`), so plenty of
+   early init code could already have written this value before any capture window existed; a
+   `.data`-copy loop can also legitimately not appear as one contiguous literal run (compiler-
+   chosen field order, word-at-a-time copies, etc.). **Does not disprove the compiled-in-default
+   hypothesis**, just failed to cheaply confirm it — item 1 (a real GDB watchpoint from the very
+   first instruction) is the only technique here that could actually settle this.
+3. If a watchpoint from true `t=0` still finds no write, this specific sub-question is genuinely
+   gated on real hardware (JTAG or a live capture against the real `IC501` link) rather than
+   anything further this emulation-based approach can resolve — worth saying so plainly rather
+   than re-attempting more live QEMU captures, which this session's own two full runs already show
+   don't help.
