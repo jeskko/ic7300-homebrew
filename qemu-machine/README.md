@@ -104,6 +104,34 @@ own TEND/TDRE/RDRF handling is presumably complete and correct, so this specific
 very likely **QEMU-model-specific after all**, consistent with the user's own real hardware
 never having shown this symptom.
 
+### FIXED, same day — implemented, built, and confirmed. The ring-overflow trap no longer fires.
+
+Added `SR2_TEND` (`0x40`) to `riic.c`'s modeled `SR2` bits, set alongside every `IRQ_TEI` raise
+(both call sites — the post-address-bytes `RIIC_WAIT_MEM_LO` case and the write-data-loop's own
+`RIIC_WAIT_RESTART` re-arm), and added the matching `qemu_irq_lower(s->irq[IRQ_TEI])` to the
+`SR2` write handler alongside the existing `START`/`STOP`/`NACK` cases — mirroring their exact
+pattern. The existing explicit `IRQ_TEI` lowers at the `CR2=RS`/`CR2=SP`/next-`DRT`-write sites
+are kept as-is (harmless, idempotent belt-and-braces for scenarios that don't go through this
+exact SR2-clear path). `TI`/`RI` untouched — their own existing lower sites are the driver's own
+synchronous continuation within the same access, not proven to share this gap.
+
+Reconfigured and rebuilt `qemu-src/build` (an unrelated system `libibverbs` version bump had
+gone stale in the existing `build.ninja`; `../configure --target-list=arm-softmmu` from the
+build dir fixed it, no source-level issue). `riic.c` compiled clean.
+
+**Confirmed working, two independent trials, GDB-free**: `tools/trace_sgi0_gic_state_qmp.py`
+run for 25s and again for 60s — **zero overflows in either**, vs. every prior trial this whole
+thread has ever run overflowing by `t≈4s`. Independently sampled `PC` every 2s over a fresh 30s
+run to rule out a silent stall masquerading as "no crash": genuine forward progress through
+early boot (`0x20005dbc` → `0x20006324`), then settling into a **new, different, small bounded
+busy-wait** (`FUN_200b3c5c`, `0x200b3cb8`: `ldrb r0,[r6]; cmp r0,#0; bne` — waiting on some
+not-yet-identified flag byte to clear) starting around `t≈6s` and holding through `t=30s`, `ps`
+confirming genuine CPU activity (~178%, actively spinning this small loop, not idle/WFI) rather
+than the trap's frozen single-PC `b .` signature. This is real, substantial further boot
+progress — not just "the crash stopped happening" — matching this whole project's established
+pattern of each fixed blocker revealing the next one. `FUN_200b3c5c` is a fresh, unidentified
+frontier, not chased further this session.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

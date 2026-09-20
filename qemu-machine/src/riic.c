@@ -141,16 +141,34 @@ OBJECT_DECLARE_SIMPLE_TYPE(RZA1HRiicState, RZA1H_RIIC)
 #define CR2_SP  0x08
 #define CR2_BBSY 0x80
 
-/* SR2 flag bits this device actually sets/clears -- the 3 sources whose
- * own ISR handlers explicitly clear a status flag (confirmed via
- * decompile: FUN_2001d9bc/FUN_2001da20/FUN_2001dc8c AND SR2 with
- * ~0x04/~0x08/~0x10 respectively). TI/TEI/RI never touch SR2 at all in
- * their own handlers -- real hardware auto-clears those via the
- * matching data/control register access instead, modeled below via
- * qemu_irq_lower() at that exact access rather than an SR2 bit. */
+/* SR2 flag bits this device actually sets/clears. START/STOP/NACK's own ISR handlers
+ * explicitly clear their status flag (confirmed via decompile: FUN_2001d9bc/FUN_2001da20/
+ * FUN_2001dc8c AND SR2 with ~0x04/~0x08/~0x10 respectively) -- modeled below via
+ * qemu_irq_lower() at that same SR2 write.
+ *
+ * CORRECTED 2026-09-20 (real ring-overflow root cause, see README.md's Status section --
+ * found via QEMU's own gic_* tracepoints catching IRQ_TEI stuck asserted forever, then
+ * confirmed by decompiling TEI's real ISR directly): this comment used to claim "TI/TEI/RI
+ * never touch SR2 at all in their own handlers" -- **factually wrong for TEI**. TEI's real
+ * ISR (FUN_2001db50, GIC ID 205) begins with `*(RIIC_base+0x24) &= 0xbf` -- a genuine SR2
+ * write clearing bit 0x40 (TEND), before doing anything else (it doesn't necessarily reach a
+ * CR2/DRT write in the same call -- a write-data-loop's TEI can defer the actual next bus
+ * action to later task-level code). This device previously only ever lowered IRQ_TEI from a
+ * *subsequent* CR2=RS/SP or DRT write (see those sites' own comments below, kept as
+ * belt-and-braces) -- with no SR2_TEND modeled at all, the guest's own real
+ * TEND-clearing write did nothing here, so in any scenario where that follow-up CR2/DRT
+ * write is delayed or never comes on this specific path, IRQ_TEI (level-triggered) stayed
+ * asserted permanently, continuously re-pending after every GIC EOI -- exactly the trace
+ * signature that led here (568 straight IRQ_TEI ack/EOI/re-pend cycles, SGI0 -- the ring's
+ * own drain doorbell, a much lower real priority -- correctly but perpetually starved by a
+ * real, permanently-pending priority-0x10 source). TI/RI's own existing immediate-lower
+ * sites (a DRT write for TI, a DRR read for RI) are each the driver's own synchronous
+ * continuation within the same access, not deferred to later task-level code the way a
+ * write-loop's TEI can be -- not proven to share this same gap, not touched here. */
 #define SR2_START 0x04
 #define SR2_STOP  0x08
 #define SR2_NACK  0x10
+#define SR2_TEND  0x40
 
 /* IRQ array indices -- consecutive real absolute IDs, see rz_a1h.h's
  * RZA1H_RIIC_IRQ_BASE0/STRIDE and this file's own comment above. */
@@ -656,6 +674,18 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
         if (cleared & SR2_NACK) {
             qemu_irq_lower(s->irq[IRQ_NAKI]);
         }
+        if (cleared & SR2_TEND) {
+            qemu_irq_lower(s->irq[IRQ_TEI]); /* 2026-09-20 -- see SR2_TEND's own comment: this
+                                                * is the real ring-overflow root-cause fix. Real
+                                                * hardware's TEI handler clears this bit as its
+                                                * own first action, and that's genuinely what
+                                                * lowers the line -- not a later CR2/DRT write,
+                                                * which may be deferred to separate task-level
+                                                * code (a write-data-loop's TEI specifically) and
+                                                * previously left IRQ_TEI asserted for however
+                                                * long that deferral took, sometimes indefinitely
+                                                * on this exact path. */
+        }
         break;
     }
     case RIIC_REG_SAR0: s->sar0 = value; break;
@@ -750,6 +780,9 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
              * "ready for data" offer without this device needing to know in advance whether a
              * restart or write-data is coming next (2026-09-10 addition -- see
              * riic_schedule_irq_conditional()'s own comment for the full derivation). */
+            s->sr2 |= SR2_TEND; /* 2026-09-20 -- see SR2_TEND's own comment; set here so the
+                                  * guest's own real SR2-clearing TEI-ISR write has something
+                                  * real to clear. */
             riic_schedule_irq(s, IRQ_TEI);
             break;
         case RIIC_WAIT_RESTART:
@@ -767,6 +800,7 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
             i2c_send(s->eeprom_bus, value);
             s->eeprom_write_pending = true; /* a real write-data byte was sent -- see
                                               * EEPROM_WRITE_CYCLE_NS's own comment */
+            s->sr2 |= SR2_TEND; /* 2026-09-20 -- see SR2_TEND's own comment */
             riic_schedule_irq(s, IRQ_TEI); /* re-arm the same TEI-then-conditional-TI chain for
                                              * the next byte (or, if the guest is actually done,
                                              * this offer is simply never acted on -- see the
