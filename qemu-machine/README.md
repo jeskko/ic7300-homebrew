@@ -668,6 +668,20 @@ find the payload's real producer; trace the dynamic-type queue `FUN_2003754c` dr
 ### zero-perturbation `address_space_write` instrumentation technique this review also surfaced —
 ### that decision is still open, deliberately deferred by the user pending this write-up.
 
+### Follow-up, 2026-09-20, continued a 7th and final time — RESOLVED, via both techniques. The
+### `address_space_write` leg found zero DMA/device writes (ruling that class out cleanly). The
+### watchpoint leg found a real, new, fifth GDB gotcha along the way (a watchpoint on an address
+### inside a tight write loop hangs forever under naive `cont()` — fixed with remove/step/re-arm/
+### continue, now documented in `README-history.md` alongside the other four), then, once fixed,
+### caught the real producer directly, mid-copy: `scif3_status_buf_seed_from_rom` (renamed from
+### `FUN_20029c20`) seeds the buffer's entire 33 bytes once at boot from a fixed ROM blob at
+### `0x2018d7dc` — read directly from the static image, and it matches the buffer's own
+### long-observed content byte for byte. **The front-panel-protocol-handout's central "what does
+### this frame mean" question is now fully closed**: every byte's producer is known, dynamic
+### fields (offsets 0/1) traced to real triggers, and the rest is a fixed ROM constant whose
+### provenance (not semantic meaning) is resolved. Full derivation in `notes/front-panel-
+### protocol-handout.md`'s final 2026-09-20 entry.
+
 ## Status, 2026-09-11, continued — an accidental real-hardware experiment, born directly out of
 ## the PCB-damage setback above, cross-validates this whole project's foundational RIIC2 modeling
 ## assumption. **A genuinely valuable finding, not just a mishap.**

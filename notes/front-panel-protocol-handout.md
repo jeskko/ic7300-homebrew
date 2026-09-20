@@ -476,3 +476,70 @@ faithfully reproduce — meaning no amount of further live QEMU capture would fi
    anything further this emulation-based approach can resolve — worth saying so plainly rather
    than re-attempting more live QEMU captures, which this session's own two full runs already show
    don't help.
+
+## 2026-09-20, final follow-up — RESOLVED. Both legs of the "try both" plan run; the buffer's
+## entire static content is now fully explained, provenance-verified two independent ways.
+
+**The `address_space_write` zero-perturbation leg** (a temporary hook patched directly into the
+vendored `qemu-src/system/physmem.c`, reverted after use — see `qemu-machine/README-history.md`'s
+GDB-perturbation-mechanisms entry for why this catches DMA/device writes a GDB watchpoint can't):
+**zero hits** across both a ~55s auto-boot-to-crash window and a full ~100s PWRK-hold idle window.
+Cleanly rules out any device-model/DMA writer.
+
+**The GDB watchpoint leg surfaced a real, previously-undocumented gotcha of its own, then the
+actual answer.** First attempt: watchpoint armed at `t=0` on `0x203dca54` (34 bytes), naive
+`cont()` after each hit. Got real hits — 1215 of them over 150s, then another 161 over a shorter
+run — but `r1`/`r2` were **bit-for-bit identical across every single hit**: the guest was
+genuinely stuck, not progressing. Root cause: the triggering store (a boot-time bulk-zero loop at
+`0x20186486`, clearing ~2.4MB of RAM starting at `0x20390b18` per the real ctor-table entry read
+directly from the static image — a completely ordinary, one-time BSS/heap init, confirmed
+unrelated to anything front-panel-specific) sits *inside* the watched range, so naive `cont()`
+just re-triggers the identical watchpoint on the identical not-yet-committed store forever. Fix:
+**remove the watchpoint → single-step exactly one instruction → re-arm → continue**, so the store
+actually commits and the loop's own state advances before watching resumes. (This also finally
+explained why the ARM/Thumb disassembly at `0x20186486` needed fixing at all — Ghidra's own gap
+meant this was invisible until fixed via `tools/ghidra_scripts/FixArmThumbMode.java`, run
+2026-09-20; see the request/result files in `scratch/`.)
+
+**With that fixed, the real producer was caught directly, mid-copy, within ~8 real seconds**:
+`scif3_status_buf_seed_from_rom` (`0x20029c20`, renamed from `FUN_20029c20`) — a **one-line
+function**, `memmove_generic(DAT_2002a10c, DAT_2002a108, 0x21)` — seeds the buffer's **entire**
+33 bytes from a fixed ROM blob at `0x2018d7dc`, once at boot, called from `scif3_frontpanel_
+init_and_latch_version` (right after `scif3_rx_buffer_reset_defaults()`). **Read the ROM blob
+directly from the static image and it matches the buffer's own long-observed content byte for
+byte**: `00 00 00 00 67 80 90 a7 af c3 ca dc 86 aa 20 08` then 17 zero bytes. This is now
+confirmed two independent ways — live watchpoint capture mid-copy (source pointer `r1` sweeping
+`0x2018d7e0`→`0x2018d7fd`, destination content filling in exactly as watched) and a direct static
+read of the ROM source at `0x2018d7dc` — as solid as this project's evidence standard gets.
+
+**Full, final picture of the buffer's 33 bytes, all fields now accounted for**:
+- **Offset+0**: SVC-mode-5 (factory/service mode) active flag, dynamic — `scif3_status_svcmode5_
+  flag_set`/`_clear`, overwrites the ROM seed's own `0x00` shortly after boot.
+- **Offset+1**: SCIF1 service-command dispatch field, dynamic — `scif1_svc_status_field_switch`,
+  overwrites the ROM seed's own `0x00`.
+- **Offsets+2-3**: ROM seed, always `00 00` — genuinely just padding, not a bug or omission.
+- **Offsets+4-15**: ROM seed, always `67 80 90 a7 af c3 ca dc 86 aa 20 08` — fixed, never
+  changes. **Provenance fully resolved; semantic meaning (version/serial/ID-shaped, 12 bytes) not
+  decoded** — a reasonable place to stop for this thread, since decoding an opaque fixed value
+  with no further behavior attached to it is a different, lower-priority kind of question than
+  "where does this come from," which was the actual open item.
+- **Offsets+16-32**: ROM seed, always zero — genuinely just padding.
+
+**Both key functions renamed and plate-commented in Ghidra** (`scif3_status_buf_seed_from_rom`
+at `0x20029c20`, plus a plate comment on the ROM blob itself at `0x2018d7dc`), saved.
+
+**This closes the front-panel-protocol-handout's own central "what does the type=0x00/type=0x01
+outbound frame content mean" question completely** — every byte's producer and, for the dynamic
+fields, its real-world trigger, is now known. What remains open is narrower and lower-priority:
+decoding the 12-byte ROM value's own semantic meaning (not attempted), and the still-separate
+`scif1_svc_status_field_switch`'s inbound-command-byte-origin thread (already noted as a shared
+open item with `kernel-rtos-history.md`'s own SCIF1 section, gated on live JTAG).
+
+**New, reusable GDB-methodology lesson from this session, worth carrying forward**: a write
+watchpoint on an address that sits inside a tight write loop (a bulk memset/memcpy, a ring-buffer
+fill, etc.) will hang the guest indefinitely under naive `cont()` — the triggering store never
+gets to commit because the identical watchpoint refires on it every time. Always remove → step →
+re-arm → continue in that situation, not just `cont()`. This is a genuinely different failure mode
+from the four mechanisms in `README-history.md`'s 2026-09-20 GDB-perturbation entry (those are all
+about *guest-visible behavior changing*; this one is an outright *hang*, with a clean, mechanical
+fix) — worth its own line in that file too.

@@ -3427,6 +3427,45 @@ than just an empirical pattern.
   `dma_memory_write` call site(s) in the vendored tree, or into the specific device model
   suspected.
 
+## 2026-09-20, same day, applied for the first time: a fifth GDB gotcha found in practice, not
+## in source -- a write watchpoint on an address inside a tight write loop hangs the guest
+## indefinitely under naive `cont()`, distinct from the four perturbation mechanisms above
+
+**Different failure class from (A)-(D) above**: those are all about *guest-visible behavior
+silently changing* while still making forward progress. This one is an outright *hang* --
+diagnosed while actually using the front-panel-buffer watchpoint plan flagged as the next step
+above (see `notes/front-panel-protocol-handout.md`'s own 2026-09-20 final follow-up for the full
+front-panel-specific story; this entry is the general, reusable lesson).
+
+**Symptom**: armed a `Z2` write watchpoint at true boot `t=0` on a 34-byte RAM range, `cont()`'d,
+then after each hit read registers + the watched memory and `cont()`'d again. Got real hits --
+1215 of them over 150 real seconds in one run, 161 in a shorter one -- but `r1`/`r2` (the loop's
+own pointer/counter) were **bit-for-bit identical across every single hit**, in both runs, under
+both `-icount shift=auto` and a pinned `shift=3`. The guest was never actually progressing.
+
+**Root cause**: the triggering store was a boot-time bulk-zero loop (`subs r2,r2,#4; stmia
+r1!,{r0}; cmp r2,#0; bne`) whose own instruction address happened to sit *inside* the watched
+byte range. Continuing after the stop just re-enters the identical store on the identical
+not-yet-advanced state, re-triggering the identical watchpoint immediately, forever -- the loop
+can never get past this one instruction as long as the watchpoint stays armed and `cont()` is
+used naively.
+
+**Fix, confirmed working**: on each hit, **remove the watchpoint, single-step exactly one
+instruction, re-arm the watchpoint, then continue** -- not just `cont()`. The step forces the
+triggering store (and its register side effects, e.g. `stmia`'s writeback) to actually commit
+before the watchpoint goes live again, so the loop's own state genuinely advances. Applied, and
+immediately unstuck the same scenario: register state started advancing hit-to-hit and the real,
+different, useful hit downstream was found within seconds.
+
+**Practical rule to add alongside the (A)-(D) mitigations above**: before trusting a `cont()`
+after a watchpoint hit that shows the *same* `(pc, lr)` (or, better, the same operand registers)
+repeatedly, don't assume it's a real periodic guest event -- check whether the watched range
+could be inside the triggering instruction's own access, and if so, use remove-step-rearm-
+continue instead of bare `cont()`. Single-stepping does carry its own perturbation risk (mechanism
+(B) above, masked IRQs/timer for that one instruction) but only for the single instruction being
+stepped past, not the whole containing page the way a sustained watchpoint does -- a much smaller
+and more bounded cost than the alternative of a watchpoint-induced hang.
+
 ## 2026-09-10, same session: step 2 of the handoff -- both open EEPROM-caller questions resolved,
 ## via a GDB-free re-confirmation that reveals the earlier GDB-based finding was itself the
 ## artifact, plus a real read/write labeling bug in this file caught along the way
