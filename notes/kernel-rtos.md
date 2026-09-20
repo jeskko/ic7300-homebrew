@@ -327,7 +327,7 @@ front-panel-protocol thread.
 | `pwrk_power_state_write_to_eeprom_if_changed` | ✅ already named | — |
 | `port_bulk_gpio_init_pass2` | ✅ already named | — |
 | `FUN_20005dd8(10000)` / `(30000)` / `(100)` | 🟡 shape known | Generic busy-wait/delay primitive (arm a countdown via `FUN_20005d78`, poll `FUN_20005d88` until expired, stop via `FUN_20005dc8`) — shape matches an ITRON `dly_tsk`-style relative-time delay. Not renamed (units not confirmed). |
-| `FUN_200b47f0` | 🟡 shape known | One-line: copies a fixed config word into offset `+0x104` of a struct also touched by the next call. |
+| `frontpanel_mcu_release_reset` (renamed 2026-09-21 from `FUN_200b47f0`) | ✅ **resolved 2026-09-21, manual + schematic confirmed** | Writes `PSR1` (Port Set/Reset register 1, `0xFCFE3104` — matches the manual exactly) to set `P1_0` high. Real IC-7300 schematic (user-supplied): `P1_0` is net **"FRES"**, wired through the front-panel board's own JTAG connector `RESET_IN` → 10k resistor → `RESET_OUT` → the front-panel CPU's (`IC501`, RL78) reset pin. **This function releases the front-panel MCU from reset** — cold_boot_hw_init's 2nd action, right before any SCIF3 front-panel traffic. |
 | `scif3_frontpanel_init_and_latch_version` | ✅ already named | — |
 | `scif3_dynqueue_post_and_flush` | ✅ named this session (front-panel thread) | — |
 | `FUN_200b4800` | 🟡 shape known | Clears ~30 individually-selected fields (not a bulk memset) of the same struct `FUN_200b47f0` touches, spanning offsets up to `+0x306` — a real, moderately complex status/context struct reset. Subsystem not identified. |
@@ -452,3 +452,46 @@ registers, same caveat.
 Ghidra state: 9 further renames, 17 further plate comments (2 of which explicitly replace
 earlier, now-corrected comments — `0x200605fc`'s RTC guess and `0x2007ed9c`'s proximity-only
 guess), all saved.
+
+## Follow-up, 2026-09-21 — every one of the previous section's own two flagged caveats (the
+## derived-not-manual-confirmed pin/register identifications) now directly confirmed against the
+## real RZ/A1H hardware manual (`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_...pdf`, already
+## sitting locally, extracted via `pdftotext`) and the real IC-7300 schematic (user-supplied)
+
+**The stride-4 port-register derivation for `ext_irq6_config_init`/`ext_irq1_config_init` is
+exactly right, confirmed address-by-address, not just pattern-matched.** The manual's own port
+register table gives `PMC1`=`0xFCFE3404`, `PBDC1`=`0xFCFE7104`, `PFC1`=`0xFCFE3504`,
+`PFCE1`=`0xFCFE3604`, `PFCAE1`=`0xFCFE3A04`, `PIPC1`=`0xFCFE7204` — every single one matches the
+2026-09-21 review's derived offsets from `DAT_2002a0bc` (`0xFCFE7100`) exactly. The manual's own
+interrupt-source table also directly confirms `IRQ_n = GIC ID 32+n` (`IRQ0`=32, `IRQ1`=33, ...,
+`IRQ6`=38) — no longer just derived from 2 known-good examples.
+
+**Real schematic ground truth (user-supplied) resolves both physical-pin questions the last
+section left open**:
+- **`P1_6`** (external IRQ6) is net **"PDV"**, connected to `VOUT` of `IC361` (**NJU770F43**, a New
+  Japan Radio voltage-detector/supervisor IC) — so external IRQ6 is a real power/voltage-detect
+  interrupt, not a data peripheral. Plausibly connects to this project's own extensive PWRK/
+  power-state work, not yet cross-linked.
+- **`P1_0`** (written by the newly-renamed `frontpanel_mcu_release_reset`, see the table above)
+  is net **"FRES"**, wired to the front-panel board's JTAG connector `RESET_IN` → a 10k resistor
+  → `RESET_OUT` → the front-panel CPU's (`IC501`, RL78) own reset pin. **`cold_boot_hw_init`'s
+  2nd action is releasing the front-panel MCU from reset**, right before any SCIF3 front-panel
+  traffic — a clean, concrete answer, not a hypothesis anymore.
+
+**`FUN_200605fc`'s SSIFCR "magic values" decoded against the manual's own bit layout** —
+`0xCC`→`SSIFCR_0`: `TIE`=1, `RIE`=1 (both TX/RX FIFO interrupts enabled, channel 0); `0xC4`→
+`SSIFCR_1`: `TIE`=0, `RIE`=1 (RX-interrupt-only, channel 1). The DMAC addresses referenced
+alongside resolve to `CHCTRL_4`/`CHCTRL_3`/`CHCTRL_5` in the manual's own DMAC register table —
+this SSIF0/1 bring-up touches DMAC channels 3, 4, and 5. The real audio-format register write
+(`SSICR_0`) itself uses a computed value, not a literal, so its exact sample-rate/format bits
+remain unresolved without live QMP capture or tracing `FUN_2005fdb4`'s own computation — a
+reasonable stopping point, not pursued further here.
+
+**Lesson reinforced**: the RZ/A1H manual and the IC-7300 schematic were already sitting locally
+in `/data/misc/icom/7300/doc/` the whole time — every one of this pass's answers came from
+material already on disk, not new acquisition. Worth checking that directory before spending
+more static-analysis effort deriving something a datasheet states directly.
+
+Ghidra state: 4 further renames/comments (`frontpanel_mcu_release_reset` renamed; `ext_irq6_
+config_init`, `ext_irq1_config_init`, `FUN_200605fc` plate comments updated with the confirmed
+findings), saved.
