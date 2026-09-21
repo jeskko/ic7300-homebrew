@@ -116,6 +116,8 @@
 #define RZA1H_MTU2_TGI4A_IRQ 159 /* added 2026-09-09, see mtu2.c's own comment */
 #define RZA1H_MTU2_TGI4B_IRQ 160 /* added 2026-09-20, see mtu2.c's own comment */
 #define RZA1H_MTU2_TGI4C_IRQ 161 /* added 2026-09-09, same session, see mtu2.c */
+#define RZA1H_MTU2_TGI4D_IRQ 162 /* added 2026-09-21, see mtu2.c's own comment --
+                                  * rspi2_wait_ready's own completion callback */
 #define TYPE_RZA1H_MTU2 "rza1h-mtu2"
 
 /* riic.c -- matches emu/peripherals/riic.py's per-instance base addresses

@@ -140,6 +140,42 @@
  * layout (A/B adjacent, C/D in a separate bank further out, matching
  * `TGRC_4`'s already-confirmed `0x224`).
  *
+ * TGI4D, GIC ID 162 (2026-09-21, icom-main-idle-loop-not-reached thread): once the
+ * TGI4B fix above let boot past the tuner-relay-network's own cold-boot init,
+ * `main_idle_loop` was *still* unreachable -- a live QMP-only poll (no gdbstub
+ * involvement at all, this project's own established "cross-check any breakpoint-
+ * derived stuck-forever claim" discipline) of `shared_job_ring_dispatch`'s own ring
+ * state showed `read_idx` catching up to `write_idx` (ring genuinely empty, last
+ * queued job was job_type 3, `rspi2_transmit`) within the first ~10s of boot, yet
+ * `main_idle_loop`'s own gating flag (`0x203906ed`, `shared_job_ring_dispatch`'s
+ * `DAT_200b1cac`) stayed stuck at 1 for a full 300s capture regardless --
+ * `shared_job_ring_dispatch`'s own top-of-function "ring already empty -> clear the
+ * flag and return" check is real (confirmed from its decompile) but is only ever
+ * evaluated when something calls the dispatcher *again*; nothing was doing that once
+ * the ring drained. Traced `rspi2_transmit`'s own event-0xa2 registration
+ * (`rspi2_driver_init`) to its handler, `rspi2_wait_ready` (`0x200b6444`) -- which,
+ * after its own real-hardware busy-wait on RSPI2's `SPSR2` (already confirmed
+ * working, unrelated to this bug), tail-calls `shared_job_ring_dispatch(0)` itself.
+ * That call is the *only* place left in the whole traced chain that ever re-checks
+ * the ring once it empties -- and it can only ever run if event 0xa2 (= 162 decimal
+ * = **TGI4D**, confirmed against `scratch/r01an5093ej0170-rza1-swpkg`'s own
+ * `TGI4D_IRQn = 162`) actually fires, which nothing in this device modeled before
+ * now. `rspi2_transmit`'s own arm sequence (`*(short*)(DAT_200b7370+0x2a) =
+ * *(short*)(DAT_200b7370+0x12) + (count+1)*0xa0`, with `DAT_200b7370` confirmed live
+ * (raw `body.bin` memory read) to hold the identical `0xFCFF0200` channel-3/4 base
+ * every other channel-4 event already uses) is modeled exactly like TGI4B: an
+ * explicit `TGRD_4`/`TCR_4` write while `CST4` is already running, not a `TSTR`-
+ * transition arm (same `arms_on_tstr = false` style as TGI4A/TGI4B). `TGRD_4`'s own
+ * offset (`0x2a` from the channel-3/4 base) lands 6 bytes past `TGRC_4` (`0x224`,
+ * already confirmed) -- not immediately adjacent the way `TGRA_4`/`TGRB_4` are, but
+ * this project's own established policy is to trust a live-derived pointer-
+ * arithmetic offset over an assumed adjacency pattern, so `0x22a` is used as found,
+ * not "corrected" to `0x226`. `TSR_4`/`TIER_4` bit 3 (the next free bit after
+ * TGI4C's bit 2) confirmed the same way: `rspi2_transmit` and `rspi2_wait_ready`
+ * both clear `TSR_4` bit 3 (`FUN_20360adc(DAT_200b7310, 0, 3, 8)`, mask `0x08` = bit
+ * 3) around their own arm/wait sequences, the same "A/B/C/D = bits 0/1/2/3"
+ * convention already established for A-C.
+ *
  * A fourth event, `0x30c`/`0x305` bit 2 (2026-09-09, DSP-comms session,
  * continued -- see MTU2_DSP_PACE_TARGET/STATUS below): `scif5_cmd_
  * transmit_now`'s own real busy-wait after unblocking `scif5_send_and_
@@ -226,6 +262,7 @@ struct RZA1HMtu2State {
     RZA1HMtu2Event ch4a; /* TGI4A, GIC ID 159 */
     RZA1HMtu2Event ch4b; /* TGI4B, GIC ID 160 -- see file comment */
     RZA1HMtu2Event ch4c; /* TGI4C, GIC ID 161 */
+    RZA1HMtu2Event ch4d; /* TGI4D, GIC ID 162 -- see file comment's TGI4D paragraph */
 
     /* scif5_cmd_transmit_now's own rate-limiter compare-match -- purely
      * polled (no IRQ registration found anywhere near it), see file
@@ -257,6 +294,12 @@ struct RZA1HMtu2State {
 #define MTU2_TGRA_4  0x21c
 #define MTU2_TGRB_4  0x21e /* see file comment's TGI4B paragraph for the derivation */
 #define MTU2_TGRC_4  0x224
+#define MTU2_TGRD_4  0x22a /* see file comment's TGI4D paragraph for the derivation
+                             * (rspi2_transmit's own `DAT_200b7370+0x2a` pointer
+                             * arithmetic, DAT_200b7370 confirmed == the same
+                             * 0xFCFF0200 channel-3/4 base every other channel-4
+                             * event already uses) -- not adjacent to TGRC_4 the
+                             * way TGRA_4/TGRB_4 are, used as found, not "corrected" */
 #define MTU2_TSR_4   0x22d
 
 #define MTU2_TSTR    0x280
@@ -414,12 +457,13 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         rza1h_mtu2_update_irq(s, &s->ch3a);
         return;
     case MTU2_TSR_4:
-        /* Shared by all three channel-4 events -- clearing affects
+        /* Shared by all four channel-4 events -- clearing affects
          * whichever bit(s) the write actually targets; re-evaluate all. */
         s->regs[offset] &= (uint8_t)value;
         rza1h_mtu2_update_irq(s, &s->ch4a);
         rza1h_mtu2_update_irq(s, &s->ch4b);
         rza1h_mtu2_update_irq(s, &s->ch4c);
+        rza1h_mtu2_update_irq(s, &s->ch4d);
         return;
     case MTU2_TIER_3:
         s->regs[offset] = (uint8_t)value;
@@ -430,6 +474,7 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         rza1h_mtu2_update_irq(s, &s->ch4a);
         rza1h_mtu2_update_irq(s, &s->ch4b);
         rza1h_mtu2_update_irq(s, &s->ch4c);
+        rza1h_mtu2_update_irq(s, &s->ch4d);
         return;
     case MTU2_TSTR: {
         uint8_t old = s->regs[offset];
@@ -465,14 +510,15 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         }
         return;
     case MTU2_TCR_4:
-        /* Shared prescaler/CCLR for all three channel-4 events -- a live
+        /* Shared prescaler/CCLR for all four channel-4 events -- a live
          * reprogram could in principle affect any of their real periods,
-         * so rearm all three if channel 4 is already running. */
+         * so rearm all four if channel 4 is already running. */
         memcpy(&s->regs[offset], &value, size);
         if (s->regs[MTU2_TSTR] & MTU2_TSTR_CST4) {
             rza1h_mtu2_rearm(s, &s->ch4a);
             rza1h_mtu2_rearm(s, &s->ch4b);
             rza1h_mtu2_rearm(s, &s->ch4c);
+            rza1h_mtu2_rearm(s, &s->ch4d);
         }
         return;
     case MTU2_TGRA_4:
@@ -483,6 +529,9 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         goto ch4_configure;
     case MTU2_TGRC_4:
         ev = &s->ch4c;
+        goto ch4_configure;
+    case MTU2_TGRD_4:
+        ev = &s->ch4d;
 ch4_configure:
         memcpy(&s->regs[offset], &value, size);
         if (s->regs[MTU2_TSTR] & MTU2_TSTR_CST4) {
@@ -555,6 +604,15 @@ static void rza1h_mtu2_ch4c_tick(void *opaque)
     rza1h_mtu2_update_irq(s, &s->ch4c);
 }
 
+static void rza1h_mtu2_ch4d_tick(void *opaque)
+{
+    RZA1HMtu2State *s = RZA1H_MTU2(opaque);
+
+    rza1h_debug("mtu2", "ch4 TGI4D compare-match (GIC 162)");
+    s->regs[MTU2_TSR_4] |= (1 << s->ch4d.bit);
+    rza1h_mtu2_update_irq(s, &s->ch4d);
+}
+
 static void rza1h_mtu2_reset(DeviceState *dev)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(dev);
@@ -564,6 +622,7 @@ static void rza1h_mtu2_reset(DeviceState *dev)
     rza1h_mtu2_stop(&s->ch4a);
     rza1h_mtu2_stop(&s->ch4b);
     rza1h_mtu2_stop(&s->ch4c);
+    rza1h_mtu2_stop(&s->ch4d);
     s->dsp_pace_deadline_ns = INT64_MAX;
     s->swtimer_b_deadline_ns = INT64_MAX;
 }
@@ -612,14 +671,24 @@ static void rza1h_mtu2_init(Object *obj)
     s->ch4c.tstr_cst_bit = MTU2_TSTR_CST4;
     s->ch4c.arms_on_tstr = true;
     sysbus_init_irq(sbd, &s->ch4c.irq);
+
+    s->ch4d.tcr_off = MTU2_TCR_4;
+    s->ch4d.tier_off = MTU2_TIER_4;
+    s->ch4d.tgr_off = MTU2_TGRD_4;
+    s->ch4d.tsr_off = MTU2_TSR_4;
+    s->ch4d.bit = 3;
+    s->ch4d.tstr_cst_bit = MTU2_TSTR_CST4;
+    s->ch4d.arms_on_tstr = false; /* TGI4A/TGI4B-style -- see file comment's TGI4D paragraph */
+    sysbus_init_irq(sbd, &s->ch4d.irq);
 }
 
 static void rza1h_mtu2_realize(DeviceState *dev, Error **errp)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(dev);
-    RZA1HMtu2Event *events[] = { &s->ch3a, &s->ch4a, &s->ch4b, &s->ch4c };
+    RZA1HMtu2Event *events[] = { &s->ch3a, &s->ch4a, &s->ch4b, &s->ch4c, &s->ch4d };
     ptimer_cb callbacks[] = { rza1h_mtu2_ch3a_tick, rza1h_mtu2_ch4a_tick,
-                             rza1h_mtu2_ch4b_tick, rza1h_mtu2_ch4c_tick };
+                             rza1h_mtu2_ch4b_tick, rza1h_mtu2_ch4c_tick,
+                             rza1h_mtu2_ch4d_tick };
     size_t i;
 
     for (i = 0; i < ARRAY_SIZE(events); i++) {

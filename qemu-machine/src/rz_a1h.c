@@ -283,7 +283,15 @@ static void rza1h_init(MachineState *machine)
      * DSP-link handshake right after was found needing it too. TGI4B (GIC
      * ID 160) added 2026-09-20, once the RIIC2 ring-overflow fix (riic.c)
      * let boot reach the internal tuner relay-network's own cold-boot
-     * init, which needs it -- see mtu2.c's own comment. */
+     * init, which needs it -- see mtu2.c's own comment. TGI4D (GIC ID 162)
+     * added 2026-09-21 (icom-main-idle-loop-not-reached thread): it's
+     * rspi2_wait_ready's own registered completion handler for event 0xa2,
+     * and rspi2_wait_ready is what actually calls shared_job_ring_dispatch
+     * again after rspi2_transmit's own ring job (job_type 3) finishes --
+     * without it, nothing ever re-invokes the dispatcher to notice the
+     * ring has drained, so its "ring now empty" flag-clear (main_idle_
+     * loop's own entry-wait gate, 0x203906ed) never runs even once the
+     * ring genuinely is empty. See mtu2.c's own comment. */
     mtu2 = qdev_new(TYPE_RZA1H_MTU2);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(mtu2), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(mtu2), 0, RZA1H_MTU2_BASE, 0);
@@ -299,6 +307,9 @@ static void rza1h_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 3,
                        qdev_get_gpio_in(gic,
                            RZA1H_MTU2_TGI4C_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 4,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_MTU2_TGI4D_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     /* riic.c -- upgraded from a bare RAM region to a real device,
      * 2026-09-08 second pass, once body.bin's own cold-boot RIIC2 read
