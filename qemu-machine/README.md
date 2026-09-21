@@ -57,6 +57,59 @@ sender identified so far is the initial bring-up dispatch itself). Once real com
 observed, decoding a handful of live-captured opcodes is a far more tractable target than
 reverse-engineering the whole ISA cold.
 
+### CORRECTION, same day, later — the "render dispatch runs exactly ONCE" claim above is WRONG.
+### It's a continuous, healthy render loop that never stops. The real gap is narrower and
+### different: nothing ever draws real content into the surfaces it presents, every cycle,
+### forever. Found while chasing the user's own follow-up question ("which task shows the boot
+### logo/callsign, and what's it waiting on").
+
+The single-hit breakpoint tool above (`trace_ui_render_dispatch.py`) removes each breakpoint the
+moment it fires, so it can only ever report "did this happen at least once" — it was never
+capable of detecting a repeat, and nobody checked for one. Re-tested properly with breakpoints
+that stay armed across many hits: **both `ui_graphics_buffers_init` and `ui_graphics_present_frame`
+fire repeatedly, roughly every 40-100ms, for as long as the capture runs** — 15 hits in ~0.6-1.2s
+in every re-check, not a single one-shot pair. This is a real, continuously-running redraw loop,
+not a one-time bring-up frame.
+
+**What this changes**: the earlier framing ("presents one freshly-zeroed frame, then nothing")
+undersold the render pipeline's own health — it's fine, and running exactly as a UI redraw loop
+should. **What it doesn't change**: the OpenVG command-FIFO trace is still flat at 61 words
+through every re-check this whole session (bring-up only) — so this healthy, continuous loop is
+presenting the *same still-blank* pixmap surface every single cycle, because nothing ever draws
+into it, not because the loop itself ever stops or skips a cycle.
+
+**Directly checked the real VDC50 framebuffer content again** (`vdc5_framebuffer_peek.py`, fresh
+90s capture, well after today's ADC/SCIF5 timing fixes): still effectively blank. Of 4096
+dumped rows, exactly 14 (rows 259-272, right at the very bottom edge of the real 272-row screen)
+have any nonzero bytes at all, and those bytes decode to widely-scattered, non-repeating RGB565
+values with no visible structure (not text/logo-shaped runs) — the same "uninitialized-RAM noise
+near the top/bottom" signature `icom-openvg-rendering`'s own original starting point already
+described, unchanged by any of today's fixes.
+
+**Tried to identify who's actually supposed to draw the boot logo + configured callsign, and came
+up genuinely empty on the main-CPU side**: no symbol, string, or function anywhere in `body.bin`
+matches "logo"/"splash"/"callsign"/"boot screen" (checked directly, case-insensitive, name and
+listing search). The render dispatch flag itself (`0x2039064c`, `ui_graphics_lifecycle_task`'s own
+state-select byte) has no confirmed writer of "1"/"2" found by static address cross-reference
+either — attempts to catch the real writer live (a GDB write watchpoint on that exact byte) came
+back empty-handed across 250 consecutive `RZA1H_DEBUG`-free samples spanning t=9-40s, despite the
+value demonstrably being 1 (confirmed by breakpointing the compare instruction itself and reading
+the register directly) — a real, currently unresolved contradiction between the write-watchpoint
+and the register-read approaches, not chased to ground this session (worth revisiting: possibly a
+hidden-argument kernel primitive writing the value through a path this project's watchpoint
+technique doesn't yet know how to catch, in the same family as this codebase's many other
+"Ghidra doesn't show this function's real argument" gotchas).
+
+**Open hypothesis, not yet checked**: the boot-time logo/callsign screen may not be drawn by the
+main CPU's OpenVG/VDC50 pipeline at all — it could be the front-panel unit's own local display
+content (`IC501`, the RL78 front-panel MCU, already confirmed to run its own independent firmware
+and protocol over `SCIF3`), shown directly by the front panel without any per-pixel command from
+the main CPU. This project has no visibility into `IC501`'s own firmware at all, so this can't be
+confirmed or ruled out from `body.bin` alone. If true, "which main-CPU task draws the splash
+screen" may simply be the wrong question — worth checking against real hardware (does the splash
+screen still show something if the main CPU is reset/held while power is applied, or does the
+front panel go blank too?) before spending more static-analysis effort hunting for it here.
+
 ### Follow-up, same day — per the user's own hypothesis ("some other task is probably waiting on
 ### an unimplemented peripheral"): a full `-d unimp,guest_errors` steady-state survey found and
 ### fixed a real one (the ADC), but it turned out NOT to be the render trigger. Log is now
