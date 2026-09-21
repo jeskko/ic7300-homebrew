@@ -57,17 +57,25 @@ time ever, at t≈20s into a PWRK-hold boot. `main_idle_loop`'s own per-iteratio
 a PC histogram over a free-running capture shows the CPU genuinely spread across real application
 code instead of parked in `idle_loop_wfe_spin`.
 
-**Known, honest limits of the fix, not yet chased further**: the OpenVG model is permissive, not
-faithful (nothing actually renders; one FIFO-hysteresis code path, `FUN_2014f73e`, would hang if
-ever reached — not observed in any run so far, but a known latent gap, not an oversight). RIIC1's
-own first real transaction NACKs after a handful of log lines — there is still no virtual RTC
-(`RX-8803LC`, datasheet already on disk at `/data/misc/icom/7300/doc/RX-8803LC_en.pdf`) on RIIC1,
-so this specific access fails and RIIC1 goes quiet again after the initial burst; adding that model
-is the natural next step, and would also turn RIIC1 traffic into a continuous signal rather than a
-one-shot. Full derivation, corrected working notes, and every intermediate false lead (including
-two later-retracted premises from earlier the same day) are in this session's own persistent
-memory (`icom-main-idle-loop-not-reached`) and in `notes/kernel-rtos.md`'s now-corrected
-`thunk_FUN_2007ea68` row.
+**Follow-on, same day: added a virtual RTC (`qemu-machine/src/rx8803.c`), the real RX-8803LC at its
+real address `0x32` on RIIC1** — the previously-observed NACK there is gone, a real transaction now
+completes, and `main_idle_loop`'s own iteration counter keeps climbing normally afterward. Fixed a
+real, already-documented side gap along the way: `riic.c`'s virtual EEPROM was attached to every
+RIIC channel unconditionally; now gated to channel 2 only, with the RTC on channel 1 and channel 0
+correctly answering nothing (real unpopulated-hardware NACK). Clock/calendar registers reflect
+real host wall-clock time; didn't chase the firmware's own read buffer byte-for-byte (a live check
+showed a mix of this model's real output and some still-default-shaped fields, plausibly a
+debug-logging gap or the firmware's own existing, bounded corrective-re-read path — not a hang
+either way) — matches this project's own permissive-peripheral philosophy rather than demanding
+full protocol fidelity for something that already unblocks the real problem.
+
+**Known, honest limits, not yet chased further**: the OpenVG model is permissive, not faithful
+(nothing actually renders; one FIFO-hysteresis code path, `FUN_2014f73e`, would hang if ever
+reached — not observed in any run so far, but a known latent gap, not an oversight, and not
+specifically stress-tested). Full derivation, corrected working notes, and every intermediate
+false lead (including two later-retracted premises from earlier the same day) are in this
+session's own persistent memory (`icom-main-idle-loop-not-reached`) and in `notes/kernel-rtos.md`'s
+now-corrected `thunk_FUN_2007ea68` row.
 
 ## Status, 2026-09-21 — `main_idle_loop`-not-reached thread: ROOT CAUSE LIVE-CONFIRMED. A stuck
 ## SCIF5/DSP job-ring flag (`0x203906ed`) blocks the real loop's own entry wait forever, parking

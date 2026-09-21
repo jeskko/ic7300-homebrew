@@ -290,6 +290,12 @@ struct RZA1HRiicState {
 #define RIIC2_EEPROM_I2C_ADDR 0x50
 #define RIIC2_EEPROM_ROM_SIZE 16384
 
+/* Real RX-8803LC RTC (2026-09-21) -- 7-bit address 0x32, confirmed live via
+ * the exact NACKed `i2c_start_transfer(0x32)` this device fixes; matches
+ * the Epson datasheet's own default address and this project's earlier
+ * IC351/schematic identification (notes/kernel-rtos.md). See rx8803.c. */
+#define RIIC1_RTC_I2C_ADDR 0x32
+
 /* Computes the real SCL low/high periods (RIICnBRL/RIICnBRH's own real-time meaning) in ns,
  * shared by riic_byte_time_ns() and riic_condition_time_ns() below -- both need the same
  * low_ns/high_ns, just combine them differently for a full byte transfer vs. a bare condition. */
@@ -912,15 +918,29 @@ static void rza1h_riic_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    s->eeprom_bus = i2c_init_bus(dev, "eeprom");
-    /* Real GT24C128B (16KB, 2-byte addressing) at the real 7-bit address firmware always uses
-     * (RIIC2_EEPROM_I2C_ADDR, confirmed via decompile -- see that macro's own comment). No
-     * backing `-drive` is given, so `writable` defaults true in-memory-only (see
-     * at24c_eeprom_realize()/at24c_eeprom_props in qemu-src/hw/nvram/eeprom_at24c.c) -- matches
-     * this project's existing, non-cross-boot-persistent usage exactly; writes now genuinely
-     * take effect for the rest of this run instead of being silently dropped. */
-    at24c_eeprom_init_rom(s->eeprom_bus, RIIC2_EEPROM_I2C_ADDR, RIIC2_EEPROM_ROM_SIZE,
-                          rom, (uint32_t)rom_len);
+    /* 2026-09-21 (icom-main-idle-loop-not-reached thread, follow-on): this used to attach the
+     * EEPROM slave below to every RIIC channel's own bus unconditionally -- an already-documented
+     * gap (notes/cold-boot-hw-init-sweep.md) that went from cosmetic to a real, live-confirmed
+     * bug once `openvg.c` let boot reach `main_idle_loop` for the first time and its own periodic
+     * RTC read over RIIC1 started genuinely NACKing (nothing responded at the RTC's own real
+     * address, 0x32 -- only the fake EEPROM at 0x50 existed, on every channel). Gated per-channel
+     * now: channel 2 keeps the real EEPROM slave exactly as before; channel 1 gets a real RX-8803
+     * RTC slave instead (see rx8803.c's own file comment for the full derivation); channel 0 gets
+     * neither, so a transaction there now correctly NACKs like real unpopulated hardware would,
+     * rather than accidentally answering as an EEPROM too. */
+    s->eeprom_bus = i2c_init_bus(dev, "riic-slave");
+    if (s->channel == 2) {
+        /* Real GT24C128B (16KB, 2-byte addressing) at the real 7-bit address firmware always
+         * uses (RIIC2_EEPROM_I2C_ADDR, confirmed via decompile -- see that macro's own comment).
+         * No backing `-drive` is given, so `writable` defaults true in-memory-only (see
+         * at24c_eeprom_realize()/at24c_eeprom_props in qemu-src/hw/nvram/eeprom_at24c.c) --
+         * matches this project's existing, non-cross-boot-persistent usage exactly; writes now
+         * genuinely take effect for the rest of this run instead of being silently dropped. */
+        at24c_eeprom_init_rom(s->eeprom_bus, RIIC2_EEPROM_I2C_ADDR, RIIC2_EEPROM_ROM_SIZE,
+                              rom, (uint32_t)rom_len);
+    } else if (s->channel == 1) {
+        i2c_slave_create_simple(s->eeprom_bus, "rx8803", RIIC1_RTC_I2C_ADDR);
+    }
 
     s->ti_offer_bh = qemu_bh_new(riic_ti_offer_bh, s);
 
