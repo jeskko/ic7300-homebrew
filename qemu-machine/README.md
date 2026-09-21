@@ -96,6 +96,49 @@ provably quiet on that front. Whatever gates a real screen redraw is either pure
 (state/counter/timer-gated) or needs a live external stimulus (front-panel touch, CI-V command)
 this emulation has no path to inject yet, not a device this machine still fails to model.
 
+### Follow-up, same day — per the user's own schematic-derived question about the CPU↔FPGA
+### differential-I/O pins (`FPDX`/`FPSX`/`FPSR`, `SCPCK`/`SCPSS`/`SCPX`/`SCPR`): found and fixed a
+### real, substantial DSP-link (`SCIF5`) protocol bug — a content-blind canned ack was causing an
+### 85,000-event/150s retry storm. Cut it by ~86%. Still not the render trigger.
+
+`notes/ic7300-signal-chain.md` already has this fully mapped: `SCPCK`/`SCPSS`/`SCPX`/`SCPR`
+(`P8_3/4/6/5`) are RSPI channel 2's alternate function — already modeled (`rspi2.c`), confirmed
+real and active by an earlier session. `FPDX`/`FPSX`/`FPSR` (`P8_11/14/15`) are FPGA-only
+differential pins with no CPU-side driver ever found directly — except `notes/multi-cpu-images-
+history.md` documents `scif5_arm_retry_timer` dynamically rerouting SCIF5's 3rd pin from its
+normal `P8_2` onto `P8_11`/`FPDX` when a hidden parameter is nonzero (never observed taken in any
+static sample) — i.e. FPDX is SCIF5 traffic, conditionally rerouted.
+
+Captured live with a new tool, `tools/trace_fpga_link_activity.py` (`RZA1H_DEBUG=rspi2,scif` over
+a 150s PWRK-hold boot): **RSPI2 fires once** (an 8-byte transaction, `00 03 00 00 00 00 00 00`) —
+real, matches the already-confirmed driver. **SCIF5 (the DSP-link responder) fires 85,742 times**
+in the same window (400-1500/sec sustained) — all the identical canned "class-0xF ack" this
+project added 2026-09-21 earlier the same day to fix the boot-time identity-query stall.
+
+**Root cause, found by decompiling `scif5_classify_reply` (`0x200b0dc4`) directly**: it only
+treats reply classes 1/2/8 as "resolved" — class 0xF isn't one of them. For any SCIF5 exchange
+that *isn't* the boot-time identity query, the always-0xF ack made `shared_job_ring_dispatch`'s
+job sit "still pending" every time, clearing only via its own retry-budget countdown, immediately
+followed by the next queued command hitting the identical fate — a genuine retry storm baked in
+by the earlier fix, not real ongoing protocol traffic.
+
+**Fixed properly this time, content-aware rather than universal**: `scif.c` now tracks the real
+4-byte command word `scif5_bitrev_transmit_word` sends (via a small `REG_FTDR`-write hook,
+`scif5_cmd_buf`) and reconstructs it with the same bit-reversal already established for the RX
+side. Only the identity-query range (`0xE0000000`-`0xE0000005`) gets the class-0xF ack; everything
+else gets class-2 (a trivial ack — `scif5_classify_reply`'s own `class==2` branch resolves
+unconditionally on the first reply, no retry). Confirmed live: total SCIF5 events dropped from
+85,742 to 12,210 (~86%) over the same 150s window, and the log now shows accurate
+`(cmd=xxxxxxxx)` values per ack instead of a blind constant. The remaining traffic is a
+repeating `cmd=0x43000000` at a fairly regular ~5-6ms cadence — very likely `dsp_param_sync_tick`
+genuinely running (unpaced by any real DSP round-trip time, since our ack is instant), not a bug,
+though not confirmed either way.
+
+**Re-checked the OpenVG angle again** (re-ran `trace_openvg_command_traffic.py`): still exactly 61
+words, all pre-t=10s, zero after — this fix, like the ADC fix before it, is real and worth keeping
+but confirmed NOT the render trigger. The render-request-mailbox-sender question remains the most
+concrete open lead for that specific thread.
+
 ## Status, 2026-09-21, continued — `main_idle_loop` IS NOW REACHED. The whole multi-session
 ## "not reached" thread is CLOSED: root cause was a missing OpenVG graphics-processor interrupt
 ## deadlocking boot one call short of the real loop, not the job-ring/SVC-wait mechanics below

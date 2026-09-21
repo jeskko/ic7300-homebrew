@@ -275,6 +275,13 @@ struct RZA1HScifState {
      * scif_bus_log_tx()'s own comment for how to enable it. */
     uint8_t  bus_tx_buf[40];
     int      bus_tx_len; /* -1 = idle (waiting for 0xFE) */
+
+    /* DSP-link command-word tracking (channel 5 only) -- 2026-09-21, see
+     * rza1h_scif5_dsp_ack's own updated comment for why this exists (the
+     * canned reply needs to know which command it's answering, not just
+     * fire the same class every time). */
+    uint8_t  scif5_cmd_buf[4];
+    int      scif5_cmd_pos;
 };
 
 #define REG_SMR  0x00
@@ -606,13 +613,53 @@ static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
  * (0x00) assemble to raw_word_LE = 0x0000000f; scif5_rx_isr's own `rbit`
  * turns that into 0xf0000000 -- top byte 0xf0, high nibble 0xf. Worked out
  * by hand (rbit is self-inverse: rbit32(0xf0000000) = 0x0000000f) rather
- * than guessed -- same technique the original 0x04/0x20000000 pairing used. */
+ * than guessed -- same technique the original 0x04/0x20000000 pairing used.
+ *
+ * 2026-09-21 CORRECTION, same day, later -- the class-0xF reply above fixed
+ * `dsp_identity_query_cmd0`-`cmd5`, but turned out to be actively harmful to
+ * every OTHER SCIF5 exchange: `scif5_classify_reply` (`0x200b0dc4`) only
+ * treats classes 1/2/8 as "resolved" -- class 0xF isn't one of them, so for
+ * any command that isn't the boot-time identity query, this ack made
+ * `shared_job_ring_dispatch`'s case-1 job sit "still pending" every single
+ * time, only ever clearing via its own retry-budget countdown, immediately
+ * followed by the *next* queued command hitting the exact same fate. Live-
+ * confirmed via a 150s `RZA1H_DEBUG=rspi2,scif` capture: 85,742 canned-ack
+ * events in that window (400-1500/sec sustained) -- a genuine retry storm,
+ * not real ongoing protocol traffic. Fix: track the real 4-byte command word
+ * `scif5_bitrev_transmit_word` sends (via `scif5_cmd_buf`, filled by the
+ * `REG_FTDR` write case above) and only answer class-0xF for the identity-
+ * query range (`0xE0000000`-`0xE0000005`); everything else gets class-2 (a
+ * trivial ack -- `scif5_classify_reply`'s own `uVar6 == 2` branch sets its
+ * "resolved" flag unconditionally, so the very first reply now resolves the
+ * job instead of retrying). `raw_word_LE = 0x00000004` for class-2, by the
+ * same hand derivation: `rbit32(0x00000004) = 0x20000000`, top byte 0x20,
+ * high nibble 2. */
+static uint32_t rza1h_rbit32(uint32_t v)
+{
+    v = (v >> 16) | (v << 16);
+    v = ((v & 0xff00ff00) >> 8) | ((v & 0x00ff00ff) << 8);
+    v = ((v & 0xf0f0f0f0) >> 4) | ((v & 0x0f0f0f0f) << 4);
+    v = ((v & 0xcccccccc) >> 2) | ((v & 0x33333333) << 2);
+    v = ((v & 0xaaaaaaaa) >> 1) | ((v & 0x55555555) << 1);
+    return v;
+}
+
 static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
 {
     AddressSpace *as = &address_space_memory;
     uint32_t struct_base;
     uint8_t raw012[3] = { 0x0f, 0x00, 0x00 };
     uint8_t count = 3;
+
+    if (s->scif5_cmd_pos == 4) {
+        uint32_t raw_le = s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
+                          (s->scif5_cmd_buf[2] << 16) | (s->scif5_cmd_buf[3] << 24);
+        uint32_t cmd = rza1h_rbit32(raw_le);
+
+        if (cmd < 0xE0000000 || cmd > 0xE0000005) {
+            raw012[0] = 0x04; /* class-2 trivial ack -- see comment above */
+        }
+    }
 
     address_space_read(as, SCIF5_STRUCT_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
                        &struct_base, 4);
@@ -625,7 +672,12 @@ static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
     address_space_write(as, struct_base + 0xc, MEMTXATTRS_UNSPECIFIED,
                         &count, 1);
 
-    rza1h_debug("scif", "scif5: DSP-link responder: canned class-0xf ack");
+    rza1h_debug("scif", "scif5: DSP-link responder: canned class-0x%x ack"
+               " (cmd=%08x)", raw012[0] == 0x0f ? 0xf : 2,
+               s->scif5_cmd_pos == 4
+                   ? rza1h_rbit32(s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
+                                 (s->scif5_cmd_buf[2] << 16) | (s->scif5_cmd_buf[3] << 24))
+                   : 0);
     s->frdr = 0x00; /* the one byte actually delivered through the normal
                       * RXI path -- see this function's own comment */
     s->rx_pending = true;
@@ -730,6 +782,19 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case REG_FTDR:
         byte = value;
+        /* DSP-link command-word tracking (channel 5 only) -- assembles the
+         * real 4-byte command scif5_bitrev_transmit_word sends, in transmit
+         * order, so rza1h_scif5_dsp_ack can answer based on what was
+         * actually asked instead of firing one fixed canned class always.
+         * See that function's own comment for the byte-order derivation. */
+        if (s->channel == 5) {
+            if (s->scif5_cmd_pos >= 0 && s->scif5_cmd_pos < 4) {
+                s->scif5_cmd_buf[s->scif5_cmd_pos++] = byte;
+            } else {
+                s->scif5_cmd_pos = 0;
+                s->scif5_cmd_buf[s->scif5_cmd_pos++] = byte;
+            }
+        }
         /* Always surfaced, chardev or not -- the whole point of this
          * roadmap item is *observability*, and most testing won't bother
          * wiring a real -chardev per channel. Per-channel-selectable (see
