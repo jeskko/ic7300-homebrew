@@ -223,4 +223,14 @@
 #define RZA1H_OPENVG_INT0_IRQ 130
 #define TYPE_RZA1H_OPENVG "rza1h-openvg"
 
+/* 10-bit wired ADC -- see adc.c's own file comment for the full derivation (found via a
+ * `-d unimp` steady-state survey, same technique that found VDC50/LVDS/MTU2-TGI4D/the RTC).
+ * DRA-DRH at +0x00-+0x0e, ADCSR at +0x60, confirmed against the RZ/A1H SVD and the real driver's
+ * own base-address global. Sized to cover through ADCMPSR at +0x64, with headroom. Sits inside
+ * the broader "io-e8000000" unimplemented-device catch-all in rz_a1h.c. No IRQ wired -- the real
+ * driver runs the ADC in continuous-scan mode and never checks completion status at all. */
+#define RZA1H_ADC_BASE 0xE8005800
+#define RZA1H_ADC_SIZE 0x00000100
+#define TYPE_RZA1H_ADC "rza1h-adc"
+
 #endif

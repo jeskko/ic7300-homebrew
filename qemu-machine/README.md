@@ -57,6 +57,45 @@ sender identified so far is the initial bring-up dispatch itself). Once real com
 observed, decoding a handful of live-captured opcodes is a far more tractable target than
 reverse-engineering the whole ISA cold.
 
+### Follow-up, same day — per the user's own hypothesis ("some other task is probably waiting on
+### an unimplemented peripheral"): a full `-d unimp,guest_errors` steady-state survey found and
+### fixed a real one (the ADC), but it turned out NOT to be the render trigger. Log is now
+### genuinely flat in steady state — nothing else is left to find this way.
+
+Re-ran this project's own established `-d unimp` survey technique (last used 2026-09-20 for
+VDC50/LVDS), but over a full 180s PWRK-hold window instead of just to first-`wfi` — the earlier
+survey never ran long enough to distinguish "one-time boot config" from "still happening in
+steady state." **Found exactly one region still being touched continuously**: `io-e8000000`
+offset `0x5800`-`0x580e`, ~433 hits/sec for the entire 180s (78090 reads total, vs. a few dozen
+for every other region combined). Cross-referenced against the RZ/A1H SVD: this is the **ADC**
+(10-bit wired A/D converter). Decompiled the real driver end to end: `FUN_200b0678` (init) writes
+`ADCSR=0x20bf` once — continuous-scan mode, and critically the driver **never reads ADCSR back**,
+so it never checks a completion flag at all, just free-runs and blindly rereads whatever's in the
+data registers every pass. `FUN_200b5124` (the periodic front-panel/DSP-settings-scan tick, called
+from `FUN_200b517c`) is that reader: 6 of 8 channels (a mode byte gates the other 2, reading clear
+in this boot — matches the survey's own 6-not-8 offsets exactly), each right-shifted by 6 before
+feeding `dsp_param_table_rebuild_from_settings` — the `>>6` confirms a real 10-bit conversion
+result left-justified in the register's top bits, not an arbitrary shift.
+
+**Built `src/adc.c`**: same minimal-stub philosophy as `riic.c`/`openvg.c` — DRA-DRH each return a
+fixed mid-scale reading (`0x8000` raw = 0x200 of 0x3ff), everything else plain storage, no IRQ
+(the driver never uses one). Confirmed live: the ADC's own `io-e8000000` log lines are gone
+entirely post-fix, and — genuinely new information this fix reveals — **the whole `-d unimp` log
+now goes completely flat after ~20s** (1931 lines total over 90s, unchanged from t=30s onward).
+Before this fix, the ADC's own ~78,000-line/180s noise made it impossible to tell whether anything
+*else* was still quietly churning underneath it; now that it's gone, the answer is a clean "no" —
+every remaining unimplemented-device hit is one-time boot config, nothing is left continuously
+active. **Directly re-checked whether this changed the OpenVG-rendering picture** (re-ran
+`trace_openvg_command_traffic.py`): command-word count and distribution are byte-for-byte
+identical to before the fix (61 words, all pre-t=10s, zero afterward through t=90s) — **the ADC
+was a real, worth-keeping gap, but not the render trigger.** Kept anyway (real hardware fidelity,
+zero regression, same reasoning this project has applied to every previous fix that turned out not
+to be *the* answer but was still a genuine improvement). **Where this leaves the OpenVG thread**:
+the "-d unimp survey for a hidden blocking peripheral" avenue is now exhausted — steady state is
+provably quiet on that front. Whatever gates a real screen redraw is either pure software logic
+(state/counter/timer-gated) or needs a live external stimulus (front-panel touch, CI-V command)
+this emulation has no path to inject yet, not a device this machine still fails to model.
+
 ## Status, 2026-09-21, continued — `main_idle_loop` IS NOW REACHED. The whole multi-session
 ## "not reached" thread is CLOSED: root cause was a missing OpenVG graphics-processor interrupt
 ## deadlocking boot one call short of the real loop, not the job-ring/SVC-wait mechanics below
@@ -2695,6 +2734,8 @@ section for a first look at what it already revealed):
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
 | RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
 | VDC50 (LCD/display controller) + LVDS | `rz_a1h.c`'s `add_plain_ram_region()` | Added 2026-09-20 (found via `-d unimp`: firmware genuinely configures multiple graphics planes during boot, previously silently discarded). Plain storage only, no display/timing/compositing behavior modeled — but unlike the generic catch-all it was carved out of, writes now stick, so `tools/vdc5_framebuffer_peek.py` can read back `GRn_FLM2`/`FLM3`/`FLM6` and decode a real framebuffer once firmware points one at real content (not yet observed within 120s on either boot branch — see Status above for the open "gated on an unmodeled VDC5 interrupt?" question) |
+| OpenVG (graphics processor for OpenVG) | `openvg.c` | Added 2026-09-21 — completion-interrupt stub only, every FIFO write completes instantly (GIC 130-133). Confirmed load-bearing (unblocks `slv5_periph_configure`'s own `TMO_FEVR` wait, the one thing keeping `main_idle_loop` from ever being reached). Nothing renders — see Status above for the full render-traffic scoping thread |
+| ADC (10-bit wired A/D converter) | `adc.c` | Added 2026-09-21 — found via a full steady-state `-d unimp` survey (the only region still touched continuously deep into boot, ~433 hits/sec). DRA-DRH all return a fixed mid-scale reading; no IRQ (the real driver runs continuous-scan mode and never polls completion status). Confirmed real and load-bearing for hardware fidelity (feeds `dsp_param_table_rebuild_from_settings`), but confirmed live NOT the OpenVG render trigger — see Status above |
 
 ## Directory layout
 

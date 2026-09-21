@@ -113,6 +113,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *dmac;
     DeviceState *rspi2;
     DeviceState *openvg;
+    DeviceState *adc;
     size_t i;
     int ch;
 
@@ -410,6 +411,15 @@ static void rza1h_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(openvg), 0,
                        qdev_get_gpio_in(gic,
                            RZA1H_OPENVG_INT0_IRQ - RZA1H_GIC_NUM_INTERNAL));
+
+    /* adc.c -- added 2026-09-21, continued (icom-openvg-rendering thread). Found via a
+     * `-d unimp` steady-state survey: the ADC is the only region still touched continuously deep
+     * into steady-state boot (every other unimplemented region is one-time config). Full
+     * derivation in adc.c's own file comment. Overlap-mapped: sits inside the broader
+     * "io-e8000000" unimplemented-device catch-all above. */
+    adc = qdev_new(TYPE_RZA1H_ADC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(adc), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(adc), 0, RZA1H_ADC_BASE, 1);
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }
