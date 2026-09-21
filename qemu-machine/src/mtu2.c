@@ -220,6 +220,22 @@
  * shared, multi-subsystem software-timeout facility (one counter, several
  * independent compare/status pairs), not something SCIF5-private that
  * happened to get reused.
+ *
+ * A sixth event, `0x30e`/`0x305` bit 3 -- TGRD_0/TGFD_0, both named
+ * straight out of the manual's own channel-0 register table (2026-09-21,
+ * icom-main-idle-loop-not-reached thread). Same one-counter/many-compare-
+ * pairs facility again, and the pattern this file predicted: a third
+ * compare/status pair on the identical channel-0 counter. Found once
+ * `openvg.c` (new this session) unblocked the OpenVG graphics bring-up
+ * that had been deadlocking the whole boot -- past that point a free-run
+ * poll showed the PC newly parked in `FUN_200b7d64`'s busy-wait at
+ * `0x200b7f6c`, spinning on this exact bit. Unlike the fourth and fifth
+ * events, both ends are fully identified here: `FUN_200b7b40` arms it
+ * (`TGRD_0 = TCNT_0 + delta`, then clears the flag) and `FUN_200b7d64`
+ * consumes it, so the model honors the written delta exactly rather than
+ * approximating a period. See `MTU2_SWTIMER_C_TARGET` and the
+ * `swtimer_c_deadline_ns` field for the verbatim firmware and the exact
+ * reasoning.
  */
 
 #include "qemu/osdep.h"
@@ -278,6 +294,25 @@ struct RZA1HMtu2State {
      * caller's real purpose isn't claimed further than that). */
     int64_t swtimer_b_deadline_ns;
 
+    /* A third compare-match on the same channel-0 status byte, added
+     * 2026-09-21 (icom-main-idle-loop-not-reached thread): TGRD_0 ->
+     * TSR_0 bit 3 (TGFD_0). Unlike the two above this one's arming code
+     * is fully identified: FUN_200b7b40 (body.bin 0x200b7b40) does,
+     * verbatim,
+     *     *(short *)(0xFCFF0300 + 0xe) = delta + *(short *)(0xFCFF0300 + 6);
+     *     FUN_20360adc(0xFCFF0305, 0, 3, 8);   // clear TSR_0 bit 3
+     * i.e. TGRD_0 = TCNT_0 + delta, then clear the flag -- the exact same
+     * idiom the two events above already use for TGRC_0/TGRA_0. Its one
+     * consumer is FUN_200b7d64's own busy-wait at 0x200b7f6c:
+     *     do { if (*0x20390763 == 0) break;
+     *     } while (FUN_20360b24(0xFCFF0305, 3, 8) == 0);
+     * which spins forever while the flag never sets. That busy-wait is
+     * only reachable once openvg.c unblocked the graphics bring-up (see
+     * that file's comment) -- before then boot deadlocked earlier and this
+     * code was never reached at all, which is why this gap only surfaced
+     * now. */
+    int64_t swtimer_c_deadline_ns;
+
     uint8_t regs[RZA1H_MTU2_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case --
                                      * matches the add_plain_ram_region()
@@ -328,6 +363,18 @@ struct RZA1HMtu2State {
  * MTU2_FREQ_HZ: 32000 / 32000000 = 1.000ms. */
 #define MTU2_SWTIMER_B_ONESHOT_NS ((int64_t)32000 * NANOSECONDS_PER_SECOND \
                                   / MTU2_FREQ_HZ)
+
+/* A third compare-match on the same channel-0 status byte -- TGRD_0 ->
+ * TSR_0 bit 3 (TGFD_0), both straight out of the RZ/A1H manual's own
+ * channel-0 register table (TGRD_0 = H'FCFF030E, TSR_0 = H'FCFF0305). See
+ * the swtimer_c_deadline_ns field comment for the firmware side. The
+ * requested interval is honored exactly rather than fixed: the arming
+ * write is TGRD_0 = TCNT_0 + delta, and since this model never advances
+ * TCNT_0 (it reads back the 0 the channel-0 init at body.bin 0x20005adc
+ * left there), the value written IS the delta in MTU2_FREQ_HZ counts. The
+ * one traced caller passes 0x200, i.e. 512/32MHz = 16us. */
+#define MTU2_SWTIMER_C_TARGET 0x30e /* 16-bit; writing this arms the deadline */
+#define MTU2_SWTIMER_C_STATUS_BIT (1 << 3) /* same status byte, MTU2_DSP_PACE_STATUS */
 
 /* EXPERIMENT, 2026-09-09 -- was 25MHz, chosen empirically (see git history/
  * README-history.md's "MTU2 channel 4 built; a generic RTOS job-queue
@@ -436,6 +483,12 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
             !(s->regs[offset] & MTU2_SWTIMER_B_STATUS_BIT)) {
             s->regs[offset] |= MTU2_SWTIMER_B_STATUS_BIT;
             rza1h_debug("mtu2", "swtimer_b expired (0x305 bit 0 now set)");
+        }
+        if (s->swtimer_c_deadline_ns != INT64_MAX &&
+            now >= s->swtimer_c_deadline_ns &&
+            !(s->regs[offset] & MTU2_SWTIMER_C_STATUS_BIT)) {
+            s->regs[offset] |= MTU2_SWTIMER_C_STATUS_BIT;
+            rza1h_debug("mtu2", "swtimer_c expired (0x305 bit 3 now set)");
         }
     }
 
@@ -554,6 +607,19 @@ ch4_configure:
         rza1h_debug("mtu2", "swtimer_b armed (0x305 bit 0), deadline +%lld ns",
                    (long long)MTU2_SWTIMER_B_ONESHOT_NS);
         return;
+    case MTU2_SWTIMER_C_TARGET: {
+        /* TGRD_0 = TCNT_0 + delta; TCNT_0 is never advanced by this model,
+         * so the stored value is the delta in MTU2_FREQ_HZ counts. */
+        int64_t ns = (int64_t)(value & 0xffff) * NANOSECONDS_PER_SECOND
+                     / MTU2_FREQ_HZ;
+
+        memcpy(&s->regs[offset], &value, size);
+        s->regs[MTU2_DSP_PACE_STATUS] &= ~MTU2_SWTIMER_C_STATUS_BIT;
+        s->swtimer_c_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ns;
+        rza1h_debug("mtu2", "swtimer_c armed (0x305 bit 3), deadline +%lld ns",
+                   (long long)ns);
+        return;
+    }
     default:
         memcpy(&s->regs[offset], &value, size);
         return;
@@ -625,6 +691,7 @@ static void rza1h_mtu2_reset(DeviceState *dev)
     rza1h_mtu2_stop(&s->ch4d);
     s->dsp_pace_deadline_ns = INT64_MAX;
     s->swtimer_b_deadline_ns = INT64_MAX;
+    s->swtimer_c_deadline_ns = INT64_MAX;
 }
 
 static void rza1h_mtu2_init(Object *obj)

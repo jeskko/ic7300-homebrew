@@ -14,6 +14,61 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-21, continued — `main_idle_loop` IS NOW REACHED. The whole multi-session
+## "not reached" thread is CLOSED: root cause was a missing OpenVG graphics-processor interrupt
+## deadlocking boot one call short of the real loop, not the job-ring/SVC-wait mechanics below
+## (those were real, separately-fixed bugs too, just not the final blocker)
+
+**This closes the thread the rest of this Status section (right below) was written about.**
+Three real, independent qemu-machine bugs were found and fixed this same day, each unblocking
+boot a little further, in this order:
+
+1. A DSP identity-query protocol (`dsp_identity_query_cmd0`-`cmd5`) retried ~30s per command
+   because our virtual DSP responder (`scif.c`) sent the wrong reply-class nibble — fixed.
+2. `main_idle_loop`'s own gating flag (`0x203906ed`) never cleared even once its ring genuinely
+   emptied, because `rspi2_wait_ready` — the only thing left that ever re-checked it — is wired to
+   MTU2's `TGI4D` interrupt (GIC 162), which this device model had never implemented at all —
+   fixed (`mtu2.c`/`rz_a1h.c`/`rz_a1h.h`).
+3. **Even with both of those fixed and both gating flags confirmed clear throughout boot, `main_
+   idle_loop` still wasn't reached.** The real answer turned out to be a third, unrelated,
+   deeper blocker, found by an Opus-model deep-dive after two premises in the working
+   investigation turned out to be wrong (the wait condition's own polarity had been misread on one
+   of its three terms, and — more importantly — `main_idle_loop` had never even been *entered* in
+   the first place, so it was never actually parked in its own wait at all). The task was blocked
+   four call-levels further back: `cold_boot_mode_dispatch` → `system_mode_request_dispatch` →
+   `ui_request_wait_ack` (renamed from `FUN_200375e4`) → waiting on `ui_graphics_lifecycle_task` to
+   post back — which never happens because that task is itself stuck inside `graphics_stack_
+   startup_egl_openvg`'s own `"vgStartUp"` step, blocked forever (`TMO_FEVR`) on `rtos_wait_flag`
+   waiting for the **OpenVG graphics processor's own completion interrupt** (GIC IDs 130-133,
+   confirmed against the RZ/A1H manual's Table 7.3 — the long-standing `UNIDENTIFIED_SLV5_PERIPH_
+   BASE`/`0xe8100000` peripheral, now renamed `OPENVG_GPU_BASE`), which nothing in this device model
+   had ever implemented — the region was plain, inert RAM. **Fixed with a new device model,
+   `qemu-machine/src/openvg.c`** (deliberately minimal — completes every command-FIFO write
+   instantly and raises the interrupt, nothing renders — see that file's own header comment for
+   the complete, live-confirmed derivation chain). A follow-on gap surfaced immediately behind it
+   (a third MTU2 channel-0 software-timer pair, `TGRD_0`/`TGFD_0`, only ever reached once the
+   graphics deadlock cleared) and was fixed the same way (`mtu2.c`).
+
+**Live-confirmed, independently, twice** (once by the fixing agent, once by the parent session
+re-running it from scratch): `RIIC1` traffic — the real-time-clock read `main_idle_loop`'s own body
+does every iteration, this project's whole-history ground-truth signal — appears for the first
+time ever, at t≈20s into a PWRK-hold boot. `main_idle_loop`'s own per-iteration counter
+(`0x20390326`) climbs continuously (125 → 179 over a 20s window in one independent re-check), and
+a PC histogram over a free-running capture shows the CPU genuinely spread across real application
+code instead of parked in `idle_loop_wfe_spin`.
+
+**Known, honest limits of the fix, not yet chased further**: the OpenVG model is permissive, not
+faithful (nothing actually renders; one FIFO-hysteresis code path, `FUN_2014f73e`, would hang if
+ever reached — not observed in any run so far, but a known latent gap, not an oversight). RIIC1's
+own first real transaction NACKs after a handful of log lines — there is still no virtual RTC
+(`RX-8803LC`, datasheet already on disk at `/data/misc/icom/7300/doc/RX-8803LC_en.pdf`) on RIIC1,
+so this specific access fails and RIIC1 goes quiet again after the initial burst; adding that model
+is the natural next step, and would also turn RIIC1 traffic into a continuous signal rather than a
+one-shot. Full derivation, corrected working notes, and every intermediate false lead (including
+two later-retracted premises from earlier the same day) are in this session's own persistent
+memory (`icom-main-idle-loop-not-reached`) and in `notes/kernel-rtos.md`'s now-corrected
+`thunk_FUN_2007ea68` row.
+
 ## Status, 2026-09-21 — `main_idle_loop`-not-reached thread: ROOT CAUSE LIVE-CONFIRMED. A stuck
 ## SCIF5/DSP job-ring flag (`0x203906ed`) blocks the real loop's own entry wait forever, parking
 ## the CPU on the genuine RTOS idle task instead — read this before touching the ring-overflow/

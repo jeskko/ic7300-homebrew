@@ -112,6 +112,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *mtu2;
     DeviceState *dmac;
     DeviceState *rspi2;
+    DeviceState *openvg;
     size_t i;
     int ch;
 
@@ -393,6 +394,22 @@ static void rza1h_init(MachineState *machine)
     rspi2 = qdev_new(TYPE_RZA1H_RSPI2);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(rspi2), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(rspi2), 0, RZA1H_RSPI2_BASE, 0);
+
+    /* openvg.c -- added 2026-09-21 (icom-main-idle-loop-not-reached thread).
+     * The OpenVG graphics processor's completion interrupt (GIC ID 130,
+     * INT0) is what releases the TMO_FEVR event-flag wait inside
+     * slv5_periph_configure; without it ui_graphics_lifecycle_task never
+     * reaches its own message loop, so the *0x2039064c handshake that
+     * system_mode_request_dispatch blocks on is never acknowledged and boot
+     * deadlocks one call short of main_idle_loop. Full derivation in
+     * openvg.c's own file comment. Overlap-mapped: sits inside the broader
+     * plain-RAM "io-e8100000" region above. */
+    openvg = qdev_new(TYPE_RZA1H_OPENVG);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(openvg), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(openvg), 0, RZA1H_OPENVG_BASE, 1);
+    sysbus_connect_irq(SYS_BUS_DEVICE(openvg), 0,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_OPENVG_INT0_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     qemu_register_reset(rza1h_cpu_reset, cpu);
 }

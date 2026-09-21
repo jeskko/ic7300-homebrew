@@ -210,4 +210,17 @@
 #define RZA1H_RSPI2_SIZE 0x00000024
 #define TYPE_RZA1H_RSPI2 "rza1h-rspi2"
 
+/* "Renesas Graphics Processor for OpenVG(TM)" -- see openvg.c's own file
+ * comment for the full derivation. The peripheral occupies the whole SLV5
+ * I/O window (0xE8100000-0xE813FFFF) but the only registers any traced code
+ * gives behavior to sit in one 0x100 block at +0x4000, so that is all this
+ * device claims; the rest stays with rz_a1h.c's plain-RAM "io-e8100000"
+ * catch-all. GIC interrupt ID 130 is INT0 of this block, straight out of the
+ * RZ/A1H manual's Table 7.3 (IDs 130-133 = INT0-INT3, level-triggered), and
+ * matches the 0x82-0x85 the firmware's own FUN_2007ec74 registers. */
+#define RZA1H_OPENVG_BASE 0xE8104000
+#define RZA1H_OPENVG_SIZE 0x00000100
+#define RZA1H_OPENVG_INT0_IRQ 130
+#define TYPE_RZA1H_OPENVG "rza1h-openvg"
+
 #endif
