@@ -414,6 +414,22 @@ None of the six checked item codes' gating tests bits 10/11/12/13/14 (D408/D411/
 diodes' rows above; this is a genuinely new code path and it reconfirms, rather than merely repeats, the
 existing negative result for all five.
 
+**A seventh, `reset_type`-gated (not diode/region-gated) special case, found later while tracing
+`SET → DISPLAY → MY CALL` for `notes/ui-menu.md`/`qemu-machine/`'s own boot-splash investigation**:
+`FUN_2003dcc0`'s own outer condition for applying the *normal* table-default copy is
+`(reset_type == 0) || (item_code != 0x71 && (item_code - 0x8f) unsigned > 0x67)` — i.e. for
+`reset_type == 1` (All reset), item `0x71` (`MY CALL`, confirmed live-value pointer `0x203de53c` —
+see `notes/ui-menu.md`) and the whole item-code range `0x90`-`0xf6` are skipped entirely (left
+untouched), while for `reset_type == 0` (Partial reset) every item in that range, including `0x71`,
+gets its normal default applied like anything else. **Read literally against this section's own
+already-confirmed `0`=Partial/`1`=All labelling, that means All Reset preserves the configured
+callsign and Partial Reset clears it — backwards from the intuitive expectation** (a full/all reset
+wiping personal identity info, a partial reset leaving it alone). Not resolved — either real hardware
+genuinely behaves this way (worth checking against the operating manual's own reset-scope table, pp.
+14-3/14-4, next time it's in hand) or the `0`/`1` reset-type labelling itself needs re-verifying. The
+`0x90`-`0xf6` range hasn't been individually characterized item-by-item; `0x71` is the only one
+identified by name so far.
+
 **"Reset All Edges" (User Band Edge screen)** — a separate, smaller, fully self-contained reset function,
 not diode-gated: the screen's own "Reset All Edges" button (`FUN_2003331c`) shows a `0x54` confirm dialog
 whose callback (`FUN_20045e68`) calls `FUN_20045800()`, writing `0xFFFFFFFF` to each of the 11 user band-edge

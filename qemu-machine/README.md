@@ -100,15 +100,47 @@ hidden-argument kernel primitive writing the value through a path this project's
 technique doesn't yet know how to catch, in the same family as this codebase's many other
 "Ghidra doesn't show this function's real argument" gotchas).
 
-**Open hypothesis, not yet checked**: the boot-time logo/callsign screen may not be drawn by the
-main CPU's OpenVG/VDC50 pipeline at all — it could be the front-panel unit's own local display
-content (`IC501`, the RL78 front-panel MCU, already confirmed to run its own independent firmware
-and protocol over `SCIF3`), shown directly by the front panel without any per-pixel command from
-the main CPU. This project has no visibility into `IC501`'s own firmware at all, so this can't be
-confirmed or ruled out from `body.bin` alone. If true, "which main-CPU task draws the splash
-screen" may simply be the wrong question — worth checking against real hardware (does the splash
-screen still show something if the main CPU is reset/held while power is applied, or does the
-front panel go blank too?) before spending more static-analysis effort hunting for it here.
+**Retracted**: the "front-panel-MCU draws its own splash" hypothesis above — per the user's own
+direct schematic knowledge, the display is wired to the main CPU only; `IC501` (the front-panel MCU)
+has no direct access to the display pins at all. This was the wrong direction; the real answer,
+found by continuing to dig on the main-CPU side, is below.
+
+### Follow-up, same day, continued — RESOLVED: found the real boot-splash frame builder and the
+### exact RAM address it pulls the operator's configured callsign from, via a deep Opus static-
+### analysis pass (independently verified — see `notes/ui-menu.md`'s own new section for the full
+### derivation, cross-checks, and evidence trail; this is a condensed pointer).
+
+**`opening_screen_build_frame`** (renamed from `FUN_20037c10`) is the real power-on "opening
+message" splash-frame builder — called 7 times from the boot fade-in/hold/fade-out driver at
+`0x2002a2a4` (brightness ramps 0→0x64 in steps of 0x14). It writes directly into the splash frame
+buffer (`0x20403f64`): a brightness pair, a 32-byte glyph field, the effective display language, a
+model/variant selector — and, critically, `memmove(dispbuf+8, g_my_call_text, 10)`, copying the
+**operator's configured callsign straight into the splash frame**. This is the direct, concrete link
+between "SET → DISPLAY → MY CALL" and the boot screen this whole thread has been looking for.
+
+**`g_my_call_text` = `0x203de53c`**, 10 bytes, plain ASCII, space-padded (confirmed three independent
+ways — the splash-frame copy above, the text-entry-field descriptor table, and the 326-item
+factory-reset defaults table all agree on this exact address; see `notes/ui-menu.md` for the full
+chain). **Persisted at EEPROM byte offset `0x1a90`**, loaded at boot by the already-known
+`nvram_multirecord_load_and_verify`. Factory default is ten literal space bytes (`0x20`) — meaning
+**with the emulator's own synthetic/blank EEPROM image, `g_my_call_text` legitimately reads as all
+spaces, and the splash screen correctly shows no callsign text even if rendering worked perfectly**.
+This doesn't change anything about the still-open "why does the OpenVG command FIFO stay silent"
+question — `opening_screen_build_frame` just publishes a frame descriptor (`*DAT_200377f0 = 2;
+FUN_2007edc8();`, the same render-request kick this thread already traced) for the render loop to
+pick up; whatever actually turns that descriptor into real GPU commands is still the unresolved
+piece. But **`0x20403f64` (the frame buffer `opening_screen_build_frame` writes) is now a concrete,
+correct address to watch** for a future session continuing this thread, instead of guessing.
+
+**A genuinely useful gotcha this pass surfaced, worth keeping in mind for future "no writer found
+anywhere" dead ends in this codebase**: the earlier "no static write to `DAT_2001a5d4` anywhere"
+result (a few sections up) turned out to be a false negative — that literal-pool cell's resolved
+target address (`0x2039e4c0`) is independently duplicated across *6 separate literal-pool slots*
+compiled into different functions, and Ghidra's `references_to` on a resolved target address only
+follows the *specific* literal-pool cell it's tied to, not sibling cells holding the same value. A
+raw byte-pattern memory search for the little-endian pointer value itself is what actually finds
+every alias — the same class of blind spot `notes/memory-map.md` already documents for SVD-based
+cross-referencing, now confirmed to apply to plain literal-pool duplication too.
 
 ### Follow-up, same day — per the user's own hypothesis ("some other task is probably waiting on
 ### an unimplemented peripheral"): a full `-d unimp,guest_errors` steady-state survey found and
