@@ -14,6 +14,49 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-21, continued once more — OpenVG rendering frontier: the render dispatch
+## runs exactly ONCE around bring-up completion and produces ZERO GPU commands. There is
+## currently no real command-FIFO traffic anywhere in this project to reverse-engineer.
+
+Picked up `icom-openvg-rendering`'s suggested next step (scope real command traffic before
+deciding hardware-ISA-replication vs. higher-level software rasterization). Two live,
+zero/single-perturbation checks, both GDB-free or single-breakpoint:
+
+1. **`tools/trace_openvg_command_traffic.py`** (new): a 150s PWRK-hold capture with
+   `RZA1H_DEBUG=openvg`. Result: 61 total command words, ALL pushed within the first ~10s
+   (the already-known `FUN_20150122` bring-up/reset sequence, decompiled this session — its
+   header-word encoding is `TAG(0xA)<<28 | (count-1)<<16 | opcode`, found directly from
+   `FUN_2014f818`, the real generic "push a command list" function used by ~26 call sites
+   spread across `0x2014f900`-`0x20152500`, the actual higher-level OpenVG driver body).
+   **Zero additional words appear all the way to t=150s.**
+2. **`tools/trace_ui_render_dispatch.py`** (new): single GDB breakpoints on
+   `ui_graphics_buffers_init` (`0x2007ef08`) and `ui_graphics_present_frame` (`0x2007ee68`) —
+   both fire, once each, at t≈23.2s/23.9s (right when `main_idle_loop` is first reached, per
+   the section below). So the render dispatch is NOT stuck/unreached — it runs on schedule,
+   and (per check #1) pushes nothing to the GPU while doing so.
+
+**Together these resolve the "why is the VDC50 framebuffer dump blank" question from
+`icom-openvg-rendering`'s own confirmed starting point**: it's blank because the one and only
+present-frame this boot path ever does is presenting freshly-`memset`-zeroed buffers
+(`ui_graphics_buffers_init` zeros them immediately beforehand) — not because rendering is
+unreachable, and not because the OpenVG stub silently drops real draw commands. **No code path
+this project has ever traced actually calls whatever this driver's `vgDrawPath`/`vgClear`-
+equivalent entry points are** (candidates: some subset of the ~26 `FUN_2014f818` call sites in
+`0x2014f900`-`0x20152500`, not yet individually decompiled). A real screen update almost
+certainly needs a live stimulus this boot never provides — a front-panel touch, a CI-V command,
+or a periodic redraw tick — none of which any current tool injects.
+
+**Consequence for the approach decision `icom-openvg-rendering` flagged (replicate the real GPU
+command ISA vs. software-rasterize at a higher level)**: moot for now — there is no real command
+stream to decode either way, since nothing has ever been observed asking the GPU to draw
+anything. **The actual next step is producing ANY real draw traffic first** — most directly by
+finding and injecting whatever event the front-panel-touch or menu-redraw path posts to the
+render-request ITRON message buffer (created by `FUN_2007ed9c`, descriptor `0x20328e0c`, handle
+stored at `*(0x20390634+0x10)` — no sender of a real message into it has been found yet; the one
+sender identified so far is the initial bring-up dispatch itself). Once real command words are
+observed, decoding a handful of live-captured opcodes is a far more tractable target than
+reverse-engineering the whole ISA cold.
+
 ## Status, 2026-09-21, continued — `main_idle_loop` IS NOW REACHED. The whole multi-session
 ## "not reached" thread is CLOSED: root cause was a missing OpenVG graphics-processor interrupt
 ## deadlocking boot one call short of the real loop, not the job-ring/SVC-wait mechanics below
