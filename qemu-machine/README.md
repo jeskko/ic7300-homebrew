@@ -139,6 +139,52 @@ words, all pre-t=10s, zero after — this fix, like the ADC fix before it, is re
 but confirmed NOT the render trigger. The render-request-mailbox-sender question remains the most
 concrete open lead for that specific thread.
 
+### Follow-up, same day — per the user's own request ("static analysis on the tasks started — do
+### some expect answers from peripherals our emulation can't provide"): swept the full 11-task
+### boot-time catalog (`notes/kernel-rtos.md`'s "Living reference"). Found a third real, distinct,
+### currently-ACTIVE gap: `spectrum_scope_fft_task` runs every boot, computing FFTs over an
+### audio/IQ sample ring that never receives a single real sample.
+
+**Traced the real producer chain by decompile, several calls deep**: `spectrum_scope_fft_task`
+(`0x200095d8`) reads one of two double-buffered 512-float sample arrays and runs
+`spectrum_scope_fft_and_dbscale` (a genuine radix-2 FFT + dB-scale, already known). The arrays are
+filled by `FUN_2000879c` (windows + stores one sample), fed by `FUN_20008868` (converts int16 PCM
+to float), fed by `FUN_20067254`, which reads via `FUN_2005fb64` — a classic ring-buffer consumer
+at a fixed struct (`DAT_20060700`'s own stored pointer, resolved this session to `0x203fbdc0`):
+8 slots of `0x48` bytes, write-index at `+0x240`, read-index at `+0x241`. **If write_idx==read_idx,
+it returns an all-zero block instead of real data** — and `notes/ic7300-signal-chain.md` already
+ties `DAT_20060700`'s own literal-pool cluster to `SSICR_0`/`SSICR_1` (SSIF0/1, the confirmed real
+CPU↔DSP digital-audio link) and DMAC-channel-shaped addresses — i.e. this ring is meant to be
+filled by a real DMA-driven audio/IQ stream, and `dmac.c` only models DMAC channel 0.
+
+**Confirmed live, two ways, both decisive**: (1) `tools/trace_spectrum_scope_activation.py`
+(single GDB breakpoints, zero-perturbation-if-never-hit) — the task's `itron_act_tsk` call hits at
+t≈7.2s and the task's own entry hits at t≈27.1s, i.e. **it is genuinely activated and running on
+every current boot**, not a dormant/unreached path. (2) `tools/trace_spectrum_scope_ring.py`
+(QMP-only, zero perturbation) — polled `write_idx`/`read_idx` at 1Hz for 90s: `write_idx` stays at
+`0` the entire time, never once advancing. **This task is actively computing 512-point FFTs over
+pure silence, forever, every single boot** — not a hypothetical, a live, ongoing, currently-real
+gap. A quick check of who reads the FFT's own dB-scaled output (`DAT_20008848`) found **zero
+consumers anywhere in `body.bin`** outside the FFT function's own body — so even fixing the sample
+feed wouldn't yet reach anything that draws it; a second, independent open question (not chased
+further this session).
+
+**Not yet fixed** (unlike the ADC/SCIF5 gaps above, this would mean modeling a real DMAC channel +
+SSIF0/1 pairing, a bigger undertaking than a permissive stub) — flagged for a decision on whether
+it's worth building, given (a) it's real and currently active, unlike the two lower-priority gaps
+already fixed today, but (b) its own output currently has no confirmed consumer to unblock anyway.
+
+**Broader task-catalog sweep, same pass** (11 tasks total, see `notes/kernel-rtos.md`'s own
+catalog for the full list): most of the rest are either user-action-gated (SD-card menu/file-RPC/
+voice-recording/BMP-capture tasks — real `mmc.c` SD-card model already backs these, and they're
+not exercised automatically during boot regardless), kernel-internal with no peripheral dependency
+at all (`first_task_entry`, `sys_monitor_task_entry`), or already-known, unrelated static-analysis
+dead ends (`kernel_start`'s own still-unidentified task; `rtty_decode_log_poll_task`'s decoder,
+already documented in `notes/kernel-rtos.md` as depending on DSP-internal demodulation this
+project can't reach in `body.bin` at all — same *class* of gap as the FFT task above, already
+known, and not boot-critical since it only fires in RTTY decode mode). `ui_graphics_lifecycle_task`
+is the OpenVG thread covered at length above.
+
 ## Status, 2026-09-21, continued — `main_idle_loop` IS NOW REACHED. The whole multi-session
 ## "not reached" thread is CLOSED: root cause was a missing OpenVG graphics-processor interrupt
 ## deadlocking boot one call short of the real loop, not the job-ring/SVC-wait mechanics below
