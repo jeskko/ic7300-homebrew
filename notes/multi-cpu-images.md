@@ -121,6 +121,13 @@ buffer reused by whichever screen currently owns it, architecturally identical t
 — see [[band-scope-state]]. There was never a single dedicated writer to find; "which screen currently
 owns this buffer" is the only question that ever made sense here.
 
+**CORRECTION 2026-09-24 — `DRESD` IS released at boot:** the qemu-machine live log shows the
+firmware writing `PSR2 = 0x00400040` (RZ/A1H PSR: high half = write-enable, low half = data →
+drive `P2_6`/`DRESD` high) from `0x2002b078`, right after clearing `P2_7`/`DRESH`
+(`PSR2 = 0x00800000`), at t≈24 s. The static search below missed it because the port address is
+computed from a base, and qemu-machine's own `gpio.c` misread PSR as "low = set, high = clear",
+which turned this write into a no-op. The paragraph below is kept for the trail.
+
 **`DRESD` (DSP hardware reset) release — still not located.** Confirmed driven low once at boot
 (`port_bulk_gpio_init_pass2`) and never touched again anywhere traced in `body.bin` — checked for a net
 inverter (none, purely resistive), a tri-state/direction release via `PM2` (ruled out), and every
