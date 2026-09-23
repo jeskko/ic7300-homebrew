@@ -1,4 +1,4 @@
-"""Extract the "3 extra chunks" (Front CPU / DSP Program / DSP Data) from an
+"""Extract the "3 extra chunks" (DSP Program / DSP Data / FPGA) from an
 IC-7300 firmware update container.
 
 **Supersedes `container.py`'s `chunk4`/`chunk5_tail` model for this specific
@@ -50,7 +50,12 @@ from dataclasses import dataclass
 from .lzss import decompress
 
 SIZE_TABLE_OFFSET = 0x10
-COMPONENT_NAMES = ("front_cpu", "dsp_program", "dsp_data")
+# Component identities confirmed 2026-08-30 by version-field correlation against
+# Icom's own per-release Main CPU/DSP Program/DSP Data/FPGA breakdown (see
+# /notes/multi-cpu-images.md). Earlier names ("front_cpu", "dsp_program",
+# "dsp_data") were shifted by one and are now corrected: component0=DSP Program,
+# component1=DSP Data, component2=FPGA (a compressed Altera bitstream).
+COMPONENT_NAMES = ("dsp_program", "dsp_data", "fpga")
 
 
 @dataclass

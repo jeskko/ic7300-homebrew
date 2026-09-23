@@ -172,8 +172,8 @@ and silicon-version are set up correctly, and all three agree byte-for-byte on d
   ~~Component ordering never independently confirmed field-by-field~~ — **resolved, 2026-08-30**: real
   identity of all 3 components confirmed via version-field correlation (component0=`DSP Program`,
   component1=`DSP Data`, component2=`FPGA`) — see above. `tools/icom_fw/dsp_chunks.py`'s internal
-  `front_cpu`/`dsp_program`/`dsp_data` names are consequently known to be wrong (swapped for 0/1) and
-  worth renaming next time that file is touched.
+  names were consequently wrong (shifted by one); **corrected 2026-09-23** to
+  `dsp_program`/`dsp_data`/`fpga`.
 - The ~22 individual DSP live-sync parameters not yet individually named — trace each `dsp_cmd_table_init`
   slot's real data source.
 - `dsp_boot_handshake`'s 2 boot-time command words, and `SCIF5` events `0x9f`/underrun handling, not fully
