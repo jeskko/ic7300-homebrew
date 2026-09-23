@@ -87,13 +87,18 @@ whose class nibble it is waiting for.
 
 | Slot | Addr (word) | Initial word | Class | What it carries |
 |---|---|---|---|---|
-| C0 | 0x11817ba8 | 0x00000000 | 0 | top priority; writers TBD |
-| C1 | 0x11817bb0 | 0x10000000 | 1 | CPU: "step towards target using byte 2" (level slew); writers TBD |
-| C2 | 0x11817bb8 | 0x20000000 | 2 | CPU: trivial ack |
-| C3 | 0x11817bc0 | 0x70000000 | 7 | TBD |
-| C4 | 0x11817bc8 | 0x80000000 | 8 | CPU: 4-field status payload |
+| C0 | 0x11817ba8 | 0x00000000 | 0 | top priority (sent whenever anything in it changes). byte1 = 7-bit slewed magnitude + bit7 "still moving" (same idiom at ≥4 sites, incl. the 0x00 handler's neighbours and 0x1180d638/0x1180fdd8); byte0 bit6 = \|x\| < ~1.5e-6 test (0x1180fa60); a flag bit in byte3's low nibble. A live meter-like value (medium) |
+| C1 | 0x11817bb0 | 0x10000000 | 1 (9) | byte0 = int·2.2 (0x11803968, 0x118071cc, 0x11807488, 0x118076a8) or two 0..1 floats ·255 → byte0/byte1 (0x11802afc, in 0x11801108); byte3 bits 26/27 = 2-bit status (≈12 sites in the 0x22 mode code); **bit31** set from the audio-block code at 0x118125b0 (flag \| DP+616), turning class 1 into **9**, which the CPU aliases to class 1 ✔. CPU: "step towards target using byte 2" (medium-high for "meter reading") |
+| C2 | 0x11817bb8 | 0x20000000 | 2 | byte2 = a value saturated to 0..255 (0x11802204, same pass as C1 in 0x11801108). Not just an ack: C1 or C2 goes out by P[0x00] bit 23 (medium) |
+| C3 | 0x11817bc0 | 0x70000000 | 7 | no writer found yet (sent when its stamp changes) |
+| C4 | 0x11817bc8 | 0x80000000 | 8 | byte0 = computed byte (0x11803cd4, in 0x11803b08); byte1 bits 1..0 = stage field (set to 2 at 0x11803bb4/dcc, 0x11804028/210, cleared at 0x1180416c, bit0 set by 0x11804e18/0x11805008). Sent while L[18] ≠ 0, which the ISR resets at 8; **L[18]'s setter not found** (no absolute reference) |
 | C5 | 0x11817bd0 | 0xE0000000 | E | firmware page verify: page counter + −checksum (B0–BF handler) |
 | C6 | 0x11817bd8 | 0xF0000000 | F | identity reply (E0 handler), stamp at 0x11817bdc |
+
+Slot words are little-endian in DSP RAM (byte N = address + N). C0–C4 are written from the
+audio/mode code, never from command handlers, so they are DSP → CPU telemetry. The writer list
+comes from a Sonnet subagent; attribution to functions is approximate because `c6x_xref.py`
+function boundaries over-merge.
 
 The handlers rewrite only the low bits of each slot, so the class nibble is fixed per slot.
 
