@@ -5,6 +5,27 @@ specifically wants a no-reflash custom-code loading trigger via SD card or seria
 not just the (already-confirmed-feasible) unauthenticated-firmware-update path. This file tracks that
 investigation specifically for the SD-card filesystem angle.
 
+## Current bottom line (summary — full derivation below)
+
+- **This is NOT ChaN's FatFs.** The advisory-matching premise that started this thread was disproved:
+  the `"GRP_FS: ..."` assert strings reveal a proprietary, OS-grade VFS (reference-counted buffer
+  cache, per-fd open counts) — not FatFs. Long filenames and exFAT both look compiled out.
+- **A real bug was found by direct auditing** (not from any advisory): `fs_object_release_ref_UNSAFE_NEGATIVE`
+  (`FUN_200c7f10`), reachable from the public `vfs_close`, detects a reference count going negative
+  but **logs-and-continues** into the full cleanup/unlink/vtable-release path — a genuine
+  double-free/UAF shape, confirmed at the code level. The buffer-cache layer has the identical
+  anti-pattern, but defends itself by zeroing the caller's handle first; the file-object layer has
+  no such defense.
+- **No trigger has been demonstrated.** Both leading hypotheses took real hits: no path-based
+  open-deduplication exists (weakens duplicate-open sharing), and a real, heavily-used
+  condition-variable interlock (`fs_task_wait_on_object`, 13 sites) guards the naive close-while-busy
+  race. The defect is real and confirmed; a concrete way to reach it is still open.
+- **Next step is live testing, not more static tracing** — breakpoint the two release functions
+  under JTAG (or in `qemu-machine/` once its forced-call path reaches real FS code) during heavy
+  concurrent SD use and watch for the `"GRP_FS: negative ..."` log lines. Note: the flash-once
+  custom-code path (see [[firmware-update]]/`sdk/roadmap.md`) already gives code exec without this
+  bug, so this is the more elegant no-reflash path, not a critical one.
+
 ## Why this angle, specifically
 
 A web search for context on `"RENESAS RZ/A1 SD Driver Ver4.01"` (the versioned string already found at
