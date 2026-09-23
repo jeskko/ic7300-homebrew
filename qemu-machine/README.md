@@ -14,6 +14,26 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-24, later — full main screen: 14.100.00 USB FIL2
+
+![main screen](screenshots/2026-09-24-main-screen-14100.png)
+
+Two fixes, from an Opus trace of the frequency path (spot-verified):
+- **The zero frequency was the blank EEPROM, not a missing DSP reply.** The VFO state (`0x203deaac`,
+  not in any NVRAM region) is loaded by `nvram_wearleveled_ring_load` (`0x2001f6bc`) from EEPROM
+  slot `0x2000 + idx*0x40`, idx = EEPROM `0x3e40`. `build_riic_eeprom_image.py` now writes the
+  factory defaults `vfo_state_load_factory_defaults` (`0x20061fbc`) copies from ROM `0x2019b978`:
+  14,100,000 Hz, mode word `0x08080011` (USB/FIL2), A and B. The DSP frequency push
+  (`dsp_sync_rx_freq_words` `0x200b56b0`, f + 36 kHz IF split into two words via
+  `scif5_ring_push_word`) is fire-and-forget — nothing waits for a DSP reply. The right-hand "0"
+  that looked like the frequency was the memory-channel number.
+- **The digits were drawn black on black**: the 12-word fragment program starting `0x61000092`
+  is `VG_DRAW_IMAGE_NORMAL` (paint ignored, `0xf0` stale); `openvg.c` now honours that.
+- The band-pass latch follows: MSTB1 = `0x500080` = **B7S (10-14.99 MHz)** at 14.1 MHz.
+
+Open: a red **TX** indicator is lit (PTT/SEND input level in the GPIO model?); the IC751 LPF
+latch (PSTB) only ever gets its boot value `0x80`; no scope/waterfall (SSIF/DMA IQ ring unfed).
+
 ## Status, 2026-09-24 — band-switch shift registers decoded; DMA fixed-address + GPIO PSR fixes
 
 Following the user's schematic reading (IC1301-IC1303 = 3x SN74AHC595 in series on MDAT/MCK/

@@ -375,6 +375,17 @@ static void vg_exec_draw(RZA1HOpenVGState *s)
                        vg_f(s, 0x0fc) };
     bool over = s->gpu_reg[0x110 / 4] & 1;
     float det = m00 * m11 - m01 * m10;
+
+    /* Fragment program (0x8000) selects the OpenVG image mode. The 12-word
+     * program starting 0x61000092 is VG_DRAW_IMAGE_NORMAL: the image's own
+     * colour, A8 = white with alpha, paint ignored (0xf0 is left stale -- the
+     * main frequency digits were drawn black on black before this). The
+     * 14-word one (0xd00201d2 prefix) is VG_DRAW_IMAGE_MULTIPLY: image x
+     * paint (the splash fades ramp 0xf0). Inferred from which draws the
+     * driver pairs with a 0xf0 write, not from documentation. */
+    if (s->gpu_reg[0x8000 / 4] == 0x61000092) {
+        paint[0] = paint[1] = paint[2] = paint[3] = 1.0f;
+    }
     g_autofree uint8_t *sbuf = NULL, *dbuf = NULL;
 
     if (!s->img_xform) {

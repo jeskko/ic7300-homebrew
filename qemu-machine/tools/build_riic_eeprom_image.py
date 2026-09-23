@@ -63,6 +63,16 @@ ENTRIES: list[tuple[int, bytes]] = [
     # system_mode_request_dispatch skips the boot splash (FUN_2002a2a4) entirely -- and that
     # splash is the only thing a real radio draws at power-on without user input.
     (0x1a8f, bytes([0x01])),
+    # VFO state (2026-09-24): not in any g_nvram_region_table region -- loaded by
+    # nvram_wearleveled_ring_load (0x2001f6bc) from slot *EEPROM[0x3e40] (0..7) at
+    # 0x2000 + idx*0x40 into 0x203deaac (+4 VFO A Hz, +8 mode, +0xc VFO B, +0x10 mode,
+    # +0x18 backup copy). Blank = 0 Hz on screen and B0S band filter. These are the
+    # factory defaults vfo_state_load_factory_defaults (0x20061fbc) copies from ROM
+    # 0x2019b978/0x2019b980: 14.100.000 MHz, mode word 0x08080011 (USB/FIL2), A and B.
+    (0x2000, bytes.fromhex(
+        "00000000" "2026d700" "11000808" "2026d700" "11000808" "08000100"
+        "00000000" "2026d700" "11000808" "2026d700" "11000808" "00000000")),
+    (0x3e40, bytes([0x00])),
 ]
 
 DUMMY_READ_SHIFT = 1
