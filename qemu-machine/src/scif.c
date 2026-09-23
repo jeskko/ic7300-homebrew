@@ -661,15 +661,23 @@ static uint32_t rza1h_rbit32(uint32_t v)
  * "\0.\0\0" and failed the check. The even replies below are therefore
  * required values; the odd ones only feed the SET > Version screen (DSP
  * Program / DSP Data / FPGA fields, via ui_version_screen_populate_fields)
- * and are a GUESS (mirroring the even value) -- the real DSP's answers are not
- * recoverable from body.bin. */
+ * and were first guessed by mirroring the even value.
+ *
+ * 2026-09-24: now read from the DSP side (notes/dsp-protocol.md, "Identity"):
+ * the DSP's 0xE0 handler (0x11804728 in the DSP Program) takes bit 0 = half,
+ * bits 2..1 = record, and replies with 3 ASCII chars in bytes 2..0 plus the hex
+ * value of a 4th char in the low nibble of byte 3. Record 0 (cmd0/1) is the
+ * compiled-in "3110"/"1070" (the image's trailing tag "31101070"), record 2
+ * (cmd4/5) is the DSP Data image's trailing tag "20001000", read from the DSP's
+ * flash at runtime. Record 1 (cmd2/3) is what the FPGA reports at runtime, so
+ * its odd half is still a guess. */
 static const uint32_t scif5_dsp_identity_reply[6] = {
-    0xF0333131, /* cmd0: "3.11" (checked) */
-    0xF0333131, /* cmd1: DSP Program shown on the version screen (guess) */
-    0xF0333136, /* cmd2: "3.16" (checked) */
-    0xF0333136, /* cmd3: FPGA shown on the version screen (guess) */
-    0xF0323030, /* cmd4: "2.00" (checked) */
-    0xF0323030, /* cmd5: DSP Data shown on the version screen (guess) */
+    0xF0333131, /* cmd0: DSP Program "311"+'0' -> "3.11" (checked by the CPU) */
+    0xF0313037, /* cmd1: DSP Program "107"+'0' (DSP image: "1070") */
+    0xF0333136, /* cmd2: FPGA "3.16" (checked by the CPU; FPGA-reported) */
+    0xF0333136, /* cmd3: FPGA odd half (guess: FPGA-reported, not in any image) */
+    0xF0323030, /* cmd4: DSP Data "200"+'0' -> "2.00" (checked by the CPU) */
+    0xF0313030, /* cmd5: DSP Data "100"+'0' (DSP Data image tag: "1000") */
 };
 
 static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
