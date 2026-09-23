@@ -20,6 +20,7 @@
 #include "qom/object.h"
 
 #include "rz_a1h.h"
+#include "rza1h_debug.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HGpioState, RZA1H_GPIO)
 
@@ -70,6 +71,9 @@ struct RZA1HGpioState {
      * PBDC/PIPC/SNCR) -- keyed by raw offset within this device, like
      * gpio.py's self._storage dict keyed by absolute address. */
     uint8_t storage[RZA1H_GPIO_SIZE];
+
+    uint32_t sr_shift;             /* P2 74AHC595 serial stream, see gpio_p2_update */
+    uint16_t p2_prev;
 
     /* INTC external-IRQ front-end (2026-09-20) -- a genuinely separate small register
      * block/MMIO region from the port registers above, see its own ops' plate comment. */
@@ -261,6 +265,64 @@ static uint64_t rza1h_gpio_read(void *opaque, hwaddr offset, unsigned size)
     }
 }
 
+
+/*
+ * Port-2 serial shift-register bus (2026-09-23, from the user's schematic
+ * reading): MDAT (P2_0) = SI, MCK (P2_1) = SCK, DRESH (P2_7) = /G, latch
+ * strobes MSTB1 (P2_2) -> IC1301-IC1303 (3x SN74AHC595 in series, RF-unit
+ * band-pass filters etc.), PSTB (P2_5) -> IC751 (PA-unit LPF relays), plus
+ * MSTB2 (P2_3) / DSTB (P2_4) to further, not yet identified latches. The
+ * firmware streams it by DMA (FUN_200b5dc0 -> FUN_200b5c60 writes one PSR2
+ * word per half clock, MSB first). Nothing downstream is modeled; each latch
+ * is decoded into the schematic signal names and logged (RZA1H_DEBUG=sr595).
+ */
+static const char *const sr_mstb1_names[24] = {
+    "B0S", "B1S", "B2S", "B3S", "B4S", "B5S", "B6S", "B7S",
+    "B8S", "B9S", "B10S", "B11S", "B11TXS", "B12S", "B12TXS", NULL,
+    "NSBS", "AMS", "HPR2S", "HPR1S", "HPOFS", "HATTS", "HATOFS", NULL,
+};
+static const char *const sr_pstb_names[8] = {
+    "LPF0.03-2", "LPF2-4", "LPF4-7.3", "LPF7.3-14.35", "LPF14.35-21.45",
+    "LPF21.45-33", "LPF33-76", NULL,
+};
+
+static void gpio_sr_log(const char *strobe, uint32_t v, int nbits,
+                        const char *const *names)
+{
+    char line[256] = "";
+
+    for (int i = 0; names && i < nbits; i++) {
+        if ((v >> i & 1) && names[i]) {
+            g_strlcat(line, " ", sizeof(line));
+            g_strlcat(line, names[i], sizeof(line));
+        }
+    }
+    rza1h_debug("sr595", "%s latch %0*x:%s", strobe, (nbits + 3) / 4,
+                v & (uint32_t)((1ull << nbits) - 1), line);
+}
+
+static void gpio_p2_update(RZA1HGpioState *s)
+{
+    uint16_t now = s->p[2], rise = now & ~s->p2_prev;
+
+    if (rise & (1 << 1)) {                  /* MCK: shift in MDAT */
+        s->sr_shift = s->sr_shift << 1 | (now & 1);
+    }
+    if (rise & (1 << 2)) {
+        gpio_sr_log("MSTB1(IC1301-1303)", s->sr_shift, 24, sr_mstb1_names);
+    }
+    if (rise & (1 << 3)) {
+        gpio_sr_log("MSTB2", s->sr_shift, 32, NULL);
+    }
+    if (rise & (1 << 4)) {
+        gpio_sr_log("DSTB", s->sr_shift, 32, NULL);
+    }
+    if (rise & (1 << 5)) {
+        gpio_sr_log("PSTB(IC751)", s->sr_shift, 8, sr_pstb_names);
+    }
+    s->p2_prev = now;
+}
+
 static void rza1h_gpio_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
@@ -271,6 +333,11 @@ static void rza1h_gpio_write(void *opaque, hwaddr offset, uint64_t value,
 
     if (!gpio_decode(offset, &group, &port)) {
         return;
+    }
+    if (port == 2 && (group == G_P || group == G_PSR || group == G_PNOT)) {
+        rza1h_debug("gpio2", "P2 %s <- %08x (P2 was %04x)",
+                    group == G_P ? "P" : group == G_PSR ? "PSR" : "PNOT",
+                    (uint32_t)value, s->p[2]);
     }
 
     switch (group) {
@@ -292,23 +359,35 @@ static void rza1h_gpio_write(void *opaque, hwaddr offset, uint64_t value,
      * clear -- see this file's own module docstring / gpio.py's for the
      * "not independently confirmed" caveat on this inference. */
     case G_PSR:
-        set_bits = value & 0xffff;
+        /* High half = per-bit write enable, low half = data (2026-09-23
+         * correction: the old "low = set, high = clear" reading turned
+         * the firmware's "drive bit n high" (E=D=1<<n) into a no-op). */
         clear_bits = (value >> 16) & 0xffff;
-        s->p[port] = (s->p[port] | set_bits) & ~clear_bits;
+        set_bits = value & clear_bits;
+        s->p[port] = (s->p[port] & ~clear_bits) | set_bits;
         break;
     case G_PMSR:
-        set_bits = value & 0xffff;
+        /* High half = per-bit write enable, low half = data (2026-09-23
+         * correction: the old "low = set, high = clear" reading turned
+         * the firmware's "drive bit n high" (E=D=1<<n) into a no-op). */
         clear_bits = (value >> 16) & 0xffff;
-        s->pm[port] = (s->pm[port] | set_bits) & ~clear_bits;
+        set_bits = value & clear_bits;
+        s->pm[port] = (s->pm[port] & ~clear_bits) | set_bits;
         break;
     case G_PMCSR:
-        set_bits = value & 0xffff;
+        /* High half = per-bit write enable, low half = data (2026-09-23
+         * correction: the old "low = set, high = clear" reading turned
+         * the firmware's "drive bit n high" (E=D=1<<n) into a no-op). */
         clear_bits = (value >> 16) & 0xffff;
-        s->pmc[port] = (s->pmc[port] | set_bits) & ~clear_bits;
+        set_bits = value & clear_bits;
+        s->pmc[port] = (s->pmc[port] & ~clear_bits) | set_bits;
         break;
     default:
         store_le(&s->storage[offset], size, value);
         break;
+    }
+    if (port == 2) {
+        gpio_p2_update(s);
     }
 }
 

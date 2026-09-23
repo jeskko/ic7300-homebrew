@@ -14,6 +14,30 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-24 — band-switch shift registers decoded; DMA fixed-address + GPIO PSR fixes
+
+Following the user's schematic reading (IC1301-IC1303 = 3x SN74AHC595 in series on MDAT/MCK/
+MSTB1, IC751 LPF relays on PSTB, DRESH = /G): the firmware never bit-bangs these. Job type 2 of
+`shared_job_ring_dispatch` (`FUN_200b5dc0`) prebuilds a buffer of `PSR2` words
+(`FUN_200b5cdc`/`FUN_200b5c60`: per bit `[0x30000 | bit]` then a clock-high word, MSB first, then
+the strobe words) and has **DMAC channel 0** stream it into `PSR2` (`0xFCFE3108`, fixed
+destination), paced by MTU2 ch2. Two real model bugs were hiding this:
+- `dmac.c` moved every channel-0 transfer as one incrementing block, so the words spilled into
+  PSR3, PSR4...; it now honours `CHCFG.SAD/DAD` (fixed address) and transfers unit by unit.
+- `gpio.c` read `PSRn` as "low = set, high = clear"; the firmware uses **high half = write
+  enable, low half = data** (e.g. `0x00400040` = drive P2_6 high), so every "set a bit" was a
+  no-op. Fixed for PSR/PMSR/PMCSR. **This also means DRESD (P2_6, DSP reset) is released at boot**
+  (`0x00400040` at t≈24 s) — the old "DRESD never released" note was this model bug.
+- New 74AHC595 model on P2 (`RZA1H_DEBUG=sr595`): latches decoded into the schematic names.
+  Boot latches MSTB1 = `0x500001` = **B0S (0.03-1.59 MHz BPF) + HPOFS + HATOFS**, consistent with
+  the VFO frequency being 0; DSTB receives 12 twelve-bit words (DAC-like, unidentified), MSTB2 and
+  PSTB one value each.
+
+VFO frequency: `FUN_200623bc` reads `0x203deaac+4` (VFO A) / `+0xc` (VFO B); the struct is all
+zero after boot. A GDB poke of 7.074 MHz stuck but triggered nothing (event-driven UI) — whether
+the zero comes from the blank EEPROM or from a missing DSP tune reply is being traced.
+`tools/screenshot.py --poke ADDR=VAL` does GDB-based RAM pokes before the capture.
+
 ## Status, 2026-09-23, latest — DSP/FPGA version check satisfied; the main screen comes up
 
 ![main screen](screenshots/2026-09-23-main-screen-after-dsp-version-fix.png)

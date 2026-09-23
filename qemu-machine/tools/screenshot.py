@@ -97,6 +97,10 @@ def main():
     ap.add_argument("--surface", action="append", default=[])
     ap.add_argument("--out", default="/tmp")
     ap.add_argument("--no-pwrk", action="store_true")
+    ap.add_argument("--poke", action="append", default=[],
+                    help="ADDR=VALUE (hex, u32) written via the gdbstub after `seconds`; "
+                         "the VM then runs --after more seconds before the capture")
+    ap.add_argument("--after", type=float, default=20.0)
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -107,7 +111,8 @@ def main():
     proc = subprocess.Popen(
         [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none", "-global", f"rza1h-riic.image={image}",
-         "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait"],
+         "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait"]
+        + (["-gdb", "tcp::1234"] if args.poke else []),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(1.0)
@@ -119,6 +124,23 @@ def main():
             qmp_cmd(s, "qom-set", path=GPIO_PATH, property="pwrk-pressed", value=True)
         print(f"running {args.seconds:.0f}s...")
         time.sleep(args.seconds)
+        if args.poke:
+            # QEMU's monitor has no physical-memory write, so use the gdbstub.
+            from gdbrsp import GdbRsp
+            g = GdbRsp(port=1234)
+            g.handshake()
+            try:        # attaching usually halts the VM already
+                g.interrupt()
+                g.wait_stop(timeout=5)
+            except Exception:
+                pass
+            for spec in args.poke:
+                a, v = (int(x, 16) for x in spec.split("="))
+                g.write_u32(a, v)
+                print(f"poked 0x{a:08x} = 0x{v:08x} (reads back 0x{g.read_u32(a):08x})")
+            g.cont()
+            g.close()
+            time.sleep(args.after)
         qmp_cmd(s, "stop")
         for name, block in PLANES:
             flm2 = read_u32(s, VDC50_BASE + block + 0x0C)

@@ -148,6 +148,9 @@ struct RZA1HDmacState {
 #define DMAC_N0SA_0  0x00
 #define DMAC_N0DA_0  0x04
 #define DMAC_N0TB_0  0x08
+#define DMAC_CHCFG_0 0x2c
+#define DMAC_CHCFG_SAD (1u << 20)  /* source address fixed */
+#define DMAC_CHCFG_DAD (1u << 21)  /* destination address fixed */
 
 /* Real DMA is asynchronous -- an arbitrary short delay, same rationale as
  * ostm.c/mtu2.c's own frequency constants: not real-clock-accurate, just
@@ -182,10 +185,30 @@ static void rza1h_dmac_ch0_complete(void *opaque)
     memcpy(&dst, &s->regs[DMAC_N0DA_0], 4);
     memcpy(&count, &s->regs[DMAC_N0TB_0], 4);
 
-    rza1h_debug("dmac", "ch0 complete: src=%#x dst=%#x count=%u, pulsing DMAINT0",
-               src, dst, count);
+    rza1h_debug("dmac", "ch0 complete: src=%#x dst=%#x count=%u cfg=%08x, "
+               "pulsing DMAINT0", src, dst, count,
+               *(uint32_t *)&s->regs[DMAC_CHCFG_0]);
 
-    if (count > 0) {
+    uint32_t cfg;
+    memcpy(&cfg, &s->regs[DMAC_CHCFG_0], 4);
+
+    if (count > 0 && (cfg & (DMAC_CHCFG_SAD | DMAC_CHCFG_DAD))) {
+        /* A fixed peripheral address on either side (2026-09-23): the
+         * band-switch shift-register driver (FUN_200b5dc0) streams a buffer
+         * of PSR2 words into 0xFCFE3108, one 32-bit word per MTU2 ch2
+         * request. Moving it as one block used to spill the words into
+         * PSR3.. instead. Unit = the fixed side's size code (DDS/SDS). */
+        int code = (cfg & DMAC_CHCFG_DAD) ? (cfg >> 16) & 0xf : (cfg >> 12) & 0xf;
+        uint32_t unit = code <= 2 ? 1u << code : 4;
+        uint8_t w[4];
+
+        for (uint32_t i = 0; i + unit <= count; i += unit) {
+            hwaddr sa = src + ((cfg & DMAC_CHCFG_SAD) ? 0 : i);
+            hwaddr da = dst + ((cfg & DMAC_CHCFG_DAD) ? 0 : i);
+            address_space_read(as, sa, MEMTXATTRS_UNSPECIFIED, w, unit);
+            address_space_write(as, da, MEMTXATTRS_UNSPECIFIED, w, unit);
+        }
+    } else if (count > 0) {
         g_autofree uint8_t *buf = g_malloc(count);
 
         if (address_space_read(as, src, MEMTXATTRS_UNSPECIFIED,
