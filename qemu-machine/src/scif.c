@@ -644,22 +644,59 @@ static uint32_t rza1h_rbit32(uint32_t v)
     return v;
 }
 
+/* Reply word (as the firmware sees it, i.e. after scif5_rx_isr's rbit) for
+ * each identity/version query dsp_identity_query_cmd0..cmd5 sends
+ * (0xE0000000 + n). Top nibble must be 0xF ("done"); dsp_identity_format_reply
+ * (0x200b23e0) turns W into the 6-byte record [W>>16 & 0xff] '.' [W>>8 & 0xff]
+ * [W & 0xff] + two decimal digits of (W>>24 & 0xf), in the version records at
+ * 0x203def00 (cmd0/1 -> +0x00/+0x06, cmd4/5 -> +0x0d/+0x13, cmd2/3 -> +0x1a/+0x20).
+ *
+ * 2026-09-23: dsp_fpga_identity_version_check (0x2002a3c0, called from
+ * system_mode_request_dispatch at every boot) memcmp()s the first 4 bytes of
+ * the even records against ROM strings "3.11" (+0x00), "2.00" (+0x0d) and
+ * "3.16" (+0x1a); anything else raises the "DSP/FPGA firmware is wrong
+ * version. Retry updating the firmware." dialog (message 0x26), and a record
+ * left at its "    " prefill (+0x00, i.e. cmd0 unanswered) raises "DSP is not
+ * working correctly." (0x27) instead. The old all-zero reply formatted to
+ * "\0.\0\0" and failed the check. The even replies below are therefore
+ * required values; the odd ones only feed the SET > Version screen (DSP
+ * Program / DSP Data / FPGA fields, via ui_version_screen_populate_fields)
+ * and are a GUESS (mirroring the even value) -- the real DSP's answers are not
+ * recoverable from body.bin. */
+static const uint32_t scif5_dsp_identity_reply[6] = {
+    0xF0333131, /* cmd0: "3.11" (checked) */
+    0xF0333131, /* cmd1: DSP Program shown on the version screen (guess) */
+    0xF0333136, /* cmd2: "3.16" (checked) */
+    0xF0333136, /* cmd3: FPGA shown on the version screen (guess) */
+    0xF0323030, /* cmd4: "2.00" (checked) */
+    0xF0323030, /* cmd5: DSP Data shown on the version screen (guess) */
+};
+
 static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
 {
     AddressSpace *as = &address_space_memory;
     uint32_t struct_base;
-    uint8_t raw012[3] = { 0x0f, 0x00, 0x00 };
+    uint32_t cmd = 0, reply = 0x20000000;   /* class-2 trivial ack */
+    uint32_t raw;
+    uint8_t raw012[3];
     uint8_t count = 3;
 
     if (s->scif5_cmd_pos == 4) {
         uint32_t raw_le = s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
                           (s->scif5_cmd_buf[2] << 16) | (s->scif5_cmd_buf[3] << 24);
-        uint32_t cmd = rza1h_rbit32(raw_le);
-
-        if (cmd < 0xE0000000 || cmd > 0xE0000005) {
-            raw012[0] = 0x04; /* class-2 trivial ack -- see comment above */
+        cmd = rza1h_rbit32(raw_le);
+        if (cmd >= 0xE0000000 && cmd <= 0xE0000005) {
+            reply = scif5_dsp_identity_reply[cmd - 0xE0000000];
         }
     }
+    /* The firmware bit-reverses the assembled little-endian 4-byte word, so
+     * send rbit32(reply): bytes 0-2 precomputed into the job struct, byte 3
+     * through the normal FRDR/RXI path (see this function's comment above;
+     * the old fixed 0x0f,0,0 + 0x00 is exactly rbit32(0xF0000000)). */
+    raw = rza1h_rbit32(reply);
+    raw012[0] = raw;
+    raw012[1] = raw >> 8;
+    raw012[2] = raw >> 16;
 
     address_space_read(as, SCIF5_STRUCT_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
                        &struct_base, 4);
@@ -672,14 +709,9 @@ static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
     address_space_write(as, struct_base + 0xc, MEMTXATTRS_UNSPECIFIED,
                         &count, 1);
 
-    rza1h_debug("scif", "scif5: DSP-link responder: canned class-0x%x ack"
-               " (cmd=%08x)", raw012[0] == 0x0f ? 0xf : 2,
-               s->scif5_cmd_pos == 4
-                   ? rza1h_rbit32(s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
-                                 (s->scif5_cmd_buf[2] << 16) | (s->scif5_cmd_buf[3] << 24))
-                   : 0);
-    s->frdr = 0x00; /* the one byte actually delivered through the normal
-                      * RXI path -- see this function's own comment */
+    rza1h_debug("scif", "scif5: DSP-link responder: reply %08x (cmd=%08x)",
+                reply, cmd);
+    s->frdr = raw >> 24;
     s->rx_pending = true;
     qemu_irq_lower(s->irq_rx);
     qemu_irq_raise(s->irq_rx);

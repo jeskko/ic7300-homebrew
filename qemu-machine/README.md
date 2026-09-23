@@ -14,6 +14,30 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-23, latest — DSP/FPGA version check satisfied; the main screen comes up
+
+![main screen](screenshots/2026-09-23-main-screen-after-dsp-version-fix.png)
+
+The "wrong version" dialog is `dsp_fpga_identity_version_check` (`0x2002a3c0`, called from
+`system_mode_request_dispatch` at `0x2002abd8` every boot; found by an Opus static trace plus one
+live breakpoint, verified independently): it `memcmp`s the first 4 bytes of the three DSP identity
+records at `0x203def00` against ROM constants **"3.11"** (+0x00, cmd `0xE0000000`), **"2.00"**
+(+0x0d, cmd `0xE0000004`) and **"3.16"** (+0x1a, cmd `0xE0000002`) at `0x2002a4a8..c0`. Mismatch ->
+pending-error flag `0x2039c544` -> item `0x4d` -> message `0x26` ("DSP/FPGA firmware is wrong
+version"); an unanswered cmd0 ("    " prefill) -> flag `0x2039c545` -> message `0x27` ("DSP is not
+working correctly.", takes priority). No FPGA/RSPI2 or boot-status condition in this gate.
+`scif.c`'s DSP responder now answers each identity command individually
+(`scif5_dsp_identity_reply[]`, firmware-side reply words; `dsp_identity_format_reply` maps
+`W = 0xF0000000 | c0<<16 | c2<<8 | c3` -> "c0.c2c3" + 2 digits): `0xF0333131` / `0xF0333136` /
+`0xF0323030` for the checked commands. **The odd commands (1/3/5, only shown on the SET > Version
+screen as DSP Program / FPGA / DSP Data) mirror the even values — a guess**, the real DSP's
+answers aren't in `body.bin` (possibly recoverable from `dsp_program.bin`/`dsp_data.bin` statically).
+
+Remaining visible gaps: the frequency readout shows a single "0" (likely the blank synthetic
+EEPROM's VFO frequency — not verified), no spectrum scope (the SSIF/DMA IQ ring is still never
+fed), S-meter idle. Gotcha recorded along the way: Ghidra loads `body.bin` at **0x20005000**, so
+raw-file pointer scans must add that, not 0x20000000.
+
 ## Status, 2026-09-23, later — THE SCREEN RENDERS. First real LCD image:
 ## "DSP/FPGA firmware is wrong version. Retry updating the firmware." [CLOSE]
 
