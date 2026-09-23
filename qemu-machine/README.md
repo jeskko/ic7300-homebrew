@@ -14,6 +14,38 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-23, later — THE SCREEN RENDERS. First real LCD image:
+## "DSP/FPGA firmware is wrong version. Retry updating the firmware." [CLOSE]
+
+![first screen](screenshots/2026-09-23-first-screen-dsp-version-dialog.png)
+
+`openvg.c` now rasterizes the Renesas R-GPVG 2.6.2 GPU's work, all decoded from live-captured
+traffic plus a static trace of the driver (no public register docs exist):
+- **Command FIFO** (`0xE8104000`): packetized register writes (`0xA<<28|(n-1)<<16|reg` + n
+  words), `0xDA000000` = 2D fill/blit, `0xD8000000 op0 op1` = "cover" draw over the tessellator's
+  result rectangle (op0 = min x<<16|y, op1 = max-1). Registers: see the file's "Rendering" comment.
+- **Path tessellator** (`0xE8102000`, previously swallowed by an unimplemented-device catch-all):
+  the driver builds a RAM command list (`vg_tess_build_cmdlist` 0x2015fd1e) with register writes
+  (`0x19nnRRRR`) and plain OpenVG path segments (`0x580000tt` + float coords; `0x59020008` rect),
+  kicks it with `+0x070 = list, +0x000 = 7`, and reads the result bbox back from `+0x098/+0x09c`.
+  Modeled: flatten, transform (`0x3110/0x3120` affine rows), non-zero winding with 4x4 AA at cover
+  time. Every vector draw goes through it — images too (as a rect path) — and **all vector-font
+  text** (FreeType outlines -> paths, fonts = raw TTFs in SPI flash at 0x18210000/0x18240000).
+- Image draws: `src = M * (dst - cover_origin) + t`, paint `0xf0` = (A,R,G,B) multiplier; a draw
+  is an image draw iff `0x80c` got its `[tx, ty, 1.0]` since the previous kick.
+- Tools: `tools/screenshot.py` (boot N s, dump LCD plane(s) + arbitrary guest surfaces as PNG),
+  `RZA1H_DEBUG=openvgop,openvgtess` per-op / per-list logs.
+
+**What the screen says is the next lead** (and vindicates the "waiting on a DSP/front reply"
+hypothesis): the firmware rejects the DSP/FPGA version our virtual DSP-link (SCIF5) responder
+reports — `scif.c`'s canned identity-query reply (`0xE0000000`-`0xE0000005`, class 0xF) is not
+the version it expects. Behind the dialog the main screen is already drawing (LSB, FIL1, VFO A,
+RFG, kHz, 0:00).
+
+**Known rendering gaps**: fragment programs (`0x8000`) not interpreted (blend/paint guessed from
+`0x110` bit 0), no gradients/scissor/masks, arcs flattened to chords, LCD shows the
+bottom-up pixmap composed as the firmware intends (GR2 at FLM2 reads it top-down).
+
 ## Status, 2026-09-23 — the screen now DRAWS (in the command stream): boot splash + a full
 ## main-screen frame are rendered end to end. Two real gaps were blocking it, neither was a
 ## missing front-panel/DSP reply.
@@ -345,7 +377,7 @@ is the OpenVG thread covered at length above.
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
 | RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
 | VDC50 (LCD/display controller) + LVDS | `vdc5.c` | Register storage (was a plain-RAM region 2026-09-20..23, so `tools/vdc5_framebuffer_peek.py` reads `GRn_FLM*` back) **plus, since 2026-09-23, a 60 Hz frame-timing interrupt source**: output vsync/VLINE status bits latched in `SYSCNT_INT1-3` (write-0-to-clear), IRQs gated by `SYSCNT_INT4-6`, GIC 75..97. Confirmed load-bearing: `ui_graphics_present_frame` waits on GR3 VLINE (GIC 78) after every swap — see Status above. No compositing/scan-out |
-| OpenVG (graphics processor for OpenVG) | `openvg.c` | Added 2026-09-21 — completion-interrupt stub only, every FIFO write completes instantly (GIC 130-133). Confirmed load-bearing (unblocks `slv5_periph_configure`'s own `TMO_FEVR` wait, the one thing keeping `main_idle_loop` from ever being reached). Nothing renders — see Status above for the full render-traffic scoping thread |
+| OpenVG (R-GPVG 2.6.2 graphics processor) | `openvg.c` | Completion interrupts (GIC 130-133) **plus, since 2026-09-23, a real rasterizer**: command-FIFO decoder (fills, blits, affine image draws, cover draws) and the `0xE8102000` path-tessellator command-list engine (vector paths incl. all font text, 4x4 AA non-zero fill). Decoded from live traffic + driver static trace; fragment programs not interpreted — see Status above |
 | ADC (10-bit wired A/D converter) | `adc.c` | Added 2026-09-21 — found via a full steady-state `-d unimp` survey (the only region still touched continuously deep into boot, ~433 hits/sec). DRA-DRH all return a fixed mid-scale reading; no IRQ (the real driver runs continuous-scan mode and never polls completion status). Confirmed real and load-bearing for hardware fidelity (feeds `dsp_param_table_rebuild_from_settings`), but confirmed live NOT the OpenVG render trigger — see Status above |
 
 ## Directory layout

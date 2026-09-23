@@ -420,6 +420,8 @@ static void rza1h_init(MachineState *machine)
     openvg = qdev_new(TYPE_RZA1H_OPENVG);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(openvg), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(openvg), 0, RZA1H_OPENVG_BASE, 1);
+    /* Path tessellator block (2026-09-23), see openvg.c "Path tessellator". */
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(openvg), 1, RZA1H_OPENVG_TESS_BASE, 1);
     sysbus_connect_irq(SYS_BUS_DEVICE(openvg), 0,
                        qdev_get_gpio_in(gic,
                            RZA1H_OPENVG_INT0_IRQ - RZA1H_GIC_NUM_INTERNAL));

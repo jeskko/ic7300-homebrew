@@ -224,6 +224,7 @@
 #define RZA1H_OPENVG_BASE 0xE8104000
 #define RZA1H_OPENVG_SIZE 0x00000100
 #define RZA1H_OPENVG_INT0_IRQ 130
+#define RZA1H_OPENVG_TESS_BASE 0xE8102000
 #define TYPE_RZA1H_OPENVG "rza1h-openvg"
 
 /* 10-bit wired ADC -- see adc.c's own file comment for the full derivation (found via a
