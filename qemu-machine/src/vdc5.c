@@ -48,6 +48,8 @@
 #include "hw/core/ptimer.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "ui/console.h"
+#include "system/address-spaces.h"
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
@@ -67,6 +69,7 @@ struct RZA1HVdc5State {
     uint32_t status[3];
     uint32_t enable[3];
     uint64_t frames;
+    QemuConsole *con;
     uint8_t regs[RZA1H_VDC50_SIZE];
 };
 
@@ -150,6 +153,70 @@ static void rza1h_vdc5_write(void *opaque, hwaddr offset, uint64_t value,
     memcpy(&s->regs[offset], &value, size);
 }
 
+
+/*
+ * Live display (2026-09-24): a QEMU graphic console showing what the LCD
+ * would show -- run with `-display gtk` (or sdl) instead of -nographic. Scans
+ * out the first graphics plane with a framebuffer pointer (GR2 in practice:
+ * GRn_FLM2 = base, FLM3[30:16] = stride, FLM6[31:28] = format, [26:16] =
+ * width-1; same decoding as tools/vdc5_framebuffer_peek.py). No blending of
+ * several planes, no scaling -- the real panel is 480x272.
+ */
+#define VDC5_LCD_W 480
+#define VDC5_LCD_H 272
+
+static uint32_t vdc5_reg32(RZA1HVdc5State *s, hwaddr off)
+{
+    uint32_t v;
+
+    memcpy(&v, &s->regs[off], 4);
+    return v;
+}
+
+static bool rza1h_vdc5_gfx_update(void *opaque)
+{
+    static const hwaddr planes[] = { 0x300, 0x380, 0x200, 0x900 }; /* GR2 GR3 GR0 GR1 */
+    RZA1HVdc5State *s = RZA1H_VDC5(opaque);
+    DisplaySurface *surf = qemu_console_surface(s->con);
+    uint8_t row[VDC5_LCD_W * 4];
+    uint32_t base = 0, stride = 0, fmt = 0;
+
+    if (!surf || surface_bits_per_pixel(surf) != 32) {
+        return true;
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(planes) && !base; i++) {
+        base = vdc5_reg32(s, planes[i] + 0x0c);
+        stride = (vdc5_reg32(s, planes[i] + 0x10) >> 16) & 0x7fff;
+        fmt = vdc5_reg32(s, planes[i] + 0x1c) >> 28;
+    }
+    for (int y = 0; y < VDC5_LCD_H; y++) {
+        uint32_t *out = (uint32_t *)((uint8_t *)surface_data(surf) +
+                                     y * surface_stride(surf));
+        if (!base || !stride || (fmt != 0 && fmt != 4)) {
+            memset(out, 0, VDC5_LCD_W * 4);
+            continue;
+        }
+        address_space_read(&address_space_memory, base + y * stride,
+                           MEMTXATTRS_UNSPECIFIED, row,
+                           VDC5_LCD_W * (fmt == 4 ? 4 : 2));
+        for (int x = 0; x < VDC5_LCD_W; x++) {
+            if (fmt == 4) {
+                out[x] = ldl_le_p(row + x * 4) & 0xffffff;
+            } else {
+                uint16_t v = lduw_le_p(row + x * 2);
+                out[x] = ((v >> 11) & 31) * 255 / 31 << 16 |
+                         ((v >> 5) & 63) * 255 / 63 << 8 | (v & 31) * 255 / 31;
+            }
+        }
+    }
+    qemu_console_update_full(s->con);
+    return true;
+}
+
+static const GraphicHwOps rza1h_vdc5_gfx_ops = {
+    .gfx_update = rza1h_vdc5_gfx_update,
+};
+
 static const MemoryRegionOps rza1h_vdc5_ops = {
     .read = rza1h_vdc5_read,
     .write = rza1h_vdc5_write,
@@ -200,6 +267,9 @@ static void rza1h_vdc5_realize(DeviceState *dev, Error **errp)
     ptimer_transaction_begin(s->timer);
     ptimer_set_freq(s->timer, VDC5_FRAME_HZ);
     ptimer_transaction_commit(s->timer);
+
+    s->con = qemu_graphic_console_create(dev, 0, &rza1h_vdc5_gfx_ops, s);
+    qemu_console_resize(s->con, VDC5_LCD_W, VDC5_LCD_H);
 }
 
 static void rza1h_vdc5_class_init(ObjectClass *oc, const void *data)

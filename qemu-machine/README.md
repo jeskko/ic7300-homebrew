@@ -31,8 +31,14 @@ Two fixes, from an Opus trace of the frequency path (spot-verified):
   is `VG_DRAW_IMAGE_NORMAL` (paint ignored, `0xf0` stale); `openvg.c` now honours that.
 - The band-pass latch follows: MSTB1 = `0x500080` = **B7S (10-14.99 MHz)** at 14.1 MHz.
 
-Open: a red **TX** indicator is lit (PTT/SEND input level in the GPIO model?); the IC751 LPF
-latch (PSTB) only ever gets its boot value `0x80`; no scope/waterfall (SSIF/DMA IQ ring unfed).
+The red **TX** box is correct: per the user, it means "transmitting is allowed on this frequency
+under the current band plan" (14.1 MHz is), not that PTT is active. Open: the IC751 LPF latch
+(PSTB) only ever gets its boot value `0x80`; no scope/waterfall (SSIF/DMA IQ ring unfed).
+
+**Live LCD window:** `tools/run_gui.py` boots with `-display gtk` (vdc5.c now registers a QEMU
+graphic console scanning out the active GR plane) and handles the PWRK press; the splash shows
+after ~40 s, the main screen after ~2 min. `--display sdl` also works; `--display none
+--screendump out.ppm --after 170` is the headless check.
 
 ## Status, 2026-09-24 — band-switch shift registers decoded; DMA fixed-address + GPIO PSR fixes
 
