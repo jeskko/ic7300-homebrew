@@ -109,21 +109,44 @@ Almost every handler starts with `prev[op] = P[op]; P[op] = w;`: P = "current wo
 at 0x11817b20…, prev = P + 0x9e0. Initial P values are the bare opcode (`0xNN000000`), except
 0x20/0x21 = 0xFFFFFFFF, 0x22 = 0x22FFFFFF, 0x40 = 0x40005555.
 
-| Opcode | Handler | P slot | Notes |
-|---|---|---|---|
-| 0x00 | 0x1180a030 | 0x11817b20 | bit 23 selects TX fallback C1 vs C2 |
-| 0x01 | 0x1180a00c | 0x11817b24 | store only |
-| 0x10 | 0x11809fb8 | 0x11817b28 (+0x2c?) | RX frequency, 2 words split on bit 23: `0x10 0 hh` = f>>16, `0x10 8 llll` = f & 0xffff (CPU sends f + 36 kHz) |
-| 0x20–0x25, 0x27 | … | 0x11817b30–b48 | TBD |
-| 0x40–0x44, 0x48–0x4f | … | 0x11817b4c–b7c | TBD (0x43 also fast-pathed in the ISR) |
-| 0x61, 0x62, 0x6b | … | 0x11817b80–b88 | TBD |
-| 0x80, 0x81 | 0x11804d30, 0x11804d08 | 0x11817b8c, b90 | TBD |
-| 0xA0–0xAF | 0x11804cd4 | 0x11817ba0 | → 0x11804bf0, TBD |
-| 0xB0–0xBF | 0x11804bc4 | 0x11817ba4 | **firmware page data**: 3 data bytes per word (bytes 2,1,0) into buffer 0x118185e8; 8-bit running sum; updates C5 |
-| 0xE0 | 0x11804728 | 0x11817b94 | **identity query**, see below |
-| 0xE1 | 0x118046f4 | 0x11817b98 | flash: loops k=5..10 calling 0x11815964(k<<15), i.e. erases 32 KB blocks 0x28000–0x50000 (probable) |
-| 0xE2 | 0x11804624 | 0x11817b9c | flash: set page address (sets up C5, clears the update-mode flag, may erase via 0x1181580c) |
-| 0xE3 | 0x118044e4 | ? | → 0x11804430, TBD |
+Per-opcode semantics were read by subagents (Sonnet) from the disassembly. Mechanics are
+address-verified; the "meaning" column is inference unless marked. Rows marked ✔ I re-checked
+myself. P slots are 0x11817b20 + 4·k in table order, not 4·opcode.
+
+| Opcode | Handler | P slot | Decode → effect | Meaning (confidence) |
+|---|---|---|---|---|
+| 0x00 | 0x1180a030 | b20 | bit9: one-shot trigger (DP+0 byte = 1, bit cleared back in P); bit5: DP+1 halfword = 0x30; bits13/12 → 2-bit code, on change `0x11806cac` (full reset / partial reset / idle, which installs callback 0x11804350 at DP+187); **bit23 selects TX fallback C1 vs C2** ✔ | mode/reset control word (low) |
+| 0x01 | 0x1180a00c | b24 | store only; bit2 is read by 0x1180de18 (±1.0 direction from 0.3-scaled compares vs DP+118) | slew enable/direction (low) |
+| 0x10 | 0x11809fb8 | b28 raw, **b2c freq** | bit23=0: bits 10..0 → freq bits 26..16; bit23=1: low 16 bits → freq low half ✔ (0x100000D7 + 0x1080B2C0 → 0xD7B2C0 = 14 136 000) | RX frequency incl. 36 kHz IF (high). No static reader of b2c in the DSP Program |
+| 0x20 | 0x11809f40 → 0x11808bb0 | b30 | change-gated; two 9-bit fields (bits 17..9, 8..0), difference bounded 180/−140, bit9 sign; trig polynomial + table MAC → DP+142/145/146/148; resets P[0x21] | filter coefficient generator, PBT/notch-like (medium) |
+| 0x21 | 0x11808ac4 → 0x11807ea0 | b34 | 6-bit preset index (bits 5..0, ranges <10/<24/<30), 12-bit signed field bits 23..12; copies 11-float presets from 0x11825290; resets P[0x20] | filter-shape preset, pairs with 0x20 (medium) |
+| 0x22 | 0x11807378 | b38 | gated on byte1 change; byte1 indexes a jump table at 0x11832270 (about 17 valid) that installs per-mode callbacks (DP+51/121/187), resets state, 480-sample (10 ms at 48 kHz) settle counter, clears C1 low bytes | **operating mode / demodulator select** (high for role) |
+| 0x23 | 0x11806b48 → 0x11806a30 | b3c | byte1 → (255−b)/256 → DP+48/50, ×0.65 → DP+10; nibble → 16-entry double table 0x11824088; helper 0x11806a30 also called from the 0x22 mode branches (≥14 sites) | shared gain/reference context (low) |
+| 0x24 | 0x11806918 | b40 | byte0 → 3.0 + (255−b)·4/255 (3.0..7.0) → DP+161; byte1 → tables 0x11819468/0x11819868; nibble bits 19..16 → table 0x11824d30 | 3–7 range suggests kHz, e.g. a filter width (medium-low) |
+| 0x25 | 0x118067e8 → 0x11806004 | b44 | coalesced; bit23 sign, bits 9..0 magnitude clamped 1020, bits 17..16 select 48- or 60-long coefficient sets, SPLOOP FIR/biquad regeneration | IF filter width/shape (medium) |
+| 0x27 | 0x11805fd8 | b48 | store only | ? |
+| 0x40 | 0x11805fb0 | b4c | store only (initial 0x40005555) | ? |
+| 0x41 | 0x11805f40 | b50 | bits 19..16 index a 16-float geometric table 0x11824580 (0.0058→0.647) → DP+120 | smoothing/decay rate, AGC-like (medium) |
+| 0x42 | 0x11805ee4 | b54 | byte1, byte2 /255 → 0x11817db8/dbc | two levels (low) |
+| 0x43 | 0x11805e00 (+ ISR fast path) | b58 | byte1≠0 → 0.0625; byte2 → 10·b/8000 → da0 with ±0.1 slew | tone generator, e.g. CW sidetone? (medium-low) |
+| 0x44 | 0x11805d40 | b5c | ignores own payload, re-derives P[0x42] → dc0/dc4 | commit of 0x42 (medium) |
+| 0x48 | 0x11805c2c | b60 | bits 21..8 == 0 → zero the struct at DP+0x61c (the one the ISR flags); byte0 /255 → dc8; bits 23..22 mode → 0x11805b2c | effect block reset/level (low) |
+| 0x49 / 0x4a | 0x1180592c / 0x11805750 | b64 / b68 | identical: byte1, byte2 through a 3-segment log taper → DP+344..348; 0xFF = off flags DP+1388/1389 | two log-taper levels, e.g. AF/RF gain? (low) |
+| 0x4b, 0x4d, 0x4e, 0x4f | — | b6c, b74, b78, b7c | store only (0x4d's neighbour code re-reads P[0x4c]) | ? |
+| 0x4c | 0x118055e0 | b70 | nibble → one of about 9 float constants → DP+179/180 | discrete time-constant preset (low) |
+| 0x61 | 0x11805360 | b80 | byte2 clamped 0..51 → 52-float table 0x11823638 → DP+269; bits 9..0 signed → DP+261 | rate + signed fine offset (low) |
+| 0x62 | 0x11805178 | b84 | nibble → 2-bit category + tables 0x11824e48 → 0x1181b0b8 | shape selector (low) |
+| 0x6b | 0x11804e68 | b88 | bit1: DP math path vs merging bits into P[0x00] | ? (low, partial) |
+| 0x80, 0x81 | 0x11804d30, 0x11804d08 | b8c, b90 | store only | ? |
+| 0xA0–0xAF | 0x11804cd4 → 0x11804bf0 | ba0 | `buf[byte1] = byte0` (buffer 0x118185e8); byte1 = 0xFF commits the 256-byte page to flash **0x28000 + (bits 26..16)·256** ✔; bit27 = last | byte-wise writes to the 0x28000–0x4FFFF store (high) |
+| 0xB0–0xBF | 0x11804bc4 → 0x118049e8 | ba4 | firmware page data, 3 bytes/word, running checksum into C5 | firmware update data (high) |
+| 0xE0 | 0x11804728 | b94 | identity query, see below ✔ | (high) |
+| 0xE1 | 0x118046f4 | b98 | erases 32 KB blocks 5..9 = 0x28000–0x4FFFF ✔ | erase the A0 store (high) |
+| 0xE2 | 0x11804624 | b9c | sets page address, sets up C5, clears DP+0x1eb | begin firmware write (medium-high) |
+| 0xE3 | 0x118044e4 → 0x11804430 | — | ignores payload; flushes a pending page, sets DP+0x1eb = 0xFF (back to normal TX rotation) | end write session (high) |
+
+No handler in 0x00–0xE3 writes TX slots C0–C4. Only 0x22's mode branches touch C1 (clearing it),
+and the flash family writes C5/C6.
 
 ### Identity (0xE0)
 
@@ -142,3 +165,32 @@ the 4th character, class 0xF. Then the stamp is incremented.
 
 The emulator mock (`scif5_dsp_identity_reply`) had cmd1/cmd3/cmd5 as guesses copied from the even
 half. cmd1 and cmd5 are now known from the images. cmd3 depends on what the FPGA reports.
+
+## DSP flash map and what "DSP Data" is (2026-09-24)
+
+The DSP Program's SPI0 flash code has six users of the command buffer at 0x1181eb50 (found by
+constant recovery). They are: read 0x03 (0x11815540), page program 0x02 (0x118156e4), 4 KB / 32 KB / 64 KB erases
+0x20/0x52/0xD8 (0x1181580c / 0x11815964 / 0x11815874), and the FPGA configuration stream
+(0x11815df4). The read routine is called **only** for two 8-byte version tags.
+
+| Flash range | Contents | Evidence |
+|---|---|---|
+| 0x000000–0x027F08 | DSP Program (AIS, booted by the ROM) | size 0x27F08, tag "31101070" at its end |
+| 0x028000–0x04FFFF | CPU-writable store: 0xE1 erases it, 0xA0–0xAF write pages, 0xE3 closes (settings/calibration?) | E1 loop; A0 page address 0x28000 + n·256 |
+| 0x050000–0x0FFF08 | DSP Data (inferred: its size 0xAFF08 ends exactly at the tag) | tag read at 0xFFF00 → 0x1181ec58 |
+| 0x100000– | FPGA: 8-byte tag, then the bitstream, which the DSP streams to the FPGA at boot | 0x11816080 (tag), 0x11815df4 (stream from 0x100008) |
+
+**DSP Data is not executed or bulk-read by the DSP Program.** Only its version tag is read, for the
+0xE0 identity reply. Its contents: a 776-entry (offset, length) directory (0x1840 bytes), then
+blobs of about 1.5–2.5 KB with about 7.0 bits/byte entropy, i.e. compressed data. The earlier
+"genuine C674x code" reading ([[multi-cpu-images-history]]) came from misaligned raw disassembly
+and should be treated as wrong. What reads it is open. Candidates: code reached only through
+pointers (not seen by the constant scan), or nothing in v1.42 at all.
+
+**FPGA image (`dsp_data.bin`):** its first 8 bytes are the tag **"31601130"**, the 8 bytes the DSP reads from
+flash 0x100000. The version is "3.16"/"1130", so identity cmd3 is *probably* 0xF0313133 ("113"+'0').
+That assumes the BCD digits at 0x1181ec68 match the tag, which isn't verified; the special case
+compares against "31501120", i.e. FPGA 3.15. The bitstream starts at +0x28 and ends at 0xd1cc9
+(about 859 KB). An uncompressed EP4CE55 bitstream is roughly 1.8 MB (from memory, check the
+Cyclone IV handbook), and the entropy is about 6.6 bits/byte in the dense middle, so the image is
+probably Quartus-**compressed**.
