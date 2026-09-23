@@ -114,6 +114,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *rspi2;
     DeviceState *openvg;
     DeviceState *adc;
+    DeviceState *vdc5;
     size_t i;
     int ch;
 
@@ -273,9 +274,20 @@ static void rza1h_init(MachineState *machine)
      * (stride)/FLM6 (format+width) via QMP and decode the real guest-RAM framebuffer
      * firmware points a graphics plane at -- a real, non-invasive way to see what the
      * radio would actually be showing on its LCD, without modeling VDC5's own compositing/
-     * scaling/timing pipeline at all. */
-    add_plain_ram_region(sysmem, "rza1h.vdc50",
-                         RZA1H_VDC50_BASE, RZA1H_VDC50_SIZE);
+     * scaling/timing pipeline at all.
+     *
+     * 2026-09-23: upgraded from that plain RAM region to vdc5.c -- same register storage, plus
+     * a 60 Hz frame-timing interrupt source (GIC 75..97). ui_graphics_present_frame blocks on
+     * the GR3 VLINE interrupt after every swap; without it the very first real frame (the boot
+     * splash) deadlocked the render task. Full derivation in vdc5.c's own file comment. */
+    vdc5 = qdev_new(TYPE_RZA1H_VDC5);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(vdc5), &error_fatal);
+    sysbus_mmio_map(SYS_BUS_DEVICE(vdc5), 0, RZA1H_VDC50_BASE);
+    for (i = 0; i < 23; i++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(vdc5), i,
+                           qdev_get_gpio_in(gic, RZA1H_VDC50_IRQ_BASE + i -
+                                                 RZA1H_GIC_NUM_INTERNAL));
+    }
 
     /* mtu2.c -- upgraded from a bare RAM region to a real device, 2026-09-09,
      * once body.bin's own cold-boot task-readiness busy-wait was found

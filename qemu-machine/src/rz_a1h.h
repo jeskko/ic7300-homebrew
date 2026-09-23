@@ -101,6 +101,9 @@
  * (up to GR_OIR_BASE at +0xfcc) plus headroom to the next 4KB page boundary. */
 #define RZA1H_VDC50_BASE            0xFCFF7400
 #define RZA1H_VDC50_SIZE            0x00001000
+/* vdc5.c: channel-0 interrupt types 0..22 map to GIC 75..97 (r_intc.h INTC_ID_S0_VI_VSYNC0..). */
+#define RZA1H_VDC50_IRQ_BASE        75
+#define TYPE_RZA1H_VDC5             "rza1h-vdc5"
 
 /* Matches emu/peripherals/mtu2.py's BASE/SIZE. Upgraded from a bare RAM
  * region (2026-09-09) to a real device for channel 3 specifically, once

@@ -66,6 +66,7 @@ def main():
     ap.add_argument("sitefile")
     ap.add_argument("--stall-timeout", type=float, default=40.0)
     ap.add_argument("--no-pwrk", action="store_true")
+    ap.add_argument("--image", help="override the RIIC2 EEPROM image")
     args = ap.parse_args()
 
     sites = []
@@ -82,7 +83,7 @@ def main():
         sites.append(addr)
         labels[addr] = parts[1].strip() if len(parts) > 1 else ""
 
-    image = HERE / ("riic2_eeprom.img" if args.no_pwrk else "riic2_eeprom_pwrk_test.img")
+    image = args.image or HERE / ("riic2_eeprom.img" if args.no_pwrk else "riic2_eeprom_pwrk_test.img")
     sock_path = "/tmp/qemu_walk_sites.sock"
     Path(sock_path).unlink(missing_ok=True)
 

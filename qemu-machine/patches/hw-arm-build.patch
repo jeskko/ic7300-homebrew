@@ -21,6 +21,6 @@ index 4233a80..f0fe24a 100644
  arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
  
  arm_common_ss.add(files('boot.c'))
-+arm_common_ss.add(when: 'CONFIG_RZA1H', if_true: files('rz_a1h.c', 'ostm.c', 'spi_boot.c', 'gpio.c', 'l2c.c', 'scif.c', 'mmc.c', 'riic.c', 'mtu2.c', 'dmac.c', 'rspi2.c', 'openvg.c', 'rx8803.c', 'adc.c'))
++arm_common_ss.add(when: 'CONFIG_RZA1H', if_true: files('rz_a1h.c', 'ostm.c', 'spi_boot.c', 'gpio.c', 'l2c.c', 'scif.c', 'mmc.c', 'riic.c', 'mtu2.c', 'dmac.c', 'rspi2.c', 'openvg.c', 'rx8803.c', 'adc.c', 'vdc5.c'))
  
  hw_common_arch += {'arm': arm_common_ss}

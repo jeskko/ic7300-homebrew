@@ -1,5 +1,12 @@
 # Handoff: stimulus injection into `qemu-machine` (to unblock the OpenVG render frontier)
 
+> **SUPERSEDED 2026-09-23 — kept for the trail.** No external stimulus was needed: the goal of
+> this handoff (real draw traffic) was reached by fixing two automatic-path gaps instead — the
+> synthetic EEPROM had "Opening Message" OFF, and VDC5 had no VLINE interrupt, so the render task
+> hung after its first frame. See README.md's 2026-09-23 Status section. The CI-V / front-panel
+> injection vectors below are still valid ideas for *later* (driving UI changes), just not the
+> blocker they were assumed to be.
+
 **Written for a fresh session picking up the OpenVG rendering thread.** Read
 [README.md](README.md)'s Status section and the `icom-openvg-rendering` project memory first for
 the full derivation; this file is the concrete plan for the *next* move, not a re-derivation.

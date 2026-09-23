@@ -57,6 +57,12 @@ ENTRIES: list[tuple[int, bytes]] = [
     (0x3e00, bytes([0xFF])),
     (0x3e80, b"SX3765 V4.81-000"),
     (0x3fc0, b"SX3765 V0.30-000"),
+    # SET > DISPLAY > "Opening Message" (factory-reset item 0x70, record 0x20192acc: live
+    # value 0x203de53b = NVRAM region 2 base 0x203de4cc + 0x6f -> EEPROM 0x1a20+0x6f; type
+    # byte 1, default +0x08 = 1 = "ON"). With the blank image's 0 ("OFF"),
+    # system_mode_request_dispatch skips the boot splash (FUN_2002a2a4) entirely -- and that
+    # splash is the only thing a real radio draws at power-on without user input.
+    (0x1a8f, bytes([0x01])),
 ]
 
 DUMMY_READ_SHIFT = 1

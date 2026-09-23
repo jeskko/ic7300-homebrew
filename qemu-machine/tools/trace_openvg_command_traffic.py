@@ -78,6 +78,7 @@ def analyze(log_path: Path, t0_wall: float):
 
 def main():
     total_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 120.0
+    image = sys.argv[2] if len(sys.argv) > 2 else RIIC_IMAGE  # optional EEPROM image override
 
     sock_path = "/tmp/qemu_openvg_trace.sock"
     log_path = Path("/tmp/qemu_openvg_trace.log")
@@ -85,14 +86,14 @@ def main():
     log_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
-    env["RZA1H_DEBUG"] = "openvg"
+    env["RZA1H_DEBUG"] = os.environ.get("RZA1H_DEBUG", "openvg")
 
     log_f = open(log_path, "wb")
     qemu_args = [
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
-        "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto",
+        "-global", f"rza1h-riic.image={image}",
+        "-icount", os.environ.get("RZA1H_ICOUNT", "shift=auto"),
         "-qmp", f"unix:{sock_path},server,nowait",
     ]
     proc = subprocess.Popen(qemu_args, stdin=subprocess.DEVNULL, stdout=log_f, stderr=log_f,

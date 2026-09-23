@@ -14,6 +14,65 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Status, 2026-09-23 — the screen now DRAWS (in the command stream): boot splash + a full
+## main-screen frame are rendered end to end. Two real gaps were blocking it, neither was a
+## missing front-panel/DSP reply.
+
+User's framing: a real radio shows the splash with no touch/button input, so the emulator must
+be missing an automatic trigger — the handoff's "inject a CI-V/front-panel stimulus" plan was the
+wrong direction. Chain, each link confirmed live:
+
+1. **The splash was switched OFF by our own EEPROM image.** `opening_screen_build_frame`'s only
+   caller, the fade driver `FUN_2002a2a4`, is called from `system_mode_request_dispatch`
+   (`0x2002ac5c`) only if `*(0x203de4cc+0x6f)` (= `0x203de53b`) is nonzero (or a reset/special
+   mode is active). `tools/probe_splash_gate.py` read every gate input live: all zero. A raw
+   search for that pointer finds exactly one factory-reset record, item **`0x70` = "Opening
+   Message"** (record `0x20192acc`, options `OFF`/`ON`, type byte 1, default at `+0x08` = **1 =
+   ON** — default field confirmed from `reset_apply_item_default`'s own decompile). It sits in
+   NVRAM region 2 → EEPROM `0x1a8f` (image byte `0x1a90`, the known +1 dummy-read shift; MY CALL
+   is therefore EEPROM `0x1a90`/image `0x1a91`). Our all-zero image = "OFF". Fixed in
+   `build_riic_eeprom_image.py` and patched into both committed images (only that byte).
+2. **VDC5 had no interrupt model, so the render task hung after its first real frame.** With the
+   splash ON, the first ~340 real OpenVG command words ever seen in this project appeared, then
+   stopped with `*0x2039064c` stuck at 2. A QMP `pmemsave` of RAM + a scan for return addresses
+   into `ui_graphics_lifecycle_task` found the blocked task's saved context: parked in
+   `FUN_2007ee08` (`*0x20390634 = 1; wait(sem, forever)`) right after `eglSwapBuffers`. Its only
+   signaller `FUN_2007ee20` is called only from `FUN_20073878`, which is **byte-for-byte Renesas'
+   own `VDC_Ch0_vline_ISR`** (RZ/A1H software package in `scratch/`, `r_vdc_interrupt.c`):
+   `SYSCNT_INT4` enable / `SYSCNT_INT1` status, bit 12 = GR3 VLINE, GIC 78. New **`src/vdc5.c`**:
+   same register storage as the old plain-RAM region, plus a 60 Hz `ptimer` latching the output
+   vsync/VLINE status bits (write-0-to-clear) and all 23 channel-0 GIC lines (75..97). Result:
+   the whole fade-in/hold/fade-out runs, `system_mode_request_dispatch` returns past the splash,
+   `main_idle_loop` is reached.
+3. **Under `-icount shift=auto` the post-splash frame still stalls — an emulation-speed
+   artifact, not a firmware wait.** The render task is found *preempted* (not blocked) mid-way
+   through an AVL-tree removal (`FUN_2014e776`), CPU 100% busy, no idle: `main_idle_loop` is paced
+   by a tick counter (`*DAT_20053138 >= 2`) and one pass of its ~70 polls takes longer than two
+   ticks at the effective `shift=auto` guest speed (virtual time runs ~0.4x wall), so it never
+   sleeps and starves the lower-priority renderer. **With fixed `-icount shift=1`** (2 ns/insn ≈
+   the real 400 MHz A9) the stream completes cleanly: bring-up + splash frames + one ~5,200-word
+   burst at t≈110-120 s (by far the heaviest frame — the main screen), ending on a complete
+   `da000000 00000000` frame terminator, then ~90% idle. That is correct behaviour: with no RF/DSP
+   input nothing on screen changes, so nothing is redrawn. (`RZA1H_ICOUNT=shift=1
+   tools/trace_openvg_command_traffic.py 300` reproduces; ~10,600 words total.)
+
+**Not changed yet (decision for the user):** the machine-wide default is still `shift=auto`
+(`qemu_launch.py`, README "Running it"). It was chosen for the job-ring-overflow thread, whose
+real cause later turned out to be the `riic.c` TEND bug — so `shift=1` may now be the better
+default, but every tool/finding since was taken under `shift=auto`.
+
+**Retracted along the way (recorded, not silently dropped):** a theory that the post-splash
+stall was the OpenVG FIFO-space wait (`FUN_2014f73e`, flag bits `0x124`) — tested by also
+latching status bit 2 on every command: the stream stopped at the identical word count, so it
+was reverted. The latent `0x40`/`0x30` watermark path is still unmodeled but not what blocks.
+
+**Where this leaves the rendering frontier:** there is now a real, complete command stream for
+a splash + main screen to decode (the handoff's step 3). The framebuffer is still blank only
+because `openvg.c` doesn't rasterize. New tools this session: `probe_splash_gate.py`,
+`trace_sticky_sites.py` (sticky breakpoints, every hit logged — `walk_call_sites.py` can't
+detect a site that is hit repeatedly and then parked on), `--image` on both walkers,
+`RZA1H_DEBUG`/`RZA1H_ICOUNT`/image-arg overrides on `trace_openvg_command_traffic.py`.
+
 ## Status, 2026-09-21, continued once more — OpenVG rendering frontier: the render dispatch
 ## runs exactly ONCE around bring-up completion and produces ZERO GPU commands. There is
 ## currently no real command-FIFO traffic anywhere in this project to reverse-engineer.
@@ -288,7 +347,7 @@ is the OpenVG thread covered at length above.
 | MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
 | DMAC (DMA controller) | `dmac.c` | Real channel 0 only (edge `DMAINT0`/GIC ID 41, real `address_space_read()`/`address_space_write()` transfer, `ptimer`-based one-shot completion) — confirmed load-bearing 2026-09-09, **completion-delay race fixed 2026-09-10** (see Status above — 1000ns raced the firmware's own next instruction under `-icount`, raised to 100us). Every other channel/register still plain storage |
 | RSPI2 (Serial Peripheral Interface ch.2) | `rspi2.c` | Minimal — `SPSR2`'s TX-ready bit always set, `SPDR2` writes logged only, no real transaction timing or completion IRQ — **confirmed load-bearing 2026-09-09**, unblocks `rspi2_transmit`'s own busy-wait, see Status above |
-| VDC50 (LCD/display controller) + LVDS | `rz_a1h.c`'s `add_plain_ram_region()` | Added 2026-09-20 (found via `-d unimp`: firmware genuinely configures multiple graphics planes during boot, previously silently discarded). Plain storage only, no display/timing/compositing behavior modeled — but unlike the generic catch-all it was carved out of, writes now stick, so `tools/vdc5_framebuffer_peek.py` can read back `GRn_FLM2`/`FLM3`/`FLM6` and decode a real framebuffer once firmware points one at real content (not yet observed within 120s on either boot branch — see Status above for the open "gated on an unmodeled VDC5 interrupt?" question) |
+| VDC50 (LCD/display controller) + LVDS | `vdc5.c` | Register storage (was a plain-RAM region 2026-09-20..23, so `tools/vdc5_framebuffer_peek.py` reads `GRn_FLM*` back) **plus, since 2026-09-23, a 60 Hz frame-timing interrupt source**: output vsync/VLINE status bits latched in `SYSCNT_INT1-3` (write-0-to-clear), IRQs gated by `SYSCNT_INT4-6`, GIC 75..97. Confirmed load-bearing: `ui_graphics_present_frame` waits on GR3 VLINE (GIC 78) after every swap — see Status above. No compositing/scan-out |
 | OpenVG (graphics processor for OpenVG) | `openvg.c` | Added 2026-09-21 — completion-interrupt stub only, every FIFO write completes instantly (GIC 130-133). Confirmed load-bearing (unblocks `slv5_periph_configure`'s own `TMO_FEVR` wait, the one thing keeping `main_idle_loop` from ever being reached). Nothing renders — see Status above for the full render-traffic scoping thread |
 | ADC (10-bit wired A/D converter) | `adc.c` | Added 2026-09-21 — found via a full steady-state `-d unimp` survey (the only region still touched continuously deep into boot, ~433 hits/sec). DRA-DRH all return a fixed mid-scale reading; no IRQ (the real driver runs continuous-scan mode and never polls completion status). Confirmed real and load-bearing for hardware fidelity (feeds `dsp_param_table_rebuild_from_settings`), but confirmed live NOT the OpenVG render trigger — see Status above |
 
