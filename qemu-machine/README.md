@@ -14,6 +14,11 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
+## Next thread (2026-09-24): DSP code analysis — see [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
+
+Deferred idea, not started: near-real-time speed (make WFE sleep instead of spin, faster rasterizer;
+~90% of guest instructions are currently the idle WFE spin).
+
 ## Status, 2026-09-24, later — full main screen: 14.100.00 USB FIL2
 
 ![main screen](screenshots/2026-09-24-main-screen-14100.png)

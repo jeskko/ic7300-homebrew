@@ -34,6 +34,13 @@ independently confirmed component-by-component).
 | 1 (`dsp_program.bin`, internal name — **confirmed wrong**, see below) | `0x26aa82` | 721,836 B | 720,648 B | **`DSP Data`** — confirmed genuine TMS320C674x (DSP) object code (real floating-point C67x+/C674x-specific instruction chains, cross-validated by 3 independent disassemblers), yet its identity tracks Icom's `DSP Data` version field, not `DSP Program` (see below) — Icom's "Program"/"Data" naming apparently isn't a code-vs-non-code distinction, more likely main-application-vs-secondary/rarely-updated-image |
 | 2 (`dsp_data.bin`, internal name — **confirmed wrong**, see below) | `0x31ae3e` | 698,201 B | 859,412 B | **`FPGA`** — not code (no coherent instruction chains found); already the best-supported guess from whole-file-histogram/size/preamble evidence (compressed Altera bitstream for `IC1351`), now **strongly confirmed** by version-field correlation (see below) on top of the earlier circumstantial evidence |
 
+**2026-09-24 — `front_cpu.bin` (really DSP Program) is a TI AIS boot script**: it starts with the
+AIS magic `0x41504954` ("TIPA") followed by `0x585359xx` AIS commands, i.e. exactly what the C6745
+boot ROM loads from its SPI flash (IC902). Parsing it gives section load addresses and the entry
+point (not done yet). It ends with the ASCII tag `31101070`, consistent with the version "3.11"
+the main CPU's `dsp_fpga_identity_version_check` expects from the DSP. `dsp_program.bin`
+(really DSP Data) has no AIS header at offset 0. Next steps: `notes/HANDOFF-dsp-analysis.md`.
+
 **Component identity fully resolved, 2026-08-30, by correlating against Icom's own published sub-component
 version history** (the same official EN+JP scrape done for the IC-9700 thread, see
 [[ic9700-container-format]] — the IC-7300's own firmware-detail pages turned out to carry the identical
