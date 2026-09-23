@@ -12,13 +12,12 @@ Prerequisites (not automatic -- run once per session):
 
 Usage: trace_rr_loop_overhead.py [seconds] [icount_value]
 
-`icount_value` (2026-09-10 addition, for the "does shift=auto's own adaptive retuning add
-per-pass overhead" question -- see README.md's Status section) overrides the `-icount` argument,
-default "shift=auto". Pass e.g. "shift=7" to compare against a fixed shift. Per
-accel/tcg/icount-common.c (read directly, not guessed): auto-mode's own re-adjustment
-(icount_adjust()) only runs from two timers firing every 100ms/1000ms -- far too infrequent to
-plausibly explain a per-pass (~us-scale, thousands/sec) cost -- so this is expected to show no
-difference, but checked rather than assumed, matching this project's own methodology.
+`icount_value` (2026-09-10 addition, for testing different icount shift values -- see
+README.md's Status section) overrides the `-icount` argument, default "shift=1". Pass e.g.
+"shift=7" to compare against a different fixed shift. Per accel/tcg/icount-common.c (read
+directly, not guessed): auto-mode's own re-adjustment (icount_adjust()) only runs from two
+timers firing every 100ms/1000ms -- so this is expected to show no significant difference,
+but checked rather than assumed, matching this project's own methodology.
 
 Reads both RZA1H_RR_TRACE and RZA1H_DEBUG=riic output from the same free-running boot (both are
 host-side, GDB-free, zero perturbation -- safe to combine), merges by the shared host monotonic
@@ -57,7 +56,7 @@ CHECKPOINTS = ["loop_top", "after_wait_io", "after_relock", "after_icount_bookke
 
 def main():
     seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 15.0
-    icount_value = sys.argv[2] if len(sys.argv) > 2 else "shift=auto"
+    icount_value = sys.argv[2] if len(sys.argv) > 2 else "shift=1"
 
     if not QEMU.exists():
         sys.exit(f"{QEMU} not found -- run setup.sh first")

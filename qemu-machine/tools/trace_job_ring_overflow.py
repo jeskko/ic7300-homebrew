@@ -65,10 +65,10 @@ RING_CAPACITY = RING_BASE + 3    # constant (16)
 OVERFLOW_TRAP = 0x200b93fc
 
 DMAC_DEBUG_LOG = os.environ.get("DMAC_DEBUG_LOG")
-# icount is qemu_launch's own default (shift=auto) now that it's this machine's recommended
+# icount is qemu_launch's own default (shift=1) now that it's this machine's recommended
 # way to run at all -- ICOUNT="" opts out, for an A/B comparison against the old unthrottled
 # timing model (this is exactly how the fix itself was found and confirmed, 2026-09-09).
-ICOUNT = os.environ.get("ICOUNT", "shift=auto") or None
+ICOUNT = os.environ.get("ICOUNT", "shift=1") or None
 
 
 def launch_qemu():

@@ -117,7 +117,7 @@ def main():
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto", "-s",
+        "-icount", "shift=1", "-s",
         "-qmp", f"unix:{QMP_SOCK},server,nowait",
     ]
     debug_log = open("/tmp/riic_eeprom_write_test_debug.log", "w")

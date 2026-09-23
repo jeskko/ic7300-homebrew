@@ -39,7 +39,7 @@ def main():
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto",
+        "-icount", "shift=1",
         "-d", "unimp,guest_errors", "-D", str(log_path),
     ]
     # PWRK-hold requires QMP; but for this pure log survey we don't need to press it

@@ -93,7 +93,7 @@ def main():
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={image}",
-        "-icount", os.environ.get("RZA1H_ICOUNT", "shift=auto"),
+        "-icount", os.environ.get("RZA1H_ICOUNT", "shift=1"),
         "-qmp", f"unix:{sock_path},server,nowait",
     ]
     proc = subprocess.Popen(qemu_args, stdin=subprocess.DEVNULL, stdout=log_f, stderr=log_f,

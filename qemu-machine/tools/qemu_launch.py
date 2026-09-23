@@ -1,11 +1,9 @@
 """Shared QEMU launch helper for qemu-machine/'s tools.
 
 Built 2026-09-09 alongside the job-ring-overflow fix (README-history.md's newest sections):
-`-icount shift=auto` is now this machine's own recommended default (paired with `ostm.c`'s
-real, schematic-confirmed OSTM_FREQ_HZ, fixes a real emulation-timing-realism gap that made
-boot hit a job-ring overflow trap with near-total reliability somewhere in the 35-78s range).
-Before this, every tool script had its own copy-pasted `subprocess.Popen([...])` launch line --
-one shared place means a future machine-wide default only needs updating once.
+a real emulation-timing-realism fix paired with `ostm.c`'s real, schematic-confirmed
+OSTM_FREQ_HZ. Before this, every tool script had its own copy-pasted `subprocess.Popen([...])`
+launch line -- one shared place means a future machine-wide default only needs updating once.
 """
 
 from __future__ import annotations
@@ -17,8 +15,9 @@ HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
 
+# 2026-09-23: switched from shift=auto -- under shift=auto main_idle_loop starves the renderer after the boot splash (see README.md 2026-09-23 Status); shift=1 = 2ns/insn ~ the real 400MHz Cortex-A9.
 # See README.md's "Running it" section for why this is the recommended default now.
-DEFAULT_ICOUNT = "shift=auto"
+DEFAULT_ICOUNT = "shift=1"
 
 
 def launch_qemu(

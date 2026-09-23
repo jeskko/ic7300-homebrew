@@ -56,10 +56,7 @@ wrong direction. Chain, each link confirmed live:
    input nothing on screen changes, so nothing is redrawn. (`RZA1H_ICOUNT=shift=1
    tools/trace_openvg_command_traffic.py 300` reproduces; ~10,600 words total.)
 
-**Not changed yet (decision for the user):** the machine-wide default is still `shift=auto`
-(`qemu_launch.py`, README "Running it"). It was chosen for the job-ring-overflow thread, whose
-real cause later turned out to be the `riic.c` TEND bug — so `shift=1` may now be the better
-default, but every tool/finding since was taken under `shift=auto`.
+**Default switched to `-icount shift=1`** (user decision, 2026-09-23) in `qemu_launch.py`, every tool, and "Running it". Findings recorded before this date were taken under `shift=auto`.
 
 **Retracted along the way (recorded, not silently dropped):** a theory that the post-splash
 stall was the OpenVG FIFO-space wait (`FUN_2014f73e`, flag bits `0x124`) — tested by also
@@ -499,16 +496,11 @@ emu/.venv/bin/python3 qemu-machine/tools/build_riic_eeprom_image.py  # produces 
 qemu-machine/qemu-src/build/qemu-system-arm -M rz-a1h -nographic \
     -kernel qemu-machine/flash.bin -serial none -monitor none \
     -global rza1h-riic.image=qemu-machine/riic2_eeprom.img \
-    -icount shift=auto \
+    -icount shift=1 \
     -qmp unix:/tmp/qemu.sock,server,nowait   # or -s -S for GDB
 ```
 
-**`-icount shift=auto` is this machine's own recommended default** (a real OSTM/MTU2 clock-
-realism fix, not optional) — see README-history.md. **Boot now reaches `main_idle_loop` and a
-stable idle steady state on both power-on branches** (auto-boot and PWRK-hold) — the earlier
-`0x200b93fc` job-ring-overflow trap was a real `riic.c` `SR2_TEND` device-model bug, since fixed;
-that whole thread is closed (full derivation in README-history.md). The active resume point is now
-the OpenVG rendering frontier — see Status above.
+**`-icount shift=1` is now this machine's own recommended default** (switched 2026-09-23 from shift=auto, which had been chosen for the job-ring-overflow thread; see Status section). This gives 2 ns/insn ≈ the real 400 MHz Cortex-A9 speed. **Boot now reaches `main_idle_loop` and a stable idle steady state on both power-on branches** (auto-boot and PWRK-hold) — the earlier `0x200b93fc` job-ring-overflow trap was a real `riic.c` `SR2_TEND` device-model bug, since fixed; that whole thread is closed (full derivation in README-history.md). The active resume point is now the OpenVG rendering frontier — see Status above.
 
 Omit the `-global rza1h-riic.image=...` line to boot with an empty virtual EEPROM instead — a
 real, valid configuration (matches how earlier sessions tested), but boot will stop much

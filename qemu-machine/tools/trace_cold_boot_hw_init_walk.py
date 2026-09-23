@@ -140,7 +140,7 @@ def main():
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto",
+        "-icount", "shift=1",
         "-qmp", f"unix:{sock_path},server,nowait",
         "-gdb", "tcp::1234",
     ]

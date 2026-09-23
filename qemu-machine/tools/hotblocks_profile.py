@@ -65,7 +65,7 @@ def main():
         str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
         "-serial", "none", "-monitor", "none",
         "-global", f"rza1h-riic.image={RIIC_IMAGE}",
-        "-icount", "shift=auto",
+        "-icount", "shift=1",
         "-plugin", f"file={PLUGIN},limit=0",  # limit=0: dump every block, we sort ourselves --
                                                 # the plugin's own default top-20-by-ecount cutoff
                                                 # would silently drop a low-ecount/high-icount

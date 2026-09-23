@@ -45,7 +45,7 @@ def main():
     proc = subprocess.Popen(
         [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none",
-         "-global", f"rza1h-riic.image={image}", "-icount", "shift=auto",
+         "-global", f"rza1h-riic.image={image}", "-icount", "shift=1",
          "-qmp", f"unix:{sock},server,nowait", "-gdb", "tcp::1234"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

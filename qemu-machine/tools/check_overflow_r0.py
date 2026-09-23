@@ -12,9 +12,8 @@ polling suppresses the very stall being chased; a few-second cadence has not sho
 
 Usage: check_overflow_r0.py [n_trials] [max_seconds_per_trial] [icount_value]
 
-`icount_value` (2026-09-10 addition) overrides the `-icount` argument, default "shift=auto" --
-added to test whether a fixed, higher icount shift (found via tools/trace_rr_loop_overhead.py to
-need real round-robin passes/RIIC2-event) changes the overflow outcome. See README.md's Status
+`icount_value` (2026-09-10 addition) overrides the `-icount` argument, default "shift=1" --
+added to test whether different icount shift values change the overflow outcome. See README.md's Status
 section.
 """
 
@@ -59,7 +58,7 @@ def parse_r0_pc(regs_text: str) -> tuple[int, int]:
 
 
 def run_trial(n: int, max_seconds: float, poll_interval: float = 3.0,
-              icount_value: str = "shift=auto") -> None:
+              icount_value: str = "shift=1") -> None:
     sock_path = f"/tmp/qemu_r0check_{n}.sock"
     Path(sock_path).unlink(missing_ok=True)
     args = [
@@ -104,7 +103,7 @@ def run_trial(n: int, max_seconds: float, poll_interval: float = 3.0,
 def main() -> None:
     n_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 5
     max_seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 60.0
-    icount_value = sys.argv[3] if len(sys.argv) > 3 else "shift=auto"
+    icount_value = sys.argv[3] if len(sys.argv) > 3 else "shift=1"
     print(f"-icount {icount_value}")
     for n in range(1, n_trials + 1):
         run_trial(n, max_seconds, icount_value=icount_value)
