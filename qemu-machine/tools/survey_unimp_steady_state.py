@@ -52,7 +52,7 @@ def main():
     sock_path = "/tmp/qemu_unimp_survey.sock"
     Path(sock_path).unlink(missing_ok=True)
     qemu_args += ["-qmp", f"unix:{sock_path},server,nowait"]
-    GPIO_PATH = "/machine/unattached/device[14]"
+    GPIO_PATH = "/machine/gpio"
 
     proc = subprocess.Popen(qemu_args, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -415,3 +415,29 @@ flow's* own acceptance path (that reads the .dat off a FAT card, checks the MD5,
 check runs only on real hardware and is the remaining part of `sdk/roadmap.md` Phase 0. `flash_image.py`
 drops the container's body slot straight into flash, which is what the loader boots from, so the update
 flow's write step is bypassed in the emulator.
+
+## 2026-09-25 — the stock SD updater installs a modified firmware in the emulator
+
+Full procedure: repack with `tools/icom_fw` (here: `1.42`→`9.99` at body offsets 0x327f4,
+0x3e72c and 0x64680 — the splash, VERSION-screen and `IC-7300 Ver` literals), put it on a card
+(`qemu-machine/tools/build_sdcard.py X.dat -o sd.img --name 7300_999.dat`), boot with
+`-drive if=sd,...` and no `-icount`, then MENU > SET > (page 2) SD Card > (page 2) Firmware Update
+> agree YES > backup NO > pick 7300_999 > hold YES ~1.5 s. Results:
+- The file browser lists every container in `IC-7300/` by basename; the MD5 check passes for our
+  repack; slot B (0x400000-) is written byte-identical to the repacked body, slot A untouched,
+  and the marker at 0x7f0000 becomes `SX3765 V1.00-003`. The boot region (0-0x10000) is skipped
+  because it's unchanged. No DSP/FPGA phase ran (components unchanged).
+- **The restart after "completed" (previously open, now traced end to end)**: the progress
+  sequencer (state 0x3c) and `firmware_update_main` set the restart flag `0x20390306` (and
+  `0x20390307`, the Fup_AutoEnd trigger). The normal-operation loop hands over to
+  `power_state_pwrk_wait_and_bringup`, which: clears TX[1] bit 0 (POWER LED) and TX[3] in the
+  front-panel buffer and sends it (`fe 01 00 00 00 fd` on SCIF3); sets `0x203901ec = 0xff` and
+  waits for `ui_graphics_lifecycle_task` to leave its render loop and tear down EGL
+  (eglTerminate path -> `FUN_2007ebd0`: STBREQ2 bit 0, wait STBACK2 bit 0, then module stop;
+  also STBREQ2 bit 5 = VDC5 ch0); shuts peripherals down; writes `Fup_AutoEnd_3765`; waits a
+  fixed delay; and, with the restart flag set, arms the watchdog (0x5a5f/0x5afe/0xa57f). The next
+  boot's `power_state_dispatch` sees WRCSR.WOVF and clears it.
+- After the watchdog reset the boot loader picks slot B and the radio runs the modified image:
+  splash `9.99`, VERSION "Main CPU: 9.99".
+So the whole acceptance path runs in the emulator; what's left for Phase 0 is doing it on the
+real radio.

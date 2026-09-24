@@ -54,10 +54,19 @@
 
 #define TYPE_RZA1H_OSTM "rza1h-ostm"
 
-/* Confirmed via direct disassembly of the real base.dat, see
- * notes/base-loader.md's boot-sequence step 2 and emu/peripherals/spi_boot.py. */
-#define RZA1H_SPI_BOOT_STATUS_BASE 0x3FEFA048
-#define TYPE_RZA1H_SPI_BOOT_STATUS "rza1h-spi-boot-status"
+/* SPIBSC0 (SPI multi I/O bus controller) + the boot flash behind it, spibsc.c. Base confirmed
+ * via direct disassembly of the real base.dat (notes/base-loader.md, boot-sequence step 2:
+ * it polls CMNSR at +0x48) and body.bin's flash driver. */
+#define RZA1H_SPIBSC_BASE 0x3FEFA000
+#define TYPE_RZA1H_SPIBSC "rza1h-spibsc"
+
+/* wdt.c -- watchdog timer, the firmware's restart primitive (manual chapter 12). */
+#define RZA1H_WDT_BASE 0xFCFE0000
+#define TYPE_RZA1H_WDT "rza1h-wdt"
+
+/* stbc.c -- STBREQ1/2 + STBACK1/2 (manual chapter 55), module standby handshake. */
+#define RZA1H_STBC_BASE 0xFCFE0030
+#define TYPE_RZA1H_STBC "rza1h-stbc"
 
 /* All addresses below are already-confirmed ground truth carried over
  * unchanged from the matching emu/peripherals/ Python module (see each C

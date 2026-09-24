@@ -43,7 +43,7 @@ QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
 
 VDC50_BASE = 0xFCFF7400
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 # (name, FLM_block_offset) -- FLM1 is block+8, FLM2 is block+0xc, FLM3 is block+0x10,
 # FLM6 is block+0x1c, for every plane except GR_VIN/GR_OIR which use a slightly different

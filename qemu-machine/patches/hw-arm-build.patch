@@ -15,13 +15,13 @@ index 6f5b2ad..a2adfd1 100644
 +    select UNIMP
 +    select SD
 diff --git a/hw/arm/meson.build b/hw/arm/meson.build
-index 4233a80..4bae141 100644
+index 4233a80..605fa4f 100644
 --- a/hw/arm/meson.build
 +++ b/hw/arm/meson.build
 @@ -111,5 +111,6 @@ arm_common_ss.add(when: 'CONFIG_VERSATILE', if_true: files('versatilepb.c'))
  arm_common_ss.add(when: 'CONFIG_VEXPRESS', if_true: files('vexpress.c'))
  
  arm_common_ss.add(files('boot.c'))
-+arm_common_ss.add(when: 'CONFIG_RZA1H', if_true: files('rz_a1h.c', 'ostm.c', 'spi_boot.c', 'gpio.c', 'l2c.c', 'scif.c', 'mmc.c', 'sdhi.c', 'riic.c', 'mtu2.c', 'dmac.c', 'rspi2.c', 'openvg.c', 'rx8803.c', 'adc.c', 'vdc5.c', 'fake_dsp.c', 'fake_fpga.c', 'ssif.c'))
++arm_common_ss.add(when: 'CONFIG_RZA1H', if_true: files('rz_a1h.c', 'ostm.c', 'spibsc.c', 'wdt.c', 'stbc.c', 'gpio.c', 'l2c.c', 'scif.c', 'mmc.c', 'sdhi.c', 'riic.c', 'mtu2.c', 'dmac.c', 'rspi2.c', 'openvg.c', 'rx8803.c', 'adc.c', 'vdc5.c', 'fake_dsp.c', 'fake_fpga.c', 'ssif.c'))
  
  hw_common_arch += {'arm': arm_common_ss}

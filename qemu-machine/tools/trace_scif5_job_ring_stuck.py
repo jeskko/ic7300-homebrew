@@ -50,7 +50,7 @@ SEND_AND_WAIT_REPLY = 0x200b237c  # scif5_send_and_wait_reply -- log LR (its cal
 ARM_RETRY_TIMER = 0x200b0cd4
 CLASSIFY_REPLY = 0x200b0dc4
 PWRK_WFI_PC = 0x20029B18
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 
 # QEMU can interleave async event objects ({"event": ...}) with command replies on the same

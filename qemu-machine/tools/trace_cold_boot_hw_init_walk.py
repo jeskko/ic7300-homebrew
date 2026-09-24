@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
 RIIC_IMAGE = HERE / "riic2_eeprom_pwrk_test.img"
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 # every BL site in cold_boot_hw_init, in address order, plus its epilogue and the
 # two follow-on landmarks in cold_boot_mode_dispatch / main_idle_loop.

@@ -28,7 +28,7 @@ HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
 RIIC_IMAGE = HERE / "riic2_eeprom_pwrk_test.img"
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 RING_BASE = 0x203FBDC0
 WRITE_IDX_ADDR = RING_BASE + 0x240

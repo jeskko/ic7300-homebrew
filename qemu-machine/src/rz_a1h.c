@@ -84,7 +84,7 @@ static const struct RzA1hIoRegion rza1h_io_regions[] = {
  * did. MTU2 was the same until 2026-09-09 (see mtu2.c). Needs the
  * `_overlap` variant since each of these ranges sits inside the broader
  * "io-fcfe0000" unimplemented-device catch-all mapped later in
- * rza1h_init() -- see spi_boot_status's own comment for why plain
+ * rza1h_init() -- see spibsc.c for why plain
  * memory_region_add_subregion() can't be used for a sub-range of an
  * already-mapped sibling region. */
 static void add_plain_ram_region(MemoryRegion *sysmem, const char *name,
@@ -115,7 +115,7 @@ static void rza1h_init(MachineState *machine)
     DeviceState *gic;
     DeviceState *ostm0;
     DeviceState *ostm1;
-    DeviceState *spi_boot_status;
+    DeviceState *spibsc;
     DeviceState *gpio;
     DeviceState *l2c;
     DeviceState *mmc;
@@ -223,14 +223,26 @@ static void rza1h_init(MachineState *machine)
         create_unimplemented_device(r->name, r->base, r->size);
     }
 
-    /* Mapped on top of the "spi-status-and-neighbors" unimplemented-device
-     * region above (unimplemented-device maps at priority -1000, so a
-     * normal-priority mapping here wins) -- see spi_boot.c's own comment
-     * for why this can't just fall through to the generic stub. */
-    spi_boot_status = qdev_new(TYPE_RZA1H_SPI_BOOT_STATUS);
-    sysbus_realize_and_unref(SYS_BUS_DEVICE(spi_boot_status), &error_fatal);
-    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(spi_boot_status), 0,
-                            RZA1H_SPI_BOOT_STATUS_BASE, 0);
+    /* SPIBSC0 + boot flash (spibsc.c; replaced spi_boot.c's CMNSR-only stub 2026-09-25 so the
+     * SD updater can program flash). Mapped on top of the "spi-status-and-neighbors"
+     * unimplemented-device region above (priority -1000, so this mapping wins). */
+    spibsc = qdev_new(TYPE_RZA1H_SPIBSC);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(spibsc), &error_fatal);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(spibsc), 0, RZA1H_SPIBSC_BASE, 0);
+
+    /* wdt.c -- the watchdog-forced restart after a firmware update -- and stbc.c, the
+     * module-standby handshake the graphics shutdown on power-off waits on. Both sit inside
+     * the plain "rza1h.cpg-main" RAM region (0xFCFE0000-0x04FF, priority 0), so they are
+     * mapped above it: underneath, their writes just landed in RAM. */
+    {
+        DeviceState *wdt = qdev_new(TYPE_RZA1H_WDT);
+        DeviceState *stbc = qdev_new(TYPE_RZA1H_STBC);
+
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(wdt), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(wdt), 0, RZA1H_WDT_BASE, 1);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(stbc), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(stbc), 0, RZA1H_STBC_BASE, 1);
+    }
 
     /* Extension-roadmap item 3, 2026-09-08: port the remaining Unicorn-side
      * peripherals (emu/peripherals/{gpio,cpg,l2c,mtu2,riic}.py) to real
@@ -243,6 +255,9 @@ static void rza1h_init(MachineState *machine)
      * upgraded to a real device the same session, and mtu2.c on
      * 2026-09-09 (channel 3 only, see its own comment). */
     gpio = qdev_new(TYPE_RZA1H_GPIO);
+    /* A stable QOM path, /machine/gpio, for the tools' PWRK qom-set (an auto-numbered
+     * /machine/unattached/device[N] shifts whenever a device is added before it). */
+    object_property_add_child(OBJECT(machine), "gpio", OBJECT(gpio));
     sysbus_realize_and_unref(SYS_BUS_DEVICE(gpio), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(gpio), 0, RZA1H_GPIO_BASE, 0);
 

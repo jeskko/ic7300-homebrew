@@ -35,7 +35,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 FLAG_ED = 0x203906ed  # shared job ring "active/non-empty" flag
 FLAG_EE = 0x203906ee  # sibling flag, no static writer found yet

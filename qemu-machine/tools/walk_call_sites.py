@@ -29,7 +29,7 @@ from gdbrsp import GdbRsp  # noqa: E402
 HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 
 def qmp_open(sock_path: str) -> socket.socket:

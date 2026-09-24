@@ -54,7 +54,7 @@ RIIC2_RI_ISR = 0x2001dbcc
 GIC_ENABLE_HELPER = 0x200b8308
 RIIC2_DRIVER_STATE = 0x203945a4  # DAT_2001e6c0's own held pointer -- state[0]/count[4]/idx[5]
 PWRK_WFI_PC = 0x20029B18
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 _qmp_buf: dict = {}
 

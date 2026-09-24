@@ -44,7 +44,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent
 QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
-GPIO_PATH = "/machine/unattached/device[14]"
+GPIO_PATH = "/machine/gpio"
 
 U8 = [
     ("state_30f", 0x2039030F),   # 0=init 1=cold-boot path 2=PWRK wait 3=press serviced

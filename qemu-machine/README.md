@@ -53,6 +53,20 @@ Measured with `tools/bench_boot.py`.
   WFE (a real halt in QEMU 11) waiting for an SD event, and QEMU's icount idle warp stops
   delivering the device's timer expiry promptly. Without `-icount` the same card mounts and
   works fully. So use `--icount off` for SD work until this is fixed.
+- **The firmware's own SD-card updater works end to end** (2026-09-25): SET > SD Card >
+  Firmware Update on a card holding a repacked container (`tools/icom_fw` + `build_sdcard.py`)
+  runs the stock updater — MD5 check, slot-B erase/program, active-slot marker, "Firmware
+  updating has completed" — then the firmware's watchdog restart, and the radio comes back up
+  running the modified image (a `1.42`→`9.99` version-string edit shows on the splash and on
+  SET > Others > Information > Version). New devices: `spibsc.c` (SPIBSC0 manual SPI mode + the
+  EN25Q64 boot flash; `-global rza1h-spibsc.save-file=PATH` persists flash), `wdt.c`
+  (watchdog reset, WOVF kept across it), `stbc.c` (STBREQ/STBACK module-standby handshake, which
+  the graphics shutdown on power-off waits on). The restart path, traced: the dialog sets
+  `0x20390306`, the power-off path (`power_state_pwrk_wait_and_bringup`) turns the POWER LED /
+  backlight off over SCIF3 (`fe 01 00 00 00 fd`), makes `ui_graphics_lifecycle_task` tear down
+  EGL (which stops the GPU via STBREQ2 bit 0 / VDC5 bit 5), writes `Fup_AutoEnd_3765` and arms
+  the watchdog. The tools' GPIO path is now `/machine/gpio` (was an auto-numbered
+  `device[14]`). A plain PWRK-hold power-off still doesn't complete (not investigated).
 - **A modified `body.bin` repacks and boots end-to-end** in the emulator (commit 774acce) — the
   first real test that a `tools/icom_fw`-repacked custom image is accepted and runs.
 - **The emulated system tick was fixed, and boot got much faster as a result**: the 500 µs tick
@@ -64,10 +78,8 @@ Measured with `tools/bench_boot.py`.
   and the CI-V/frequency/band-switch-latch path are all working — see the peripheral table below
   for what backs each one.
 
-**Open / next**: the SD-card update flow in the emulator (put a repacked `.dat` in
-`IC-7300/` and run the firmware's own updater from the SD menu), the `-icount` SD stall above,
-then a live SD-card firmware update on real hardware (`sdk/roadmap.md`'s Phase 0 payoff) or a
-custom-code hook. DSP-side static code analysis is done (`notes/dsp-protocol.md`,
+**Open / next**: the same SD update on real hardware (`sdk/roadmap.md` Phase 0, now fully
+rehearsed in the emulator), a custom-code hook, the `-icount` SD stall above, and PWRK power-off. DSP-side static code analysis is done (`notes/dsp-protocol.md`,
 `notes/civ-dsp-fpga-catalogue.md`); the CI-V `27 00` scope-waveform output and fixed-mode
 (VFO-offset) scope behaviour are not yet checked. TX audio playback (DR_AF) and the DX_FMT
 decoders are unexercised — there's no front-panel key-injection-driven recorder/voice-memory
@@ -92,6 +104,9 @@ Older status entries and the full session-by-session narrative: [README-history.
 | FPGA behind RSPI2 | `fake_fpga.c` | Behavioural model of the band-scope sweep protocol: 7-byte register file, 475-sample sweep reply, sweep-rate knobs (`RZA1H_FPGA_SWEEP_HZ`/`_FLOOR`/`_SIGNALS`). `RZA1H_DEBUG=fpga` |
 | SSIF0/1 (DSP audio, I2S) | `ssif.c` | Real register model (SSISR.IIRQ, FIFO data regs); RX content is the fake DSP's synthetic tone/noise, TX (DR_AF) logged as peak levels. `RZA1H_DEBUG=ssif` |
 | RX-8803LC RTC | `rx8803.c` | Real RIIC1 I2C slave; backs `body.bin`'s live idle-state RTC traffic |
+| SPIBSC0 + boot flash | `spibsc.c` | XIP ROM plus manual SPI mode: WREN/RDSR/WRSR/RDID/read/page program/4K,64K,chip erase on an EN25Q64 model; optional save-file |
+| WDT | `wdt.c` | Keyed WTCSR/WTCNT/WRCSR, overflow → system reset with RSTE, WOVF survives the reset |
+| STBREQ/STBACK | `stbc.c` | Module-standby handshake, STBACKn = STBREQn |
 | SDHI0 (SD host) | `sdhi.c` | The IC-7300's SD slot: manual chapter 50 register model, upstream `sd-card` on its SD bus, card detect/WP, PIO and DMA (ch7) data, GIC 302-304 |
 | MMCIF (SD/MMC host) | `mmc.c` | Standalone protocol model with its own virtual card; `body.bin` doesn't use MMCIF (its SD card is on SDHI0) |
 | DMAC (DMA controller) | `dmac.c` | Real channels 0-7: honours `CHCFG.SAD/DAD` (fixed vs incrementing address), `ptimer`-based completion, streaming mode backs the SSIF audio pumps and the band-switch shift-register writes |
@@ -184,9 +199,8 @@ branches; OpenVG rendering (the main screen fully draws); the fake FPGA (band sc
 system-tick fix that took boot from 97 s to 8 s wall.
 
 **Open:**
-1. **SD-card update flow and VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — the card works
-   (`sdhi.c`); next is running the firmware's own SD updater on a repacked `.dat`, and fixing
-   the `-icount` stall on heavy mounts (see Status).
+1. **Phase 0 on real hardware** — the firmware's own SD updater installs and boots a modified
+   image in the emulator (see Status); the `-icount` stall on heavy SD mounts is still open.
 2. The CI-V `27 00` scope-waveform output and fixed-mode (VFO-offset) scope behaviour are not yet
    checked against the fake FPGA.
 3. TX audio playback (DR_AF) and the DX_FMT decoders are unexercised — needs recorder or

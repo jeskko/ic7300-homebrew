@@ -32,7 +32,7 @@ QEMU = HERE / "qemu-src" / "build" / "qemu-system-arm"
 FLASH = HERE / "flash.bin"
 RIIC_IMAGE = HERE / "riic2_eeprom_pwrk_test.img"
 
-GPIO_PATH = "/machine/unattached/device[14]"  # confirmed via `info qom-tree` -- (rza1h-gpio)
+GPIO_PATH = "/machine/gpio"  # confirmed via `info qom-tree` -- (rza1h-gpio)
 
 WFI_LANDING = 0x20029B18
 PWRK_WAIT_LO, PWRK_WAIT_HI = 0x20029914, 0x20029DE7
