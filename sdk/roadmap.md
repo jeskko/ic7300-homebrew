@@ -115,6 +115,17 @@ that, is what the live test above still adds. Repro artifacts + procedure: `note
   chosen.
 
 ### Phase 2 — design the injection point and app-loading mechanism
+
+**2026-09-25 — first concrete design landed**, see `app-loader-design.md`: `sd_menu_dispatch_task`'s
+42-case command dispatch (`notes/kernel-rtos.md`) turns out to have 12 real, currently-unreachable dead
+case IDs in its inline ARM jump table — repurposing one is a single 4-byte instruction patch, runs as a
+plain function call inside that task's own already-privileged context (no new-task/ASID question), and
+the loader code itself can be appended to `body.bin` using the packer's already-verified
+"length-changing append" support. Two things that design still needs before it's buildable: a real
+CI-V-reply staging cookbook (mimicking a genuine handler instead of calling the stateful TX pump out of
+context) and a trigger mechanism (a real menu-tap hookup, or a simpler stand-in for the first proof of
+concept). See `app-loader-design.md` for the full detail and current open items.
+
 Concrete open design questions, needing a firm answer before writing the loader itself:
 - **Where does the loader hook in?** Candidates already surfaced by this project's own RTOS work: a
   currently-unused task slot (`kernel_start`'s own still-unidentified mystery task, descriptor

@@ -30,6 +30,9 @@ for why this whole effort exists.
   not "how does it start" (still `roadmap.md` Phase 2's open question). Addresses cited in these files were
   verified against the live Ghidra project as of the date each file was written — re-verify before trusting
   one blindly if picking this up much later, since renames happen across sessions.
+- **`app-loader-design.md`** — started 2026-09-25, the first concrete answer to `roadmap.md`'s Phase 2
+  (injection point/loading mechanism): hook point, where the loader code and the app blob each live in
+  memory, and the fail-closed contract. Kept current as the design firms up; open items tracked at its end.
 
 ## Expected growth
 

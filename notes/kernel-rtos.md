@@ -241,6 +241,53 @@ identity remain genuine static-analysis dead ends needing live JTAG; `first_task
 genuinely kernel-internal machinery rather than an unresolved mystery — a different, third category,
 not a loose end.
 
+## `sd_menu_dispatch_task`'s command dispatch, byte-verified — a clean custom-app injection point (2026-09-25)
+
+Picked up while starting to scope [[icom-custom-code-goal]]'s Phase 2 (injection-point design). Fully
+decompiled and, unusually for this table, **cross-checked against the raw ARM listing instruction by
+instruction**, not just the decompiler's view — worth doing whenever a jump table is involved, since the
+decompiler's `switch` rendering can silently paper over exactly the detail (which case IDs are really
+distinct vs. aliased to the same target) that matters for repurposing one.
+
+- **Real inline ARM computed-branch jump table, not a separate data table.** The dispatch is
+  `cmp r0,#0x29; addcc pc,pc,r0,lsl#2` at `0x20027550`/`0x20027554` — ARM's PC-relative-branch idiom, so
+  the "table" is just 41 consecutive 4-byte `b <target>` instructions starting at `0x2002755c` (case 0),
+  one per case ID `0x00`-`0x28`; `r0 >= 0x29` falls through to the same shared default. Verified by reading
+  the raw listing and hand-checking every entry against the decompiler's `switch` — all 41 match exactly.
+- **12 case IDs are genuinely dead — real, currently-unreachable no-ops, not just "unhandled":**
+  `0x00, 0x02-0x06, 0x0a, 0x0e-0x10, 0x12-0x14` all branch to the same shared default stub at `0x20027710`
+  (`iVar2 = 0`, i.e. "done, nothing happened"). Confirmed by reading each slot's actual branch target in the
+  raw listing (`0x2002755c`+`4*id`), not inferred from the decompiler alone. **Any one of these 12 IDs can
+  be repurposed by overwriting exactly one 4-byte `b` instruction** (its own slot in the table) to point at
+  new, appended code instead of the shared default — no table growth, no `cmp` bound change, and (since the
+  ID already reliably no-ops today) repurposing it can't regress any real existing behavior even if some
+  static or dynamic path currently *can* produce that ID without anyone having found it.
+- **Dispatch state lives in one fixed-address struct, not per-call arguments** — `DAT_20027840` holds the
+  literal `0x2039011c` (the struct's real base, confirmed via direct memory read, not just symbol name);
+  the command-ID field the switch reads is `+0x44` (`0x20390160`), and the task's own wait call is
+  `FUN_20186f60(*(struct+0x40), 0xffffffff)` — an infinite-timeout wait on a queue/event handle stored at
+  `+0x40` (also part of the same struct, populated at boot by `FUN_20027740`'s `FUN_20186e98(...)` queue-
+  create call). Because the struct sits at a **fixed, static address**, any other code anywhere in the
+  image — not just code that's part of this dispatcher — can post a command to this task by writing the
+  desired case ID to `0x20390160` and then signalling the queue handle read live from `0x2039011c+0x40`
+  (see `rtos_post_event`, `0x20186fb4`, already named from an earlier session) — this doesn't require
+  knowing the handle's value statically, since the trigger code can just read it at runtime.
+- **`firmware_update_main` (case `0xb`) is the existing proof this dispatch has no special-casing per
+  command** — per [[firmware-update]]'s own entry-point trace, "nothing special gates entry to it; it's
+  reached the same way any other SD-menu action is." Same holds for any newly-added case.
+- **~28 direct writes to the `+0x44` field exist elsewhere in the image** (`0x20022xxx`-`0x20023xxx`
+  range, e.g. cases 7/8's own gate-then-dispatch chain) — checked and ruled out as the "UI tap → post"
+  site: these are all internal multi-step state-chaining *inside* the individual command handlers
+  themselves (a handler finishing step 1 and re-queuing itself into step 2), not an external entry point.
+  **The real "SD-card-menu screen tap → post this command ID" site has not yet been found** — open item,
+  see below.
+
+**Open item, not yet resolved**: what code actually turns a physical/touchscreen tap on an SD-card-menu
+item into a write to `0x20390160` + an `rtos_post_event` call — i.e., whether adding a genuinely new,
+visible "Homebrew App" menu row (rather than triggering the new case some other way) is achievable by
+static patching alone. Dispatched to a fresh-eyes pass 2026-09-25 (in progress as of this writing) —
+results, once in, belong here or in a new `sdk/` doc, whichever fits once known.
+
 ## Living reference: `cold_boot_hw_init`'s own call-by-call sweep (2026-09-20)
 
 `cold_boot_hw_init` (the task-catalog table above already covers the one task it activates,
