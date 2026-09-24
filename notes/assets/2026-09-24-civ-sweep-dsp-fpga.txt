@@ -1,0 +1,176 @@
+## scope ON: CI-V 27 10 01 -> e0 94 fb
+    rspi2: frame #2 (8 bytes): 00 06 00 05 dc 01 f4 10
+    rspi2: frame #3 (2 bytes): 06 20
+    rspi2: frame #4 (1 bytes): 90
+## scope mode center: CI-V 27 14 00 00 -> e0 94 fb
+## scope mode fixed: CI-V 27 14 00 01 -> e0 94 fb
+    rspi2: frame #5 (7 bytes): 01 28 d9 e0 00 00 30
+    rspi2: frame #6 (1 bytes): 90
+## scope mode scroll-C: CI-V 27 14 00 02 -> e0 94 fb
+    rspi2: frame #7 (7 bytes): 01 00 05 dc 01 f4 40
+    rspi2: frame #8 (1 bytes): 90
+## scope mode scroll-F: CI-V 27 14 00 03 -> e0 94 fb
+    rspi2: frame #9 (7 bytes): 01 28 d9 e0 00 00 50
+    rspi2: frame #10 (1 bytes): 90
+## scope mode center: CI-V 27 14 00 00 -> e0 94 fb
+    rspi2: frame #11 (7 bytes): 01 00 05 dc 01 f4 60
+    rspi2: frame #12 (1 bytes): 90
+## scope span 5k: CI-V 27 15 00 00 50 00 00 00 -> e0 94 fb
+    rspi2: frame #13 (4 bytes): 04 00 64 70
+    rspi2: frame #14 (1 bytes): 90
+## scope span 25k: CI-V 27 15 00 00 50 02 00 00 -> e0 94 fb
+    rspi2: frame #15 (4 bytes): 04 01 f4 80
+    rspi2: frame #16 (1 bytes): 90
+## scope span 250k: CI-V 27 15 00 00 00 25 00 00 -> e0 94 fb
+    rspi2: frame #17 (4 bytes): 04 13 88 90
+    rspi2: frame #18 (1 bytes): 90
+## scope span 2.5k: CI-V 27 15 00 00 25 00 00 00 -> e0 94 fb
+    rspi2: frame #19 (4 bytes): 04 00 32 a0
+    rspi2: frame #20 (1 bytes): 90
+## scope ref +10dB: CI-V 27 19 00 10 00 00 -> e0 94 fb
+## scope ref -10dB: CI-V 27 19 00 10 00 01 -> e0 94 fb
+## scope ref 0dB: CI-V 27 19 00 00 00 00 -> e0 94 fb
+## scope speed 0: CI-V 27 1a 00 00 -> e0 94 fb
+## scope speed 1: CI-V 27 1a 00 01 -> e0 94 fb
+## scope speed 2: CI-V 27 1a 00 02 -> e0 94 fb
+## scope center type 0: CI-V 27 1c 00 00 -> e0 94 fa
+## scope center type 1: CI-V 27 1c 00 01 -> e0 94 fa
+## scope center type 2: CI-V 27 1c 00 02 -> e0 94 fa
+## scope VBW wide: CI-V 27 1d 00 01 -> e0 94 fb
+## scope VBW narrow: CI-V 27 1d 00 00 -> e0 94 fb
+## scope during TX on: CI-V 27 1b 01 -> e0 94 fb
+## scope during TX off: CI-V 27 1b 00 -> e0 94 fb
+## scope hold on: CI-V 27 17 00 01 -> e0 94 fb
+## scope hold off: CI-V 27 17 00 00 -> e0 94 fb
+## scope data out ON: CI-V 27 11 01 -> e0 94 fa
+## scope data out OFF: CI-V 27 11 00 -> e0 94 fa
+## preamp 0: CI-V 16 02 00 -> e0 94 fb
+## preamp 1: CI-V 16 02 01 -> e0 94 fb
+## preamp 2: CI-V 16 02 02 -> e0 94 fb
+## att 20dB: CI-V 11 20 -> (no reply)
+## att off: CI-V 11 00 -> e0 94 fb
+## AGC fast: CI-V 16 12 01 -> e0 94 fb
+    cmd 23000002 [23 gain/reference context (byte1, nibble)]
+## AGC slow: CI-V 16 12 03 -> e0 94 fb
+    cmd 2300000c [23 gain/reference context (byte1, nibble)]
+## AGC mid: CI-V 16 12 02 -> e0 94 fb
+    cmd 23000007 [23 gain/reference context (byte1, nibble)]
+## NB on: CI-V 16 22 01 -> e0 94 fb
+    cmd 00404506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## NB level 200: CI-V 14 12 02 00 -> e0 94 fb
+    cmd 240780c8 [24 3..7 (kHz?) param + tables]
+## NB off: CI-V 16 22 00 -> e0 94 fb
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## NR on: CI-V 16 40 01 -> e0 94 fb
+    cmd 00402506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 4c000004 [4c time-constant preset (nibble)]
+## NR level 200: CI-V 14 06 02 00 -> e0 94 fb
+    cmd 4c00000c [4c time-constant preset (nibble)]
+## NR off: CI-V 16 40 00 -> e0 94 fb
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## auto notch on: CI-V 16 41 01 -> e0 94 fb
+    cmd 00401506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## auto notch off: CI-V 16 41 00 -> e0 94 fb
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## manual notch on: CI-V 16 48 01 -> e0 94 fb
+    cmd 00400546 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 2501012c [25 IF filter width/shape (10-bit mag, sign, 2-bit type)]
+## notch pos 200: CI-V 14 0d 02 00 -> e0 94 fb
+    cmd 2501024c [25 IF filter width/shape (10-bit mag, sign, 2-bit type)]
+## manual notch off: CI-V 16 48 00 -> e0 94 fb
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## filter shape soft: CI-V 16 56 01 -> e0 94 fb
+## filter shape sharp: CI-V 16 56 00 -> e0 94 fb
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## twin peak on (RTTY only?): CI-V 16 4f 01 -> e0 94 fb
+## AF gain 50: CI-V 14 01 00 50 -> e0 94 fb
+    cmd 42808032 [42 two levels (byte1, byte2)]
+## AF gain 200: CI-V 14 01 02 00 -> e0 94 fb
+    cmd 422e2ec8 [42 two levels (byte1, byte2)]
+## RF gain 100: CI-V 14 02 01 00 -> e0 94 fb
+    cmd 23006407 [23 gain/reference context (byte1, nibble)]
+## RF gain 255: CI-V 14 02 02 55 -> (no reply)
+## squelch 100: CI-V 14 03 01 00 -> e0 94 fb
+## squelch 0: CI-V 14 03 00 00 -> e0 94 fb
+## PBT in 50: CI-V 14 07 00 50 -> e0 94 fb
+    cmd 2002984e [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## PBT in 128: CI-V 14 07 01 28 -> e0 94 fb
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## PBT out 200: CI-V 14 08 02 00 -> e0 94 fb
+    cmd 2002d06c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## PBT out 128: CI-V 14 08 01 28 -> e0 94 fb
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## RF power 50: CI-V 14 0a 00 50 -> e0 94 fb
+## mic gain 200: CI-V 14 0b 02 00 -> e0 94 fb
+## comp level 100: CI-V 14 0e 01 00 -> e0 94 fb
+## comp on: CI-V 16 44 01 -> e0 94 fb
+    cmd 40045555 [40 ? (store only)]
+## monitor on: CI-V 16 45 01 -> e0 94 fb
+## monitor level 200: CI-V 14 15 02 00 -> e0 94 fb
+## monitor off: CI-V 16 45 00 -> e0 94 fb
+## VOX on: CI-V 16 46 01 -> e0 94 fb
+## VOX off: CI-V 16 46 00 -> e0 94 fb
+## filter FIL1: CI-V 06 01 01 -> (no reply)
+    cmd 20028078 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## filter FIL3: CI-V 06 01 03 -> e0 94 fb
+    cmd 2002b060 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## filter FIL2: CI-V 06 01 02 -> e0 94 fb
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+## data mode on: CI-V 1a 06 01 01 -> e0 94 fb
+    cmd 20028078 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 22000019 [22 operating mode / demod select (byte1)]
+## data mode off: CI-V 1a 06 00 00 -> e0 94 fb
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 22000013 [22 operating mode / demod select (byte1)]
+## op mode CW: CI-V 06 03 01 -> (no reply)
+## CW pitch 200: CI-V 14 09 02 00 -> e0 94 14 09 01 28
+## key speed 200: CI-V 14 0c 02 00 -> e0 94 fb
+## break-in semi: CI-V 16 47 01 -> e0 94 fb
+## break-in off: CI-V 16 47 00 -> e0 94 fb
+## op mode LSB: CI-V 06 00 01 -> e0 94 fb
+    cmd 20428078 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 22010113 [22 operating mode / demod select (byte1)]
+## op mode AM: CI-V 06 02 01 -> e0 94 fb
+    cmd 200118b4 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 220a0a13 [22 operating mode / demod select (byte1)]
+    cmd 2300640b [23 gain/reference context (byte1, nibble)]
+## op mode FM: CI-V 06 05 01 -> e0 94 fb
+    cmd 21000027 [21 filter shape preset (6-bit idx + 12-bit signed)] FIRST
+    cmd 220c0c13 [22 operating mode / demod select (byte1)]
+    cmd 23006400 [23 gain/reference context (byte1, nibble)]
+## op mode RTTY: CI-V 06 04 01 -> e0 94 fb
+    cmd 1080bb0d [10 RX frequency (+36 kHz IF), 2 words by bit23] f=14138125 Hz (dial 14102125 Hz)
+    cmd 00400d06 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 2042d088 [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 22040413 [22 operating mode / demod select (byte1)]
+    cmd 23006403 [23 gain/reference context (byte1, nibble)]
+    cmd 41083c88 [41 decay/smoothing rate (16 steps)]
+## op mode USB: CI-V 06 01 02 -> e0 94 fb
+    cmd 1080b2c0 [10 RX frequency (+36 kHz IF), 2 words by bit23] f=14136000 Hz (dial 14100000 Hz)
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 2002986c [20 filter coeffs A (PBT/notch-like, two 9-bit fields)]
+    cmd 22000013 [22 operating mode / demod select (byte1)]
+    cmd 23006407 [23 gain/reference context (byte1, nibble)]
+    cmd 41083c08 [41 decay/smoothing rate (16 steps)]
+## freq 7.100.000: CI-V 05 00 00 10 07 00 -> e0 94 fb
+    cmd 1000006c [10 RX frequency (+36 kHz IF), 2 words by bit23] f=7123648 Hz (dial 7087648 Hz)
+    cmd 1080e300 [10 RX frequency (+36 kHz IF), 2 words by bit23] f=7136000 Hz (dial 7100000 Hz)
+## freq 50.100.000: CI-V 05 00 00 10 50 00 -> e0 94 fa
+## freq 14.100.000: CI-V 05 00 00 10 14 00 -> e0 94 fb
+    cmd 100000d7 [10 RX frequency (+36 kHz IF), 2 words by bit23] f=14148352 Hz (dial 14112352 Hz)
+    cmd 1080b2c0 [10 RX frequency (+36 kHz IF), 2 words by bit23] f=14136000 Hz (dial 14100000 Hz)
+## PTT TX on: CI-V 1c 00 01 -> e0 94 fb
+    cmd 00400106 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 01000009 [01 slew enable/dir? (bit2)]
+    cmd 00000100 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 4a6464c8 [4a two log-taper levels (alt)]
+## PTT TX off: CI-V 1c 00 00 -> e0 94 fb
+    cmd 01000089 [01 slew enable/dir? (bit2)]
+    cmd 00000106 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 4a006400 [4a two log-taper levels (alt)]
+    cmd 01000088 [01 slew enable/dir? (bit2)]
+    cmd 01000089 [01 slew enable/dir? (bit2)]
+    cmd 00400106 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+    cmd 00400506 [00 ctrl (bit23 picks C1/C2 fallback; bit9/5/13/12 mode+reset)]
+## tuner on: CI-V 1c 01 01 -> e0 94 fa
+## tuner off: CI-V 1c 01 00 -> e0 94 fb

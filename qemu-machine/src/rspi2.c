@@ -47,6 +47,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #include "rz_a1h.h"
@@ -58,7 +59,17 @@ struct RZA1HRspi2State {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     uint8_t regs[RZA1H_RSPI2_SIZE];
+
+    /* Frame logger (2026-09-24): bytes written since the last SPCMD2 bit-7 toggle (the
+     * driver's per-transfer start), logged as one line once the bus has been quiet for
+     * RSPI2_FRAME_GAP_NS of emulated time. RZA1H_DEBUG=rspi2 -> frames, rspi2byte -> bytes. */
+    uint8_t frame[64];
+    int frame_len;
+    uint64_t frames;
+    QEMUTimer *flush_timer;
 };
+
+#define RSPI2_FRAME_GAP_NS 20000
 
 #define RSPI2_SPCR2  0x00
 #define RSPI2_SPSR2  0x03
@@ -66,6 +77,27 @@ struct RZA1HRspi2State {
 #define RSPI2_SPCMD2 0x20
 
 #define RSPI2_SPSR2_TX_READY (1 << 6)
+
+static void rza1h_rspi2_flush(RZA1HRspi2State *s)
+{
+    char hex[3 * 64 + 1];
+    int n = 0;
+
+    if (!s->frame_len) {
+        return;
+    }
+    for (int i = 0; i < s->frame_len; i++) {
+        n += snprintf(hex + n, sizeof(hex) - n, "%s%02x", i ? " " : "", s->frame[i]);
+    }
+    s->frames++;
+    rza1h_debug("rspi2", "frame #%" PRIu64 " (%d bytes): %s", s->frames, s->frame_len, hex);
+    s->frame_len = 0;
+}
+
+static void rza1h_rspi2_flush_cb(void *opaque)
+{
+    rza1h_rspi2_flush(RZA1H_RSPI2(opaque));
+}
 
 static uint64_t rza1h_rspi2_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -87,13 +119,19 @@ static void rza1h_rspi2_write(void *opaque, hwaddr offset, uint64_t value,
     RZA1HRspi2State *s = RZA1H_RSPI2(opaque);
 
     if (offset == RSPI2_SPDR2) {
-        /* Always surfaced, chardev or not -- see file comment (matches
-         * scif.c's own FTDR convention). */
-        rza1h_debug("rspi2", "TX %02x ('%c')",
+        rza1h_debug("rspi2byte", "TX %02x ('%c')",
                    (uint8_t)value,
                    ((uint8_t)value >= 0x20 && (uint8_t)value < 0x7f)
                        ? (uint8_t)value : '.');
+        if (s->frame_len < (int)sizeof(s->frame)) {
+            s->frame[s->frame_len++] = value;
+        }
+        timer_mod(s->flush_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + RSPI2_FRAME_GAP_NS);
         return;
+    }
+    if (offset == RSPI2_SPCMD2 && (value & 0x80) && s->frame_len) {
+        rza1h_rspi2_flush(s);     /* a new transfer starts: close the previous frame */
     }
 
     memcpy(&s->regs[offset], &value, size);
@@ -112,6 +150,7 @@ static void rza1h_rspi2_reset(DeviceState *dev)
     RZA1HRspi2State *s = RZA1H_RSPI2(dev);
 
     memset(s->regs, 0, sizeof(s->regs));
+    s->frame_len = 0;
 }
 
 static void rza1h_rspi2_init(Object *obj)
@@ -122,6 +161,7 @@ static void rza1h_rspi2_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &rza1h_rspi2_ops, s,
                           TYPE_RZA1H_RSPI2, RZA1H_RSPI2_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+    s->flush_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rza1h_rspi2_flush_cb, s);
 }
 
 static void rza1h_rspi2_class_init(ObjectClass *oc, const void *data)
