@@ -102,6 +102,8 @@ def main():
                          "the VM then runs --after more seconds before the capture")
     ap.add_argument("--after", type=float, default=20.0)
     ap.add_argument("--stderr", help="write QEMU's stderr (RZA1H_DEBUG logs) to this file")
+    ap.add_argument("--icount", default=DEFAULT_ICOUNT,
+                    help="-icount value (e.g. shift=1,sleep=off for faster-than-real-time)")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -112,7 +114,7 @@ def main():
     proc = subprocess.Popen(
         [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none", "-global", f"rza1h-riic.image={image}",
-         "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait"]
+         "-icount", args.icount, "-qmp", f"unix:{sock},server,nowait"]
         + (["-gdb", "tcp::1234"] if args.poke else []),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=open(args.stderr, "w") if args.stderr else subprocess.DEVNULL)

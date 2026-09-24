@@ -634,6 +634,20 @@ static const MemoryRegionOps rza1h_mtu2_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+/* After the first compare match of an explicitly armed (TGI4A-style) event, the real
+ * free-running TCNT only matches TGRx again once per full 16-bit wrap: 0x10000 counts =
+ * 2.048 ms at MTU2_FREQ_HZ. Until 2026-09-24 rearm's periodic ptimer kept re-firing at the
+ * 16 us MTU2_CH4A_ONESHOT_COUNTS delay instead -- ~62.5 kHz each for TGI4A/4B/4D, forever,
+ * and every expiry is a vCPU <-> main-loop handoff under -icount. That storm was the
+ * emulator's single biggest cost (tools/bench_boot.py; ~190k callbacks per emulated
+ * second). Called from inside ptimer_tick's own transaction. */
+static void rza1h_mtu2_after_fire(RZA1HMtu2Event *ev)
+{
+    if (!ev->arms_on_tstr) {
+        ptimer_set_limit(ev->timer, 0x10000, 1);
+    }
+}
+
 static void rza1h_mtu2_ch3a_tick(void *opaque)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
@@ -650,6 +664,7 @@ static void rza1h_mtu2_ch4a_tick(void *opaque)
     rza1h_debug("mtu2", "ch4 TGI4A compare-match (GIC 159)");
     s->regs[MTU2_TSR_4] |= (1 << s->ch4a.bit);
     rza1h_mtu2_update_irq(s, &s->ch4a);
+    rza1h_mtu2_after_fire(&s->ch4a);
 }
 
 static void rza1h_mtu2_ch4b_tick(void *opaque)
@@ -659,6 +674,7 @@ static void rza1h_mtu2_ch4b_tick(void *opaque)
     rza1h_debug("mtu2", "ch4 TGI4B compare-match (GIC 160)");
     s->regs[MTU2_TSR_4] |= (1 << s->ch4b.bit);
     rza1h_mtu2_update_irq(s, &s->ch4b);
+    rza1h_mtu2_after_fire(&s->ch4b);
 }
 
 static void rza1h_mtu2_ch4c_tick(void *opaque)
@@ -677,6 +693,7 @@ static void rza1h_mtu2_ch4d_tick(void *opaque)
     rza1h_debug("mtu2", "ch4 TGI4D compare-match (GIC 162)");
     s->regs[MTU2_TSR_4] |= (1 << s->ch4d.bit);
     rza1h_mtu2_update_irq(s, &s->ch4d);
+    rza1h_mtu2_after_fire(&s->ch4d);
 }
 
 static void rza1h_mtu2_reset(DeviceState *dev)

@@ -91,6 +91,9 @@ struct RZA1HOstmState {
  * result once tested -- revert to 500000000 if this doesn't hold up. */
 #define OSTM_FREQ_HZ 32000000
 
+#define OSTM_CTL_MD1 0x02                 /* 1 = free-running compare mode */
+#define OSTM_FREERUN_WRAP (1ULL << 32)    /* counts per CNT wrap */
+
 static uint32_t rza1h_ostm_cnt(RZA1HOstmState *s)
 {
     int64_t elapsed_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->start_ns;
@@ -127,12 +130,21 @@ static void rza1h_ostm_write(void *opaque, hwaddr offset, uint64_t value,
         s->cmp = value;
         break;
     case 0x14: /* TS -- start */
-        rza1h_debug("ostm", "TS: started, cmp=%u (periodic -- own ticks not logged, "
+        rza1h_debug("ostm", "TS: started, cmp=%u ctl=0x%x (periodic -- own ticks not logged, "
                    "see rza1h_debug.h's own \"boundary events, not noise\" design)",
-                   s->cmp);
+                   s->cmp, s->ctl);
         s->start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         ptimer_transaction_begin(s->timer);
-        ptimer_set_limit(s->timer, s->cmp ? s->cmp : 1, 1);
+        if (s->ctl & OSTM_CTL_MD1) {
+            /* Free-running compare mode: CNT counts up from 0 and matches CMP once per 2^32
+             * wrap. The firmware runs OSTM1 this way with CMP=0 purely as a counter for its
+             * busy-wait delays (ostm1_busywait_delay_us). Until 2026-09-24 this used a
+             * 1-count period for CMP=0 -- a 32 MHz ptimer, every tick a vCPU/main-loop
+             * handoff under -icount, which ran boot's early delay loops at ~0.01x. */
+            ptimer_set_limit(s->timer, s->cmp ? s->cmp : OSTM_FREERUN_WRAP, 1);
+        } else {
+            ptimer_set_limit(s->timer, s->cmp ? s->cmp : 1, 1);
+        }
         ptimer_run(s->timer, 0);
         ptimer_transaction_commit(s->timer);
         break;
@@ -166,6 +178,11 @@ static void rza1h_ostm_tick(void *opaque)
      * (already handled correctly by QEMU's real arm_gic device) -- there's
      * no separate "clear pending" register in this device to model. */
     qemu_irq_pulse(s->irq);
+    if (s->ctl & OSTM_CTL_MD1) {
+        /* free-running: the next match is one full wrap later (inside ptimer_tick's
+         * transaction, so the new period takes effect for the next expiry) */
+        ptimer_set_limit(s->timer, OSTM_FREERUN_WRAP, 1);
+    }
 }
 
 static void rza1h_ostm_reset(DeviceState *dev)
