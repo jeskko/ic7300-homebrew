@@ -34,7 +34,7 @@ from vdc5_framebuffer_peek import GPIO_PATH  # noqa: E402
 
 OSTM0_CNT = 0xFCFEC004
 OSTM_HZ = 32_000_000
-REF = HERE / "screenshots" / "2026-09-24-main-screen-14100.png"
+REF = HERE / "screenshots" / "2026-09-24-main-screen-factory-defaults.png"  # factory-default EEPROM
 FB_ADDR, FB_STRIDE, W, H = 0x20974FE0, 960, 480, 272
 
 

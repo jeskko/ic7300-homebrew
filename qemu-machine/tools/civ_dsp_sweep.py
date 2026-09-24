@@ -7,7 +7,7 @@ collects the fake DSP's "cmd ..." log lines (they only log a command word that c
 stamped inside that step's window. Log timestamps are g_get_monotonic_time(), the same
 clock as Python's time.monotonic().
 
-Usage: civ_dsp_sweep.py [--addr 0x00] [--settle S] [--out FILE]
+Usage: civ_dsp_sweep.py [--addr 0x94] [--settle S] [--out FILE]
 Steps are the STEPS table below: (label, CI-V bytes).
 """
 
@@ -81,8 +81,8 @@ LOG_RE = re.compile(r"\[rza1h:(\w+) t=([0-9.]+)\] (.*)")
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--addr", type=lambda x: int(x, 0), default=0x00,
-                    help="radio CI-V address (the synthetic EEPROM leaves it 0x00)")
+    ap.add_argument("--addr", type=lambda x: int(x, 0), default=0x94,
+                    help="radio CI-V address (factory default 0x94)")
     ap.add_argument("--settle", type=float, default=1.5)
     ap.add_argument("--out")
     ap.add_argument("--debug", default="dsp", help="RZA1H_DEBUG devices to log and collect")

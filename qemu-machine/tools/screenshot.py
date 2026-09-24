@@ -102,6 +102,7 @@ def main():
                          "the VM then runs --after more seconds before the capture")
     ap.add_argument("--after", type=float, default=20.0)
     ap.add_argument("--stderr", help="write QEMU's stderr (RZA1H_DEBUG logs) to this file")
+    ap.add_argument("--image", help="EEPROM image to use instead of the default one")
     ap.add_argument("--icount", default=DEFAULT_ICOUNT,
                     help="-icount value (e.g. shift=1,sleep=off for faster-than-real-time)")
     args = ap.parse_args()
@@ -109,6 +110,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     image = HERE / ("riic2_eeprom.img" if args.no_pwrk else "riic2_eeprom_pwrk_test.img")
+    if args.image:
+        image = Path(args.image)
     sock = str(out / "q.sock")  # per --out so runs can go in parallel (short: 108-byte limit)
     Path(sock).unlink(missing_ok=True)
     proc = subprocess.Popen(

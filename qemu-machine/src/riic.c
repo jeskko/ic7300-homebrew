@@ -103,6 +103,9 @@
 #include "hw/core/ptimer.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h" /* qdev_prop_set_drive_err */
+#include "system/block-backend.h"           /* blk_by_name */
+#include "qapi/error.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/nvram/eeprom_at24c.h"
@@ -209,6 +212,9 @@ struct RZA1HRiicState {
      * file comment) -- not read from or written into guest RAM. */
     RiicPhase phase;
     uint16_t mem_addr;
+    bool nacked;        /* last address byte NACKed; bus still ours (2026-09-24) */
+    bool rx_dummy;      /* next DRR read is the post-address dummy read (2026-09-24) */
+    uint8_t rx_addr;    /* the address byte it returns */
     bool sp_pending;    /* CR2=SP seen; raise SPI once the in-flight DRR
                           * read (the byte it was requested ahead of)
                           * completes, not immediately -- see file
@@ -224,6 +230,7 @@ struct RZA1HRiicState {
     bool eeprom_write_pending;
     int64_t eeprom_write_busy_until_ns;
 
+    char *eeprom_drive; /* optional -drive id: persistent EEPROM (2026-09-24, see realize) */
     char *image_path;   /* QOM property, unchanged CLI usage (-global rza1h-riic.image=...) --
                           * read once, at realize() time, only to seed the real EEPROM slave's
                           * initial content (see rza1h_riic_realize()); no longer kept open or
@@ -552,7 +559,16 @@ static uint64_t rza1h_riic_read(void *opaque, hwaddr offset, unsigned size)
     case RIIC_REG_DRT: return s->drt; /* write-only on real hardware; harmless */
     case RIIC_REG_DRR:
         if (s->phase == RIIC_READING) {
-            uint8_t byte = i2c_recv(s->eeprom_bus); /* real device's own address-counter/
+            /* 2026-09-24: the first DRR read after switching to receive is the RIIC's dummy
+             * read -- on real hardware it returns the slave-address byte just sent and only
+             * starts clocking in the first data byte (the driver, FUN_2001dbcc, discards it).
+             * This model used to hand out a real slave byte here, so every multi-byte read
+             * came back one address late; the EEPROM image compensated by storing content at
+             * +1, but the firmware's own writes (at nominal offsets) then never read back
+             * correctly -- e.g. the "Partial" reset marker vs the 0x3e80 signature check. */
+            uint8_t byte = s->rx_dummy ? s->rx_addr : i2c_recv(s->eeprom_bus);
+
+            s->rx_dummy = false; /* real device's own address-counter/
                                                        * wraparound/dummy-read handling -- see
                                                        * the struct's own comment on why this
                                                        * replaced riic_eeprom_read(). */
@@ -586,8 +602,17 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
     case RIIC_REG_CR1: s->cr1 = value; break;
     case RIIC_REG_CR2:
         s->cr2 = value & ~CR2_BBSY; /* BBSY is synthesized, not stored */
-        if ((value & CR2_ST) && s->phase == RIIC_IDLE) {
-            rza1h_debug("riic", "riic%u: START condition", s->channel);
+        if (((value & CR2_ST) && s->phase == RIIC_IDLE) ||
+            ((value & CR2_RS) && s->phase == RIIC_IDLE && s->nacked)) {
+            /* 2026-09-24: a repeated start right after a NACK is the driver's ACK polling --
+             * its NAKI handler (0x2001dc8c) clears NACKF, enables STIE|NAKIE and writes
+             * CR2 = RS to resend the address until the EEPROM's write cycle ends. The master
+             * still owns the bus after a NACK, so this is a fresh start. Before, RS was only
+             * honoured in RIIC_WAIT_RESTART, the retry vanished, and the second EEPROM write
+             * of any burst (e.g. the whole factory reset) waited forever. */
+            rza1h_debug("riic", "riic%u: START condition%s", s->channel,
+                        s->nacked ? " (repeated start after NACK)" : "");
+            s->nacked = false;
             s->phase = RIIC_WAIT_ADDR;
             s->sp_pending = false;
             s->eeprom_write_pending = false; /* fresh transaction -- see EEPROM_WRITE_CYCLE_NS's
@@ -622,6 +647,7 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
         } else if (value & CR2_SP) {
             rza1h_debug("riic", "riic%u: STOP requested (phase %u)",
                        s->channel, (unsigned)s->phase);
+            s->nacked = false;
             /* Real STOP request -- see file comment on why this doesn't
              * raise SPI immediately (it follows the in-flight DRR read
              * the driver always issues right after, per the traced
@@ -717,6 +743,7 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                            "cycle", s->channel);
                 s->sr2 |= SR2_NACK;
                 s->phase = RIIC_IDLE;
+                s->nacked = true;
                 riic_schedule_irq(s, IRQ_NAKI);
                 break;
             }
@@ -740,6 +767,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
                            s->channel, (unsigned)(value >> 1));
             }
             if (value & 1) {
+                s->rx_dummy = true;
+                s->rx_addr = value;
                 s->phase = RIIC_READING; /* shouldn't normally happen on
                                            * the very first address byte
                                            * (real transactions go
@@ -820,6 +849,8 @@ static void rza1h_riic_write(void *opaque, hwaddr offset, uint64_t value,
              * re-fire the start event on the same already-matched device, exactly matching real
              * repeated-start semantics. */
             i2c_start_transfer(s->eeprom_bus, value >> 1, true);
+            s->rx_dummy = true;
+            s->rx_addr = value;
             s->phase = RIIC_READING;
             riic_schedule_irq(s, IRQ_RI); /* arm step -- see file
                                             * comment on why this
@@ -936,8 +967,30 @@ static void rza1h_riic_realize(DeviceState *dev, Error **errp)
          * at24c_eeprom_realize()/at24c_eeprom_props in qemu-src/hw/nvram/eeprom_at24c.c) --
          * matches this project's existing, non-cross-boot-persistent usage exactly; writes now
          * genuinely take effect for the rest of this run instead of being silently dropped. */
-        at24c_eeprom_init_rom(s->eeprom_bus, RIIC2_EEPROM_I2C_ADDR, RIIC2_EEPROM_ROM_SIZE,
-                              rom, (uint32_t)rom_len);
+        if (s->eeprom_drive && s->eeprom_drive[0]) {
+            /* 2026-09-24: optional persistence. `-drive if=none,id=X,format=raw,file=F
+             * -global rza1h-riic.eeprom-drive=X` backs the EEPROM with F: at24c loads it at
+             * realize and writes the whole image back after every transaction that changed
+             * it, so whatever the firmware writes (e.g. its own factory defaults, see
+             * tools/build_riic_eeprom_image.py) survives into the file. Takes precedence over
+             * `image`. */
+            BlockBackend *blk = blk_by_name(s->eeprom_drive);
+            DeviceState *ee;
+
+            if (!blk) {
+                error_setg(errp, "rza1h-riic%u: no drive '%s'", s->channel, s->eeprom_drive);
+                return;
+            }
+            ee = DEVICE(i2c_slave_new("at24c-eeprom", RIIC2_EEPROM_I2C_ADDR) /* TYPE_AT24C_EE is private to eeprom_at24c.c */);
+            qdev_prop_set_uint32(ee, "rom-size", RIIC2_EEPROM_ROM_SIZE);
+            if (!qdev_prop_set_drive_err(ee, "drive", blk, errp) ||
+                !i2c_slave_realize_and_unref(I2C_SLAVE(ee), s->eeprom_bus, errp)) {
+                return;
+            }
+        } else {
+            at24c_eeprom_init_rom(s->eeprom_bus, RIIC2_EEPROM_I2C_ADDR, RIIC2_EEPROM_ROM_SIZE,
+                                  rom, (uint32_t)rom_len);
+        }
     } else if (s->channel == 1) {
         i2c_slave_create_simple(s->eeprom_bus, "rx8803", RIIC1_RTC_I2C_ADDR);
     }
@@ -969,6 +1022,7 @@ static void rza1h_riic_init(Object *obj)
 static const Property rza1h_riic_properties[] = {
     DEFINE_PROP_UINT32("channel", RZA1HRiicState, channel, 0),
     DEFINE_PROP_STRING("image", RZA1HRiicState, image_path),
+    DEFINE_PROP_STRING("eeprom-drive", RZA1HRiicState, eeprom_drive),
 };
 
 static void rza1h_riic_class_init(ObjectClass *oc, const void *data)

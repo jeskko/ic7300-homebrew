@@ -33,15 +33,13 @@ notes/eeprom-catalogue.md):
                      reference "SX3765 V0.30-000" (DAT_2002a088 ->
                      0x2018d786).
 
-**The +1 offset below is not a typo.** riic.c's own comment (and this
-project's own live tracing) found a real "dummy read after switching to
-receive mode" in the driver's own RI interrupt handler (FUN_2001dbcc) --
-a dead store the decompiler drops entirely from the visible C. The byte
-the driver actually *keeps* for destination position 0 of any multi-byte
-RIIC2 read comes from `mem_addr + 1`, not `mem_addr` -- confirmed by
-watching a byte-perfect reference string arrive shifted left by one with
-trailing garbage until this offset was applied. So the *content* goes at
-0x3e01/0x3e81/0x3fc1, one byte past each nominal parameter-ID offset.
+**Offsets are nominal (2026-09-24).** Until then the image stored everything
+at +1: riic.c served real EEPROM data on the RIIC's post-address dummy read
+(FUN_2001dbcc discards it), so reads came back one address late and the image
+compensated. The firmware's own writes land at nominal offsets, though, so
+nothing it saved ever read back correctly. riic.c now models the dummy read
+(it returns the address byte, no EEPROM data consumed) and the image uses the
+firmware's real offsets.
 """
 
 from __future__ import annotations
@@ -63,24 +61,30 @@ ENTRIES: list[tuple[int, bytes]] = [
     # system_mode_request_dispatch skips the boot splash (FUN_2002a2a4) entirely -- and that
     # splash is the only thing a real radio draws at power-on without user input.
     (0x1a8f, bytes([0x01])),
-    # VFO state (2026-09-24): not in any g_nvram_region_table region -- loaded by
-    # nvram_wearleveled_ring_load (0x2001f6bc) from slot *EEPROM[0x3e40] (0..7) at
-    # 0x2000 + idx*0x40 into 0x203deaac (+4 VFO A Hz, +8 mode, +0xc VFO B, +0x10 mode,
-    # +0x18 backup copy). Blank = 0 Hz on screen and B0S band filter. These are the
-    # factory defaults vfo_state_load_factory_defaults (0x20061fbc) copies from ROM
-    # 0x2019b978/0x2019b980: 14.100.000 MHz, mode word 0x08080011 (USB/FIL2), A and B.
-    (0x2000, bytes.fromhex(
-        "00000000" "2026d700" "11000808" "2026d700" "11000808" "08000100"
-        "00000000" "2026d700" "11000808" "2026d700" "11000808" "00000000")),
-    (0x3e40, bytes([0x00])),
+    # (VFO state at 0x2000.. and its slot index 0x3e40 used to be hand-written here; the
+    # factory base image now carries the firmware's own values, which also fill a slot
+    # field the hand-written copy zeroed.)
 ]
 
-DUMMY_READ_SHIFT = 1
+DUMMY_READ_SHIFT = 0  # see module docstring (was 1 before riic.c modelled the dummy read)
 
 
-def build(output_path: Path, size: int = DEFAULT_SIZE) -> None:
-    data = bytearray(size)
-    for nominal_offset, content in ENTRIES:
+FACTORY_BASE = Path(__file__).resolve().parent / "eeprom_factory_defaults.bin"
+
+
+def build(output_path: Path, size: int = DEFAULT_SIZE, pwrk_hold: bool = False) -> None:
+    # 2026-09-24: start from the firmware's own factory defaults (captured by
+    # tools/capture_factory_eeprom.py via a real All Reset), so every setting -- CI-V address
+    # 0x94, etc. -- has its real default instead of 0. ENTRIES then only pin what the boot
+    # path needs (they already agree with the factory image; kept for documentation).
+    data = bytearray(FACTORY_BASE.read_bytes()[:size]) if FACTORY_BASE.exists() else bytearray(size)
+    data += bytes(size - len(data))
+    entries = list(ENTRIES)
+    if pwrk_hold:
+        # riic2_eeprom_pwrk_test.img: bit 7 of 0x3e00 clear takes the PWRK-hold power-on
+        # branch (FUN_2002b29c), see README.md
+        entries.append((0x3e00, bytes([0x7F])))
+    for nominal_offset, content in entries:
         real_offset = nominal_offset + DUMMY_READ_SHIFT
         end = real_offset + len(content)
         if end > size:
@@ -91,16 +95,18 @@ def build(output_path: Path, size: int = DEFAULT_SIZE) -> None:
         data[real_offset:end] = content
     output_path.write_bytes(bytes(data))
     print(f"wrote {output_path} ({size:#x} bytes)")
-    for nominal_offset, content in ENTRIES:
-        print(f"  {nominal_offset:#06x} (+{DUMMY_READ_SHIFT} dummy-read shift "
-             f"-> {nominal_offset + DUMMY_READ_SHIFT:#06x}): {content!r}")
+    for nominal_offset, content in entries:
+        print(f"  {nominal_offset + DUMMY_READ_SHIFT:#06x}: {content!r}")
 
 
 def main(argv: list[str]) -> int:
+    pwrk = "--pwrk-hold" in argv
+    argv = [a for a in argv if a != "--pwrk-hold"]
     output_path = Path(argv[0]) if argv else (
-        Path(__file__).resolve().parent.parent / "riic2_eeprom.img"
+        Path(__file__).resolve().parent.parent /
+        ("riic2_eeprom_pwrk_test.img" if pwrk else "riic2_eeprom.img")
     )
-    build(output_path)
+    build(output_path, pwrk_hold=pwrk)
     print(f"\nUsage: pass this as RIIC2's backing image, e.g.\n"
          f"  qemu-src/build/qemu-system-arm -M rz-a1h ... \\\n"
          f"    -global rza1h-riic.image={output_path}")
