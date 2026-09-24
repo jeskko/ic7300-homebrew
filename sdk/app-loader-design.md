@@ -6,113 +6,122 @@ they're settled. See `README.md` for how `sdk/` relates to `notes/`: this file m
 genuine design decisions, and is expected to keep changing.
 
 **Goal for the first cut, per the user's own scoping (2026-09-25)**: the simplest possible real
-proof of concept — the radio boots a one-time-modified `body.bin`, something (TBD, see "Open" below)
-triggers the hook, the hook loads a tiny app from the SD card, the app emits something over the CI-V bus,
-and the radio resumes completely normal operation with no crash, no hang, no visible side effect other
-than the one CI-V message. Nothing about a real app SDK, a real "Homebrew Apps" UI, or safety hardening
-needs solving yet — those come after this one round-trip is proven, the same way the firmware-update
-reframing was proven in the emulator before anything else was built on top of it.
+proof of concept — the radio boots a one-time-modified `body.bin`, something triggers the hook, the hook
+loads a tiny app from the SD card, the app emits something over the CI-V bus, and the radio resumes
+completely normal operation with no crash, no hang, no visible side effect other than the one CI-V
+message. Nothing about a real app SDK, a real "Homebrew Apps" UI, or safety hardening needs solving yet —
+those come after this one round-trip is proven, the same way the firmware-update reframing was proven in
+the emulator before anything else was built on top of it.
 
-## Hook point: `sd_menu_dispatch_task`, a repurposed dead case ID
+**2026-09-25, second pass**: an Opus fresh-eyes investigation (dispatched from this design's first draft)
+resolved both blocking open questions from the first pass — the CI-V staging cookbook, and the real
+SD-card-menu tap-to-post chain (see `notes/kernel-rtos.md`'s "CI-V reply staging" and "`sd_menu_dispatch_task`'s
+command dispatch" sections for the full verified detail; spot-checked against real listings/decompiles
+before being recorded, per this project's own verification discipline). That work also surfaced a cleaner
+hook point than the one this file originally proposed — see below.
 
-Chosen over the other Phase-2 candidates (`kernel_start`'s mystery task slot, a wholly new task) because
-it sidesteps two open questions at once, not just one:
+## Hook point: revised — a dead SD-UI *state* over a dead dispatch *case*
 
-- **No new task, no ASID/privilege question.** `sdk/api/task-model.md` flags "does a new task need
-  special ASID/MMU handling" as the single highest-priority open question for *any* app — real Icom
-  customization (per-task ASID tagging in `swi_handler`, see `notes/kernel-rtos.md`'s RTOS-identity
-  section) that hasn't been tested. Running the loader as a **plain function call inside an already-live,
-  already-fully-privileged task's own context** (not a new task, not `itron_act_tsk`) makes that question
-  moot for this first cut — whatever access `sd_menu_dispatch_task` already has (SCIF0/CI-V, the SD
-  filesystem, everything else), our code inherits for free, no syscall trampoline or privilege step needed.
-- **No jump-table growth, no new task descriptor to place.** `notes/kernel-rtos.md`'s new
-  "`sd_menu_dispatch_task`'s command dispatch" section (2026-09-25) confirms this task's 42-case dispatch
-  is a literal inline ARM computed-branch table, byte-listing-verified, with 12 case IDs (`0x00, 0x02-0x06,
-  0x0a, 0x0e-0x10, 0x12-0x14`) that are real, currently-unreachable no-ops today. Repurposing one — current
-  pick: **`0x14`** (arbitrary choice among the 12, picked only because it's the last slot before real case
-  `0x15`; no other reason) — means the entire patch is **one 4-byte ARM instruction** (`b 0x20027710` →
-  `b <new function's address>`, at listing address `0x200275ac`), changing nothing else about the existing
-  image. Every other case, every other function, is untouched.
-- **The dispatcher's own success/failure convention already matches "exit cleanly."** Every case returns
-  0/1 for "done" or anything else for "still busy, re-enter" (`notes/kernel-rtos.md`'s decompile). Our new
-  case just needs to return `0` and the task falls straight back into its normal `FUN_20186f60` wait —
-  identical to what happens after Format, Save Setting, or any other real menu action completes. No custom
-  "resume radio operation" logic needs writing at all; it's the existing convention, for free.
+The first draft of this design proposed repurposing one of `sd_menu_dispatch_task`'s 12 dead case IDs
+(still a completely valid, verified mechanism — see `notes/kernel-rtos.md`). **Revised recommendation**:
+hook a dead entry in the **SD-UI per-state tick table** (`0x2019b70c`, 104 entries, ticked every pass of
+`main_idle_loop`/`main_operating_loop` by the function currently misnamed `digital_mode_log_writer_tick`,
+`0x2005d234`) instead, for one concrete reason the case-based approach doesn't have:
 
-## Where the loader code itself lives: appended to `body.bin`, not free RAM
+- **Context match with the CI-V TX pump avoids a real race.** The verified CI-V cookbook
+  (`notes/kernel-rtos.md`) requires staging a reply and setting `drv |= 0x40` for `civ_tx_pump` to pick up
+  — but `civ_tx_pump` itself runs from `main_idle_loop`'s own polling sites. If the app's CI-V emission
+  runs inside `sd_menu_dispatch_task` (a separate RTOS task, scheduled independently), there's a genuine
+  window where the pump reads/write-backs `drv` in the middle of the app's own read-modify-write,
+  silently dropping the frame — survivable with a lock/poll/retry loop, but avoidable entirely by running
+  the whole app (load, call, CI-V emit) from a hook that ticks in `main_idle_loop`'s **own** context, the
+  same one the pump uses. A dead state in the `0x2019b70c` table gives exactly that.
+- **This table has not yet been swept for a dead/no-op entry** the way `sd_menu_dispatch_task`'s case
+  table was — concrete next step, same methodology (read the raw dispatch code/table, find an ID that
+  currently resolves to a no-op).
+- The `sd_menu_dispatch_task` case-based hook remains a fully valid fallback (e.g. if every SD-UI state
+  turns out to be live, or for a later app that specifically wants SD-menu-task context for heavier file
+  I/O) — nothing about it was wrong, it just carries the cross-task CI-V race that the state-table hook
+  avoids for free. Keep both documented; pick per-app.
 
-The loader function (the code that runs at the repurposed case ID) has to be **baked into the flashed
-image**, since nothing else would ever put it in RAM. `tools/icom_fw`'s packer already round-trip-verifies
-**"a length-changing append"** at the end of a real decompressed body (`tools/verify_pack.py`, cited in
-`roadmap.md`'s Phase 1) — so the loader's machine code gets appended as new bytes at the end of the
-decompressed `body.bin` (current static image ends at `0x20395b18`, confirmed in
-`notes/band-scope-state-history.md`'s broad sweep), and the one jump-table slot above points at it. No new
-packer work needed; this is exactly the capability that tooling gap already closed.
+Either hook point shares the same fail-closed shape: return/reset to idle (`0` for the dispatch-task case
+convention, or the SD-UI state byte `0x20390368` back to `0`) on any missing/unreadable app file, exactly
+matching how every existing real case/state already behaves on completion — no new "resume radio
+operation" logic needs writing, it's the existing convention for free either way.
 
-## Where the app blob lives at runtime: free RAM, loaded fresh from SD each run
+## Loader code lives appended to `body.bin`; the app blob loads fresh from SD into free RAM
 
-Confirmed-empty candidate: **`0x20500000`+** — inside the Ghidra project's own `ram_placeholder` memory
-block (`0x20395b18`-`0x209ffffe`, real RZ/A1H on-chip RAM per `notes/memory-map.md`'s MMU section, which
-identity-maps the whole `0x20000000`-`0x209fffff` 10 MB as one region), comfortably clear of both the
-static image's own end and the "hot" application BSS window `notes/band-scope-state.md` already mapped
-(`0x203f0000`-`0x20404770` — genuinely live data, not free) — checked directly, zero `references_to` hits
-at `0x20500000` itself, consistent with the broader confirmed-empty `0x20408000`-`0x209c8000` sweep in
-`notes/band-scope-state-history.md`. ~6.7 MB of headroom above it.
+Unchanged from the first pass:
 
-**Not yet independently verified**: Ghidra's own `ram_placeholder` block is marked `rw-` (no execute) —
-this is very likely just this project's own conservative bookkeeping when the block was added (a single
-10 MB MMU section entry shouldn't plausibly have a sub-region execute-never bit baked in, and nothing in
-`notes/memory-map.md` suggests one), not a real hardware/MMU restriction, but this is an assumption, not a
-confirmed fact — worth a real check (live JTAG, or a QEMU single-step test in `qemu-machine/`) before
-trusting that code placed here actually executes, rather than finding out the hard way on real hardware.
+- The **loader** (the small fixed function that runs at the repurposed hook, reads the app file, copies it
+  into RAM, and calls it) has to be baked into the flashed image — `tools/icom_fw`'s packer already
+  round-trip-verifies a length-changing append at the end of a real decompressed body
+  (`tools/verify_pack.py`, `roadmap.md` Phase 1), so the loader's machine code is simply appended after the
+  static image's current end (`0x20395b18`) and the one hook slot (whichever table is chosen above) is
+  repointed at it. No new packer work needed.
+- The **app blob itself is not part of the flashed image** — the loader reads it fresh from the SD card
+  every time the hook fires (first cut: a fixed path, e.g. `C:\IC-7300\APP.BIN`, fixed max size well under
+  budget — 64 KB placeholder) into a confirmed-empty RAM region, **`0x20500000`+** (inside Ghidra's
+  `ram_placeholder` block, `0x20395b18`-`0x209ffffe`; zero `references_to` hits at `0x20500000` itself,
+  consistent with the broader confirmed-empty `0x20408000`-`0x209c8000` sweep in
+  `notes/band-scope-state-history.md`; ~6.7 MB of headroom above it). This is the actual "install an app =
+  drop a file on the SD card, no reflash" ergonomics `roadmap.md`'s reframing promised.
+- Loaded via `file_rpc_post_command` (`0x200bc048`) commands `6` (open) / `0x13` (read-at-offset) — this
+  primitive is a cross-task RPC (consumed by the separate `sdcard_file_rpc_dispatch_task`), so it's safe
+  to call from either candidate hook context, not just from inside `sd_menu_dispatch_task`.
+- **Still open**: `file_rpc_post_command`'s command catalogue (`sdk/api/filesystem.md`) doesn't yet
+  document a "close" ID (`6`/`9`/`0x13`/`0x17` known) — needed before this leaks a handle on every run; a
+  single manually-triggered test can tolerate the leak, a real feature can't.
+- **Still an assumption, not yet checked**: Ghidra's `ram_placeholder` block is marked `rw-` (no execute)
+  in the tool's own bookkeeping — very likely just conservative labeling from whenever the block was added
+  (a single 10 MB MMU section shouldn't plausibly carry a sub-region execute-never bit), not a real
+  hardware restriction, but worth a real check (QEMU single-step in `qemu-machine/`, or live JTAG) before
+  trusting it on real hardware.
 
-The app blob is **not** part of the flashed image at all — the loader reads it fresh from the SD card into
-this RAM region every time the hook runs, which is the actual "install an app = drop a file on the SD
-card, no reflash" ergonomics `roadmap.md`'s reframing promised. First cut: a fixed path (e.g.
-`C:\IC-7300\APP.BIN`), fixed max size (comfortably under the ~6.7 MB headroom — 64 KB is a first-pass
-placeholder, no real app needs more yet), loaded via `file_rpc_post_command` (`0x200bc048`,
-`sdk/api/filesystem.md`) commands `6` (open) and `0x13` (read-at-offset) — already-used-internally,
-lower-risk than the raw VFS layer's own known refcount fragility (`sdk/api/filesystem.md`'s
-`fs_object_release_ref_UNSAFE_NEGATIVE` note). **Open**: `file_rpc_post_command`'s command catalogue
-(`sdk/api/filesystem.md`) doesn't yet include a documented "close" ID (`6`/`9`/`0x13`/`0x17` known) — needs
-finding, or the first cut accepts a leaked file handle (acceptable for a single manually-triggered test,
-not for anything real).
+## CI-V emission: resolved — see `notes/kernel-rtos.md`
 
-## Fail-closed behavior (Phase 2's own stated safety requirement)
+Full verified byte-level cookbook (buffer/flag addresses, the exact staging order a real handler follows,
+the `drv` bit table, and the cross-task race this design's hook-point choice is built to avoid) now lives
+in `notes/kernel-rtos.md`'s "CI-V reply staging" section — that's `notes/` territory (confirmed facts
+about the real firmware), not restated here to avoid two copies drifting apart. Short version for this
+design: the app stages `[to][from][cmd][payload...][0xFD]` at `rxbuf+0x66` (`rxbuf = 0x20396ad4`), sets the
+ready flag `rxbuf[0xca] = 1`, then sets `drv |= 0x40` last (`drv = 0x20390039`) — the exact sequence a real
+command handler follows, just with an arbitrary payload instead of a real command's own reply data.
 
-Missing/unreadable app file → the loader returns `0` immediately, same as every other no-op case. No
-partial state, no hang, no crash — the dispatcher can't tell the difference between "ran an app" and "this
-case did nothing," by construction, as long as the loader itself never blocks unboundedly (bound every SD
-read with the same timeout convention `file_rpc_post_command`'s existing callers already use) and never
-writes outside its own fixed RAM window.
+## A real "Homebrew Apps" menu button — a concrete, previously-unknown lead
 
-## What the app itself can do: still open, only what's needed for CI-V hello-world
+The tap-to-post trace surfaced the actual mechanism a menu item like "Firmware Update" uses: a
+**previously undocumented 20-byte item-record table** around `0x2018eebc` (`{en_label, jp_label,
+cb_action, cb_query, flags}`, Save/Load Setting, Format, Unmount, REC Start/Stop, Play Files, CI-V Address
+and more as siblings, stride `0x14`) — a real, different table from the already-known 72-byte generic list
+widget (`0x2018f0ec`) `notes/ui-menu.md` documents for QUICK MENU/MEMORY MENU/etc. **Not yet traced**: what
+widget code actually reads this table (how many records it renders, whether the count is a fixed constant
+or scans for a terminator) — the load-bearing question for whether a genuinely new, visible row can be
+added the same low-risk way the dead case IDs/states can (repurpose an existing, already-counted-but-dead
+slot, if one exists) versus needing to understand and extend the render/count logic itself. Real next step
+for the *menu button* half of the user's ask, separate from — and not blocking — the CI-V hello-world
+proof of concept, which doesn't need a visible menu entry at all for its first trigger (see below).
 
-For the very first proof of concept, the app only needs to emit one CI-V frame and return. `emitting a
-CI-V frame` turns out to be less simple than "call the TX helper" — `sdk/api/serial-civ.md`'s confirmed TX
-path (`FUN_20011384`/`FUN_200110a8`) is a **stateful periodic pump**, not a clean one-shot send API; it
-reads a cluster of flag bits and a staged reply buffer that real CI-V command handlers populate as a side
-effect of processing an actual inbound command, not something meant to be called out of context. **Two
-options, still open, dispatched to a fresh-eyes pass 2026-09-25**:
-1. Find a real, simple, already-implemented CI-V command handler, and stage a reply using **exactly the
-   same byte sequence/flag bits it does** (mimicry, not calling the pump directly) — the safer option,
-   since it reuses code the firmware already trusts, just with our own payload.
-2. Failing that, trace the pump functions' own flag/offset semantics precisely enough to drive them
-   correctly from cold — the fallback if no simple handler example turns up.
+## Trigger for the first proof of concept
 
-Results land here once in.
+Doesn't need to be the real menu button (that's the separable lead above). Cheapest, lowest-ambiguity
+options, either wired into the same hook location chosen above:
+- A dedicated, currently-unused front-panel key combo (`notes/front-panel-report.md` has the complete,
+  live-verified key-code table) checked once per tick — held long enough to be clearly deliberate, never
+  producible by accident.
+- A marker-file check (e.g. "does `C:\IC-7300\APP.BIN` exist") gated to run only occasionally (not every
+  tick) to bound the SD-card access cost — arguably the more natural first trigger for "run an app from the
+  SD card" specifically, since it needs no front-panel interaction at all.
 
-## Open items (as of 2026-09-25, this design's first pass)
+Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
+other design pieces above.
 
-- **The trigger.** Everything above assumes *something* writes `0x14` to `0x20390160` and calls
-  `rtos_post_event` on the handle at `0x2039011c+0x40` — that "something" doesn't exist yet, and how a real
-  SD-card-menu screen tap would do this (needed for an eventual real "Homebrew App" menu button, not just
-  this first proof of concept) is unresolved — see `notes/kernel-rtos.md`'s matching open item. For the
-  very first proof of concept, the trigger doesn't need to be a real menu item at all — the simplest
-  option is a small, separate, deliberately-added hook elsewhere (a distinctive front-panel key combo
-  already fully decoded in `notes/front-panel-report.md`, or a periodic check for a marker file) that does
-  the write-and-post directly; a real visible menu entry is a later, separable milestone once the UI
-  hand-off mechanism is understood.
-- **The CI-V staging cookbook** (above).
+## Open items (as of 2026-09-25, second pass)
+
+- **Sweep the `0x2019b70c` SD-UI state table for a dead/unused entry** (this design's new preferred hook).
+- **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button.
 - **`file_rpc_post_command`'s close command ID.**
 - **The `ram_placeholder` execute-permission assumption.**
+- Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
+  `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
+  picks that specific thread back up.

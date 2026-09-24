@@ -275,18 +275,101 @@ distinct vs. aliased to the same target) that matters for repurposing one.
 - **`firmware_update_main` (case `0xb`) is the existing proof this dispatch has no special-casing per
   command** — per [[firmware-update]]'s own entry-point trace, "nothing special gates entry to it; it's
   reached the same way any other SD-menu action is." Same holds for any newly-added case.
-- **~28 direct writes to the `+0x44` field exist elsewhere in the image** (`0x20022xxx`-`0x20023xxx`
-  range, e.g. cases 7/8's own gate-then-dispatch chain) — checked and ruled out as the "UI tap → post"
-  site: these are all internal multi-step state-chaining *inside* the individual command handlers
-  themselves (a handler finishing step 1 and re-queuing itself into step 2), not an external entry point.
-  **The real "SD-card-menu screen tap → post this command ID" site has not yet been found** — open item,
-  see below.
+- **The ~28 direct writes to the `+0x44` field are the real public "post a command" API, not internal
+  chaining** — corrected 2026-09-25 (Opus fresh-eyes pass, spot-checked and confirmed against real
+  listings): each of the 28 is a small wrapper at `0x20022afc`-`0x200233f0` that stashes its own arguments
+  (e.g. a path via `strcpy` into a fixed scratch buffer), writes its fixed case constant to
+  `*(0x2039011c+0x44)`, and tail-calls the real signal primitive — **`sd_menu_task_signal`**
+  (renamed from `FUN_200223ec`, confirmed by listing: `ldr r0,[0x2039011c]; ldr r0,[r0,#0x40]; b
+  0x20186f00`, the ARM→Thumb veneer for `FUN_20186f08`, a plain single-argument RTOS signal — **not**
+  `rtos_post_event`, an earlier guess in this file corrected). E.g. `sd_menu_post_firmware_update`
+  (renamed from `0x20022fc0`) posts case `0xb` this exact way — confirmed by decompile. Companion
+  helpers: `sd_menu_task_poll_result` (`0x20023414`, returns `+0x44`: 0=done, -1=error via `+0x48`,
+  anything else=still busy), `sd_menu_task_try_lock`/`_unlock` (`0x20021500`/`0x20021520`, a simple
+  byte-flag mutex at `+4`). **A new custom case should copy this exact convention**: try_lock → write the
+  case constant → `sd_menu_task_signal` → poll → unlock.
+- **The full tap-to-post chain, traced end to end (2026-09-25)**: the SD-card-menu screen's item records
+  live in a **different, previously undocumented table** from the `0x2018f0ec` generic list widget —
+  20-byte records `{en_label, jp_label, cb_action +8, cb_query +0xc, flags +0x10}` starting around
+  `0x2018eebc` (Firmware Update's own record), with siblings for Save/Load Setting, Format, Unmount, REC
+  Start/Stop, Play Files, CI-V Address, etc., stride `0x14` through roughly `0x2018ed80`-`0x2018f000`.
+  Tapping "Firmware Update" calls its record's `cb_action` (`0x2005dd1c`), which calls `FUN_2005dc4c(path,
+  1)` — this checks the SD card is ready and the **SD-UI state byte `*(u8*)0x20390368` is 0**, then sets
+  it to `0x37`. A **separate 104-entry per-state handler table, `0x2019b70c`**, is ticked every idle-loop
+  pass (from both `main_idle_loop` and `main_operating_loop`) by a function currently misnamed
+  `digital_mode_log_writer_tick` (`0x2005d234` — real name is something like `sd_ui_state_tick`, not yet
+  renamed) for any state `< 0x68`; states `0x33`-`0x3d` dispatch to `firmware_update_progress_dialog_sequencer`
+  (`0x2005b2a0`), whose state `0x37` handler does `try_lock` then posts case `0x26` (`factory_file_load`,
+  possibly under too narrow a name — it's used here as a generic "load the selected file" step, not
+  something factory-specific), state `0x38` polls, a confirm-dialog round trip runs through
+  `operating_mode_change_dispatch` (`0x2005807c`, a strong candidate for `notes/ui-menu.md`'s own
+  long-unresolved "final hand-off" mystery — not chased further here), then state `0x39` posts case `0x27`
+  (MD5 verify), state `0x3a` polls, and **state `0x3b` finally calls `sd_menu_post_firmware_update`
+  (case `0xb`)**. So the real chain is: **tap → set SD-UI state byte → per-state tick-table handler(s) →
+  post a case to `sd_menu_dispatch_task`** — two dispatch layers, not one.
+- **This changes the injection-point picture**: the `0x2019b70c` 104-entry state table is itself very
+  likely to have dead/unused state IDs the same way `sd_menu_dispatch_task`'s own case table did (not yet
+  swept for one) — repurposing a dead *state* there, rather than a dead *case* here, would let a custom
+  app's whole load-and-run sequence execute in **`main_idle_loop`'s own context**, which matters for CI-V
+  emission (see the CI-V section above/below): the confirmed TX pump (`civ_tx_pump`, see below) also runs
+  from `main_idle_loop`, so same-context execution avoids a real cross-task race the case-based approach
+  would otherwise need a lock-and-retry loop to guard against. See `sdk/app-loader-design.md` for the
+  updated concrete plan.
 
-**Open item, not yet resolved**: what code actually turns a physical/touchscreen tap on an SD-card-menu
-item into a write to `0x20390160` + an `rtos_post_event` call — i.e., whether adding a genuinely new,
-visible "Homebrew App" menu row (rather than triggering the new case some other way) is achievable by
-static patching alone. Dispatched to a fresh-eyes pass 2026-09-25 (in progress as of this writing) —
-results, once in, belong here or in a new `sdk/` doc, whichever fits once known.
+Ghidra renames made during this pass (all spot-checked against real listings/decompiles before being
+recorded here): `sd_menu_task_signal` (`0x200223ec`), `sd_menu_task_poll_result` (`0x20023414`),
+`sd_menu_task_try_lock` (`0x20021500`), `sd_menu_task_unlock` (`0x20021520`),
+`sd_menu_post_firmware_update` (`0x20022fc0`), `civ_tx_pump` (`0x20011384`, see the CI-V section below),
+`civ_reply_mark_ready` (`0x2000aa88`), `civ_read_handler_build_reply` (`0x2000ade0`).
+
+## CI-V reply staging, byte-verified — corrects `sdk/api/serial-civ.md`'s TX section (2026-09-25)
+
+The confirmed TX path (`serial-civ.md`) turns out to be a stateful pump reading a *staged reply*, not a
+callable "send this buffer" API — tracing exactly how a real handler stages that reply (needed so a custom
+app can emit one CI-V frame without corrupting live radio state) surfaced real corrections to what was on
+record. Spot-checked against `civ_rx_frame_stage_and_dispatch`'s own decompile (confirmed
+`pcVar3[0xca] = *(char *)(iVar2 + 3)` — a flag copy, not a length) and `civ_tx_pump`'s listing.
+
+- **`g_civ_handler_table` entries hold *three* function pointers, not one**: `+0x0` flags (permission
+  bits + packed exact/min/max data-length fields, as `serial-civ.md` already had), `+0x4` **set_handler**
+  (`civ_dispatch_invoke_handler`'s target — a command that *changes* something), `+0x8` **read_handler**
+  (used when the incoming data length equals the table's "exact length" field — a command that only
+  *reports* something, called with `r0` = write cursor into the reply buffer, returns the advanced
+  cursor), `+0xc` **read_precheck** (must return 0 or the reply is NG). Resolves the earlier "cmd `0x03`'s
+  handler table entry reads as null" confusion from this session's own first pass: `0x03` (idx 4) is a
+  pure read command (`+0x4` genuinely null, `+0x8`/`+0xc` populated) — not a missing/unimplemented slot.
+- **Reply framing has no length field — it's `0xFD`-terminated.** `serial-civ.md`'s "length at `0xca`"
+  was wrong; `rxbuf[0xca]` (`rxbuf` = `0x20396ad4`, confirmed fixed address) is a **flag** copied from a
+  small fixed context block at `0x20390031` (`ctx`; `+2` rx length, `+3` reply-ready flag, `+5`
+  channel-select 0/2 for the two independent CI-V channels this dispatch multiplexes, `+6` channel-2 busy).
+- **Real build order** (`civ_read_handler_build_reply`/`0x2000ade0` and siblings, called from
+  `civ_dispatch_invoke_handler`): write 3-byte header `[to][from=own CI-V addr, `*(u8*)0x203de525`][cmd]`
+  (`FUN_2000aab0`) → optionally append the matched subcommand byte → call the read/set handler, which
+  appends payload and returns the new cursor → write `0xFD` (`FUN_2000aacc`) → `civ_reply_mark_ready`
+  (`0x2000aa88`) sets `ctx+3 = 1`. Short fixed replies (FA/NG, FB/OK) go through `FUN_2000aaf4`/`FUN_2000ab9c`,
+  same shape. Back in `civ_rx_frame_stage_and_dispatch`, the completed reply is copied from a scratch build
+  buffer (`0x20396d20`) into `rxbuf+0x66` (100 bytes max) and `rxbuf[0xca]` is set from `ctx+3` — this is
+  the exact mechanism a hand-written emitter needs to imitate.
+- **`civ_tx_pump`** (renamed from `FUN_20011384`) masks the SCIF0 GIC IDs (`0xdf`/`0xdd`/`0xde`) for its
+  own body (CPU IRQs stay enabled otherwise) and, when the driver-state byte (`drv`, fixed address
+  `0x20390039`) has bit `0x40` set and `rxbuf[0]==0` and `rxbuf[0xca]!=0`: copies `rxbuf+0x66..FD` into the
+  real TX bu​ffer (`rxbuf+0x313`, prefixed with the two `0xFE` preamble bytes), sets `drv |= 0x0c`, clears
+  `rxbuf[0xca]`. The actual byte-by-byte UART send (`FUN_20011598`/`FUN_200108b0`) is echo-driven with
+  real CI-V bus-collision handling (jam byte, up to 5 retries) — **writing raw bytes to the UART directly
+  would bypass this and break collision handling**, another reason to stage through `rxbuf`/`drv` exactly
+  like a real handler rather than poking the driver lower down.
+- **`drv` bit `0x40`** = "reply window open, pump should pick this up" — set by the RX state machine on a
+  real inbound frame, and exactly the bit a custom emitter needs to set itself (last, after staging the
+  reply bytes) to get its own frame picked up on the next `civ_tx_pump` pass.
+- **Cookbook for an app to emit one arbitrary frame**, matching a real handler's own convention exactly
+  (full bit tables, the cross-task race this implies, and the recommended same-context mitigation are in
+  `sdk/app-loader-design.md`):
+  ```
+  require rxbuf[0]==0 && rxbuf[0xca]==0 && (drv & 0x78)==0 && drv[2]==0   (else back off, retry later)
+  write rxbuf+0x66 .. : [to][from = *(u8*)0x203de525][cmd][payload...][0xFD]   (<=100 bytes, no FE FE — the pump adds it)
+  rxbuf[0xca] = 1
+  drv |= 0x40   (last)
+  ```
 
 ## Living reference: `cold_boot_hw_init`'s own call-by-call sweep (2026-09-20)
 
