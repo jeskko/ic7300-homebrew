@@ -561,21 +561,34 @@ static void rza1h_scif3_deliver_frame(RZA1HScifState *s, const uint8_t *f, int l
     qemu_irq_raise(s->irq_rx);
 }
 
-static void rza1h_scif3_fp_arm(RZA1HScifState *s)
+/* in_cb: called from the timer's own callback, which ptimer already runs inside a transaction
+ * (a nested ptimer_transaction_begin asserts -- the crash a fast mouse-wheel burst hit). */
+static void rza1h_scif3_fp_arm_cb(RZA1HScifState *s, bool in_cb)
 {
     if (s->fpq_timer_armed) {
         return;
     }
     s->fpq_timer_armed = true;
-    ptimer_transaction_begin(s->frontpanel_ack_timer);
+    if (!in_cb) {
+        ptimer_transaction_begin(s->frontpanel_ack_timer);
+    }
     ptimer_set_count(s->frontpanel_ack_timer, FRONTPANEL_ACK_DELAY_NS);
     ptimer_run(s->frontpanel_ack_timer, 1);
-    ptimer_transaction_commit(s->frontpanel_ack_timer);
+    if (!in_cb) {
+        ptimer_transaction_commit(s->frontpanel_ack_timer);
+    }
+}
+
+static void rza1h_scif3_fp_arm(RZA1HScifState *s)
+{
+    rza1h_scif3_fp_arm_cb(s, false);
 }
 
 /* Queue a frame: 0xF0 (identify reply) when off == 0xF0, else [off][fp[off..off+n-1]] as they
- * are now. A touch frame (off 0x13) replaces a touch frame still waiting, so mouse drags
- * coalesce instead of piling up. */
+ * are now. Touch, dial, knob and pot frames (off >= 0x13) carry absolute values, so one still
+ * waiting for the same offset is replaced rather than queued again -- drags and fast wheel
+ * spins coalesce instead of overflowing the queue. Key frames (0x0d-0x11) always queue, so a
+ * press and its release both reach the firmware. */
 static void rza1h_scif3_fp_queue(RZA1HScifState *s, int off, int n)
 {
     uint8_t f[34];
@@ -587,10 +600,10 @@ static void rza1h_scif3_fp_queue(RZA1HScifState *s, int off, int n)
         memcpy(f + 1, s->fp + off, n);
         len += n;
     }
-    if (off == 0x13) {
+    if (off >= 0x13 && off < 0x20) {
         for (int i = 0; i < s->fpq_count; i++) {
             int k = (s->fpq_head + i) % 16;
-            if (s->fpq[k][0] == 0x13) {
+            if (s->fpq[k][0] == off && s->fpq_len[k] == len) {
                 memcpy(s->fpq[k], f, len);
                 s->fpq_len[k] = len;
                 return;
@@ -619,7 +632,7 @@ static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
         return;
     }
     if (s->rx_pending) {
-        rza1h_scif3_fp_arm(s);
+        rza1h_scif3_fp_arm_cb(s, true);
         return;
     }
     rza1h_debug("scif3fp", "deliver frame at %#x, %d data bytes", s->fpq[k][0],
@@ -628,7 +641,7 @@ static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
     s->fpq_head = (s->fpq_head + 1) % 16;
     s->fpq_count--;
     if (s->fpq_count) {
-        rza1h_scif3_fp_arm(s);
+        rza1h_scif3_fp_arm_cb(s, true);
     }
 }
 
