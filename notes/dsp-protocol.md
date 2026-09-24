@@ -199,3 +199,34 @@ compares against "31501120", i.e. FPGA 3.15. The bitstream starts at +0x28 and e
 (about 859 KB). An uncompressed EP4CE55 bitstream is roughly 1.8 MB (from memory, check the
 Cyclone IV handbook), and the entropy is about 6.6 bits/byte in the dense middle, so the image is
 probably Quartus-**compressed**.
+
+## Emulator model (`qemu-machine/src/fake_dsp.c`, 2026-09-24)
+
+scif.c passes every complete SCIF5 word to `fake_dsp_command()`. Each CPU one-word read (an arm
+of `scif5_arm_retry_timer`) asks `fake_dsp_next_word()` for one frame. The model keeps P[] and the
+C0..C6 / L slots, and picks the word with the ISR's priority. Its 0xE0 identity replies come from
+the three version tags.
+
+**Link timing learned while building it (CPU side, confirmed):**
+- `scif5_arm_retry_timer` is "receive one word": a line turnaround via the P8_2/P8_11 pin mux, then a
+  one-word read. Each arm is one DSP frame.
+- `dsp_identity_query_cmd0..5` transmit the query, **discard 2 reads**, then accept class F
+  within 18 more. So the DSP must answer no earlier than the 3rd frame after the command. The
+  model applies commands 2 frames after arrival (`FAKE_DSP_CMD_LATENCY_FRAMES`). An eager model,
+  or one with a 1-frame lag, answers inside the discarded reads and brings up "DSP is not
+  working correctly".
+- `scif5_classify_reply` stores **every** received word in a 16-entry per-class table at
+  **0x20414C48**. `FUN_200b4f4c` unpacks it into the state struct at **0x203DF100**:
+  - class 1: bits 25..16 → +0xcc, bit 31 → +0xce, low 16 bits → +0xd0 (gated)
+  - class 7: bit 15 → +0xf5, signed low 10 bits → +0xf6
+  - class 0: bits 15, 8, 5 and 4 → flags at −0x1a5/+0x105/−0x1ac/−0x1ab
+  - class 2: byte 2 → +0x9e
+- Traffic in a 150 s boot: ~2000 frames, but only **42 command words** (25 opcodes, sent on change
+  only). Opcodes seen: 00 01 10 20 21 22 23 24 25 27 40 41 42 43 44 49 4a 4b 4c 4d 4e 4f 61 62 e0.
+  Never seen at boot: 48, 6b, 80, 81 (and the flash family).
+
+**Experiment knobs:** `RZA1H_DSP_SLOT="k=0xWORD,..."` plants slot values, and
+`RZA1H_DSP_SWEEP="k:lo:width"` ramps a field. Planting C0, C1 or C3 values (byte-wide fields)
+changed nothing on the main screen. The S/Po bar isn't driven by those fields as planted. C4
+(class 8, never sent: the L[18] setter is unknown) and the SSIF stream are the remaining
+candidates.

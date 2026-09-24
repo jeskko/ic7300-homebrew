@@ -11,7 +11,7 @@ anything is drawn), this lets the boot run for `seconds`, pauses the VM, then:
     0x20974860,-1920,960,552,565).
 Uses QMP pmemsave (fast, GDB-free).
 
-Usage: screenshot.py [seconds] [--surface ...]... [--out DIR] [--no-pwrk]
+Usage: screenshot.py [seconds] [--surface ...]... [--out DIR] [--no-pwrk] [--stderr FILE]
 """
 
 from __future__ import annotations
@@ -101,19 +101,21 @@ def main():
                     help="ADDR=VALUE (hex, u32) written via the gdbstub after `seconds`; "
                          "the VM then runs --after more seconds before the capture")
     ap.add_argument("--after", type=float, default=20.0)
+    ap.add_argument("--stderr", help="write QEMU's stderr (RZA1H_DEBUG logs) to this file")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
 
     image = HERE / ("riic2_eeprom.img" if args.no_pwrk else "riic2_eeprom_pwrk_test.img")
-    sock = "/tmp/qemu_screenshot.sock"
+    sock = str(out / "q.sock")  # per --out so runs can go in parallel (short: 108-byte limit)
     Path(sock).unlink(missing_ok=True)
     proc = subprocess.Popen(
         [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none", "-global", f"rza1h-riic.image={image}",
          "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait"]
         + (["-gdb", "tcp::1234"] if args.poke else []),
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=open(args.stderr, "w") if args.stderr else subprocess.DEVNULL)
     try:
         time.sleep(1.0)
         s = qmp_open(sock)

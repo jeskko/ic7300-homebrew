@@ -205,6 +205,7 @@
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
+#include "fake_dsp.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HScifState, RZA1H_SCIF)
 
@@ -282,6 +283,10 @@ struct RZA1HScifState {
      * fire the same class every time). */
     uint8_t  scif5_cmd_buf[4];
     int      scif5_cmd_pos;
+
+    /* Behavioural IF-DSP model behind the link (channel 5 only, 2026-09-24): fed every
+     * complete command word, asked for the DSP's word at each reply -- see fake_dsp.h. */
+    FakeDsp  dsp;
 };
 
 #define REG_SMR  0x00
@@ -671,20 +676,14 @@ static uint32_t rza1h_rbit32(uint32_t v)
  * (cmd4/5) is the DSP Data image's trailing tag "20001000", read from the DSP's
  * flash at runtime. Record 1 (cmd2/3) is what the FPGA reports at runtime, so
  * its odd half is still a guess. */
-static const uint32_t scif5_dsp_identity_reply[6] = {
-    0xF0333131, /* cmd0: DSP Program "311"+'0' -> "3.11" (checked by the CPU) */
-    0xF0313037, /* cmd1: DSP Program "107"+'0' (DSP image: "1070") */
-    0xF0333136, /* cmd2: FPGA "3.16" (checked by the CPU; FPGA-reported) */
-    0xF0333136, /* cmd3: FPGA odd half (guess: FPGA-reported, not in any image) */
-    0xF0323030, /* cmd4: DSP Data "200"+'0' -> "2.00" (checked by the CPU) */
-    0xF0313030, /* cmd5: DSP Data "100"+'0' (DSP Data image tag: "1000") */
-};
+/* (The identity replies now come from fake_dsp.c's model of the DSP's 0xE0 handler, together
+ * with every other reply -- see rza1h_scif5_dsp_ack.) */
 
 static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
 {
     AddressSpace *as = &address_space_memory;
     uint32_t struct_base;
-    uint32_t cmd = 0, reply = 0x20000000;   /* class-2 trivial ack */
+    uint32_t cmd = 0, reply;
     uint32_t raw;
     uint8_t raw012[3];
     uint8_t count = 3;
@@ -693,10 +692,13 @@ static void rza1h_scif5_dsp_ack(RZA1HScifState *s)
         uint32_t raw_le = s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
                           (s->scif5_cmd_buf[2] << 16) | (s->scif5_cmd_buf[3] << 24);
         cmd = rza1h_rbit32(raw_le);
-        if (cmd >= 0xE0000000 && cmd <= 0xE0000005) {
-            reply = scif5_dsp_identity_reply[cmd - 0xE0000000];
-        }
     }
+    /* 2026-09-24: the reply is whatever the DSP model's TX-slot selection picks -- the same
+     * change-stamp priority the real DSP's ISR uses. The command itself was already applied
+     * (fake_dsp_command from the REG_FTDR case), so an identity query's C6 change wins here,
+     * and ordinary commands get the idle C1/C2 word (class 1/2, both "resolved" for
+     * scif5_classify_reply, like the old fixed class-2 ack). */
+    reply = fake_dsp_next_word(&s->dsp);
     /* The firmware bit-reverses the assembled little-endian 4-byte word, so
      * send rbit32(reply): bytes 0-2 precomputed into the job struct, byte 3
      * through the normal FRDR/RXI path (see this function's comment above;
@@ -833,6 +835,14 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
             } else {
                 s->scif5_cmd_pos = 0;
                 s->scif5_cmd_buf[s->scif5_cmd_pos++] = byte;
+            }
+            /* every complete word goes to the DSP model -- including the fire-and-forget ring
+             * bursts (param sync, frequency), which never get a reply here */
+            if (s->scif5_cmd_pos == 4) {
+                uint32_t raw_le = s->scif5_cmd_buf[0] | (s->scif5_cmd_buf[1] << 8) |
+                                  (s->scif5_cmd_buf[2] << 16) |
+                                  ((uint32_t)s->scif5_cmd_buf[3] << 24);
+                fake_dsp_command(&s->dsp, rza1h_rbit32(raw_le));
             }
         }
         /* Always surfaced, chardev or not -- the whole point of this
@@ -1026,6 +1036,8 @@ static void rza1h_scif_reset(DeviceState *dev)
     s->tx_frame_type = 0;
     s->bus_tx_len = -1;
     s->tx_busy = false;
+    s->scif5_cmd_pos = 0;
+    fake_dsp_reset(&s->dsp);
     ptimer_transaction_begin(s->tx_timer);
     ptimer_stop(s->tx_timer);
     ptimer_transaction_commit(s->tx_timer);
