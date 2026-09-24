@@ -218,6 +218,16 @@
 #define RZA1H_RSPI2_SPRI_IRQ 277 /* RSPISPRI2, the FPGA sweep-read handler */
 #define TYPE_RZA1H_RSPI2 "rza1h-rspi2"
 
+/* SSIF0/1 (Serial Sound Interface) -- see ssif.c. SSIF0 at base, SSIF1 at base+0x800. The data
+ * registers are what dmac.c's streaming channels are allowed to target. */
+#define RZA1H_SSIF_BASE 0xE820B000
+#define RZA1H_SSIF_SIZE 0x00001000
+#define RZA1H_SSIF0_TDR 0xE820B018
+#define RZA1H_SSIF0_RDR 0xE820B01C
+#define RZA1H_SSIF1_TDR 0xE820B818
+#define RZA1H_SSIF1_RDR 0xE820B81C
+#define TYPE_RZA1H_SSIF "rza1h-ssif"
+
 /* "Renesas Graphics Processor for OpenVG(TM)" -- see openvg.c's own file
  * comment for the full derivation. The peripheral occupies the whole SLV5
  * I/O window (0xE8100000-0xE813FFFF) but the only registers any traced code

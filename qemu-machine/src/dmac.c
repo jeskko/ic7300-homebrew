@@ -129,7 +129,17 @@
  * keeps whatever those channels did before (nothing). Transfers run from one
  * ptimer, RSPI2_BYTE_NS per byte after the SETEN, peripheral-bound (fixed
  * destination) channels first, so ch2's writes clock the FPGA's bytes into
- * rspi2.c's RX queue before ch1 reads them. Then DMAINTn (GIC 41+n) pulses. */
+ * rspi2.c's RX queue before ch1 reads them. Then DMAINTn (GIC 41+n) pulses.
+ *
+ * Streaming channels (2026-09-24, SSIF audio link, notes/dsp-protocol.md): a ch1-7 SETEN whose
+ * CHCFG has REN (bit 30, continuous) and SSIF0/1 FIFO data on one side runs forever,
+ * alternating register sets N0/N1 (RSW), one set per DMAC_STREAM_PERIOD (72 frames of the
+ * 96 kHz I2S clock = the firmware's 0x240-byte buffers). Each completion sets CHSTAT END
+ * (bit 6) and SR (bit 7) = the set now selected (1 = N1, i.e. N0 just finished). The firmware
+ * polls CHSTAT from its 250 us tick, takes the finished buffer and clears END with CHCTRL CLREND.
+ * CHSTAT EN (bit 0) reads 1 while streaming; the pumps redo the whole SSIF bring-up if it
+ * doesn't. DMAINTn is not pulsed when CHCFG DEM (bit 24) masks it (the firmware sets DEM). One
+ * ptimer serves every stream, so it's one expiry per 750 us, not one per word. */
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
@@ -155,6 +165,12 @@ struct RZA1HDmacState {
     qemu_irq irq[RZA1H_DMAC_CHANNELS];  /* ch1..7 -> DMAINT1..7; [0] unused */
     ptimer_state *periph_timer;
     uint8_t periph_pending;     /* channels armed by SETEN, bit n = channel n */
+    ptimer_state *stream_timer;
+    uint8_t stream_active;      /* streaming channels, bit n = channel n */
+    bool stream_running;        /* stream_timer is running */
+    uint8_t stream_set[RZA1H_DMAC_CHANNELS];   /* register set the next completion uses */
+    uint32_t chstat[RZA1H_DMAC_CHANNELS];      /* ch1-7 CHSTAT (EN, END, SR) */
+    uint64_t stream_blocks[RZA1H_DMAC_CHANNELS];
 
     uint8_t regs[RZA1H_DMAC_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case */
@@ -172,6 +188,20 @@ struct RZA1HDmacState {
 /* ch1+ transfers are paced by their peripheral; the only one modelled is RSPI2 at
  * ~2 Mbit/s (see rspi2.c). */
 #define DMAC_PERIPH_BYTE_NS 4000
+#define DMAC_N1SA 0x0c
+#define DMAC_N1DA 0x10
+#define DMAC_N1TB 0x14
+#define DMAC_CHSTAT 0x24
+#define DMAC_CHSTAT_EN  (1u << 0)
+#define DMAC_CHSTAT_END (1u << 6)
+#define DMAC_CHSTAT_SR  (1u << 7)
+#define DMAC_CHCTRL_CLREN  (1u << 1)
+#define DMAC_CHCTRL_SWRST  (1u << 3)
+#define DMAC_CHCTRL_CLREND (1u << 5)
+#define DMAC_CHCFG_DEM (1u << 24)
+#define DMAC_CHCFG_REN (1u << 30)
+/* 72 frames of 96 kHz = one 0x240-byte SSIF buffer (see file comment). */
+#define DMAC_STREAM_PERIOD_NS 750000
 
 /* Real DMA is asynchronous -- an arbitrary short delay, same rationale as
  * ostm.c/mtu2.c's own frequency constants: not real-clock-accurate, just
@@ -190,8 +220,13 @@ struct RZA1HDmacState {
 static uint64_t rza1h_dmac_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HDmacState *s = RZA1H_DMAC(opaque);
+    int ch = offset / DMAC_CH_STRIDE;
     uint64_t val = 0;
 
+    if (ch >= 1 && ch < RZA1H_DMAC_CHANNELS &&
+        offset % DMAC_CH_STRIDE == DMAC_CHSTAT && size == 4) {
+        return s->chstat[ch];
+    }
     memcpy(&val, &s->regs[offset], size);
     return val;
 }
@@ -204,18 +239,20 @@ static uint32_t dmac_reg32(RZA1HDmacState *s, hwaddr off)
     return v;
 }
 
-/* Move channel ch's N0TB bytes from N0SA to N0DA as its CHCFG says. */
-static void rza1h_dmac_transfer(RZA1HDmacState *s, int ch)
+/* Move channel ch's register set `set` (N0 or N1): TB bytes from SA to DA as its CHCFG says. */
+static void rza1h_dmac_transfer_set(RZA1HDmacState *s, int ch, int set, bool quiet)
 {
     AddressSpace *as = &address_space_memory;
-    hwaddr base = ch * DMAC_CH_STRIDE;
-    uint32_t src = dmac_reg32(s, base + DMAC_N0SA_0);
-    uint32_t dst = dmac_reg32(s, base + DMAC_N0DA_0);
-    uint32_t count = dmac_reg32(s, base + DMAC_N0TB_0);
-    uint32_t cfg = dmac_reg32(s, base + DMAC_CHCFG_0);
+    hwaddr base = ch * DMAC_CH_STRIDE + (set ? DMAC_N1SA : DMAC_N0SA_0);
+    uint32_t src = dmac_reg32(s, base);
+    uint32_t dst = dmac_reg32(s, base + 4);
+    uint32_t count = dmac_reg32(s, base + 8);
+    uint32_t cfg = dmac_reg32(s, ch * DMAC_CH_STRIDE + DMAC_CHCFG_0);
 
-    rza1h_debug("dmac", "ch%d complete: src=%#x dst=%#x count=%u cfg=%08x, "
-               "pulsing DMAINT%d", ch, src, dst, count, cfg, ch);
+    if (!quiet) {
+        rza1h_debug("dmac", "ch%d complete: src=%#x dst=%#x count=%u cfg=%08x, "
+                   "pulsing DMAINT%d", ch, src, dst, count, cfg, ch);
+    }
 
     if (count > 0 && (cfg & (DMAC_CHCFG_SAD | DMAC_CHCFG_DAD))) {
         /* A fixed peripheral address on either side (2026-09-23): the
@@ -241,6 +278,54 @@ static void rza1h_dmac_transfer(RZA1HDmacState *s, int ch)
             address_space_write(as, dst, MEMTXATTRS_UNSPECIFIED, buf, count);
         }
     }
+}
+
+static void rza1h_dmac_transfer(RZA1HDmacState *s, int ch)
+{
+    rza1h_dmac_transfer_set(s, ch, 0, false);
+}
+
+static bool dmac_is_ssif_data(uint32_t a)
+{
+    return a == RZA1H_SSIF0_TDR || a == RZA1H_SSIF0_RDR ||
+           a == RZA1H_SSIF1_TDR || a == RZA1H_SSIF1_RDR;
+}
+
+static void rza1h_dmac_stream_tick(void *opaque)
+{
+    RZA1HDmacState *s = RZA1H_DMAC(opaque);
+
+    for (int ch = 1; ch < RZA1H_DMAC_CHANNELS; ch++) {
+        int set = s->stream_set[ch];
+
+        if (!(s->stream_active & (1u << ch))) {
+            continue;
+        }
+        rza1h_dmac_transfer_set(s, ch, set, true);
+        s->stream_set[ch] = !set;
+        s->chstat[ch] = DMAC_CHSTAT_EN | DMAC_CHSTAT_END | (set ? 0 : DMAC_CHSTAT_SR);
+        if (++s->stream_blocks[ch] % 4000 == 1) {
+            rza1h_debug("dmac", "ch%d stream: block %" PRIu64 " (set N%d)", ch,
+                       s->stream_blocks[ch], set);
+        }
+        if (!(dmac_reg32(s, ch * DMAC_CH_STRIDE + DMAC_CHCFG_0) & DMAC_CHCFG_DEM)) {
+            qemu_irq_pulse(s->irq[ch]);
+        }
+    }
+}
+
+static void rza1h_dmac_stream_update(RZA1HDmacState *s)
+{
+    ptimer_transaction_begin(s->stream_timer);
+    if (s->stream_active && !s->stream_running) {
+        ptimer_set_limit(s->stream_timer, DMAC_STREAM_PERIOD_NS, 1);
+        ptimer_run(s->stream_timer, 0);   /* periodic */
+        s->stream_running = true;
+    } else if (!s->stream_active && s->stream_running) {
+        ptimer_stop(s->stream_timer);
+        s->stream_running = false;
+    }
+    ptimer_transaction_commit(s->stream_timer);
 }
 
 static void rza1h_dmac_ch0_complete(void *opaque)
@@ -279,6 +364,18 @@ static void rza1h_dmac_seten(RZA1HDmacState *s, int ch)
     uint32_t dst = dmac_reg32(s, base + DMAC_N0DA_0);
     uint32_t count = dmac_reg32(s, base + DMAC_N0TB_0);
 
+    if ((dmac_reg32(s, base + DMAC_CHCFG_0) & DMAC_CHCFG_REN) &&
+        (dmac_is_ssif_data(src) || dmac_is_ssif_data(dst))) {
+        if (!(s->stream_active & (1u << ch))) {
+            rza1h_debug("dmac", "ch%d stream start: src=%#x dst=%#x count=%u", ch, src,
+                       dst, count);
+        }
+        s->stream_active |= 1u << ch;
+        s->stream_set[ch] = 0;
+        s->chstat[ch] = DMAC_CHSTAT_EN;
+        rza1h_dmac_stream_update(s);
+        return;
+    }
     if (src != RZA1H_RSPI2_SPDR && dst != RZA1H_RSPI2_SPDR) {
         rza1h_debug("dmac", "ch%d SETEN ignored (src=%#x dst=%#x count=%u): "
                    "not an RSPI2 transfer", ch, src, dst, count);
@@ -299,6 +396,20 @@ static void rza1h_dmac_write(void *opaque, hwaddr offset, uint64_t value,
 
     if (ch >= 1 && ch < RZA1H_DMAC_CHANNELS &&
         offset % DMAC_CH_STRIDE == DMAC_CHCTRL) {
+        if (value & DMAC_CHCTRL_SWRST) {
+            s->chstat[ch] &= DMAC_CHSTAT_EN;
+        }
+        if (value & DMAC_CHCTRL_CLREND) {
+            s->chstat[ch] &= ~DMAC_CHSTAT_END;
+        }
+        if (value & DMAC_CHCTRL_CLREN) {
+            if (s->stream_active & (1u << ch)) {
+                rza1h_debug("dmac", "ch%d stream stop", ch);
+            }
+            s->stream_active &= ~(1u << ch);
+            s->chstat[ch] &= ~DMAC_CHSTAT_EN;
+            rza1h_dmac_stream_update(s);
+        }
         if (value & DMAC_CHCTRL_SETEN) {
             rza1h_dmac_seten(s, ch);
         }
@@ -332,6 +443,12 @@ static void rza1h_dmac_reset(DeviceState *dev)
     ptimer_stop(s->complete_timer);
     ptimer_transaction_commit(s->complete_timer);
     s->periph_pending = 0;
+    s->stream_active = 0;
+    s->stream_running = false;
+    memset(s->chstat, 0, sizeof(s->chstat));
+    ptimer_transaction_begin(s->stream_timer);
+    ptimer_stop(s->stream_timer);
+    ptimer_transaction_commit(s->stream_timer);
     ptimer_transaction_begin(s->periph_timer);
     ptimer_stop(s->periph_timer);
     ptimer_transaction_commit(s->periph_timer);
@@ -368,6 +485,13 @@ static void rza1h_dmac_realize(DeviceState *dev, Error **errp)
     ptimer_transaction_begin(s->periph_timer);
     ptimer_set_freq(s->periph_timer, DMAC_TIMER_FREQ_HZ);
     ptimer_transaction_commit(s->periph_timer);
+
+    s->stream_timer = ptimer_init(rza1h_dmac_stream_tick, s,
+                                  PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                  PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->stream_timer);
+    ptimer_set_freq(s->stream_timer, DMAC_TIMER_FREQ_HZ);
+    ptimer_transaction_commit(s->stream_timer);
 }
 
 static void rza1h_dmac_class_init(ObjectClass *oc, const void *data)

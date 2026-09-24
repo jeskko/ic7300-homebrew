@@ -17,6 +17,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #include "rz_a1h.h"
@@ -232,6 +233,29 @@ static bool gpio_decode(hwaddr offset, RegGroup *group, int *port)
     return false;
 }
 
+/* SSIF word-select inputs (2026-09-24, audio link, notes/dsp-protocol.md): P2_9 = SSIWS0 and
+ * P3_5 = SSIF1's WS, driven by the (FPGA's) 96 kHz I2S frame clock. SSIF bring-up
+ * (FUN_200605fc) counts 10 edges on each under a 1 ms timeout and only enables its audio pumps
+ * if they arrive. A square wave on the virtual clock, no timer. Nothing else reads these pins. */
+#define SSIF_FRAME_HZ 96000
+static uint16_t ssif_ws_pins(int port)
+{
+    bool level;
+
+    static int off = -1;
+
+    if (off < 0) {
+        const char *e = getenv("RZA1H_SSIF");
+        off = e && !strcmp(e, "off");   /* keep the pins still: audio never starts */
+    }
+    if (off || (port != 2 && port != 3)) {
+        return 0;
+    }
+    level = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) * 2 * SSIF_FRAME_HZ /
+             NANOSECONDS_PER_SECOND) & 1;
+    return level ? (port == 2 ? 0x200 : 0x20) : 0;
+}
+
 static uint64_t rza1h_gpio_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HGpioState *s = RZA1H_GPIO(opaque);
@@ -246,7 +270,7 @@ static uint64_t rza1h_gpio_read(void *opaque, hwaddr offset, unsigned size)
     case G_P:
         return s->p[port];
     case G_PPR:
-        return s->pin_level[port];
+        return s->pin_level[port] | ssif_ws_pins(port);
     case G_PM:
         return s->pm[port];
     case G_PMC:

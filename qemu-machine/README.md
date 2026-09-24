@@ -28,6 +28,30 @@ loops were the firmware's own delay loops polling a counter. Profiling methods t
 (`perf` isn't installed and ptrace is child-only): gdb as the parent with SIGINT-driven stack
 sampling, `strace -f -c`, and gdb Python breakpoints counting timer callbacks.
 
+## Status, 2026-09-24, latest+1 — the DSP audio link streams (SSIF0/1)
+
+The CPU ↔ DSP audio link now runs, 96 kHz I2S; spec: [`notes/dsp-protocol.md`](../notes/dsp-protocol.md),
+"The CPU ↔ DSP audio link, both directions". A synthetic 1000 Hz tone on DX_REC L reaches the
+firmware's 48 kHz RX-audio ring (0x203fbdc0) and its 8 kHz QSO-recorder staging (0x203fc76c).
+Both measure exactly 1000 Hz at 0.25 FS over QMP (per-block estimator), so the firmware's own
+÷2 and 36 → 6 decimations line up with the 96 kHz framing.
+- `gpio.c`: PPR2 bit 9 (SSIWS0) and PPR3 bit 5 (SSIF1 WS) are a 96 kHz square wave on the virtual
+  clock. SSIF bring-up counts 10 edges on each under a 1 ms timeout before it sets the pump gate
+  0x2039038c. `RZA1H_SSIF=off` keeps them still, so audio never starts.
+- `src/ssif.c` (new): SSIF0/1 at 0xE820B000. SSISR.IIRQ reads 1 while idle. FIFO data registers
+  alternate L/R slots. RX content is the fake DSP's: `RZA1H_AF_TONE` (default `1000:0.25`,
+  `none` = silence), `RZA1H_AF_NOISE` (0.01), `RZA1H_MIC_TONE` (DX_REC R), `RZA1H_FMT_TONE`
+  (DX_FMT L). TX (DR_AF) is logged as peak levels per second when non-zero; log with
+  `RZA1H_DEBUG=ssif`.
+- `dmac.c`: streaming channels. A ch1-7 SETEN with CHCFG.REN and an SSIF data register on one
+  side ping-pongs N0/N1 every 750 µs (72 frames). CHSTAT gets EN/END/SR, and CLREND, CLREN and
+  SWRST are honoured. DMAINTn is suppressed under CHCFG.DEM. One periodic ptimer serves all
+  streams.
+- Cost: `bench_boot.py` A/B with `RZA1H_SSIF=off`/`on`: 38.2 s vs 38.1 s, both pixel-exact.
+  Today's 32 → 38 s is host load, not this. The band scope still draws.
+- Not checked: TX playback (DR_AF). It needs recorder or voice-memory playback from the UI, and
+  there's no front-panel key injection yet. DX_FMT's decoders are likewise unexercised.
+
 ## Status, 2026-09-24, latest — the band scope draws (fake FPGA)
 
 ![band scope](screenshots/2026-09-24-band-scope-fake-fpga.png)

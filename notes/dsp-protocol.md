@@ -340,7 +340,7 @@ sees 48 kHz zero-stuffed ×6 and interpolates with its 3.6 kHz LPF (its ×0.138 
   (0x11810d88) fed by opcode 0x48 bytes, most likely the voice synthesizer.
 - AXR0[0] R is a ramped AGC control word (DFX_AGC 🟢).
 
-**Emulator today ✅ (QMP):** DMAC ch3/4/5 are programmed exactly as above, but SSIF0/1 are
+**Emulator before the model (see below) ✅ (QMP):** DMAC ch3/4/5 are programmed exactly as above, but SSIF0/1 are
 unmodelled (they read 0). Bring-up waits for 10 edges on each word-select pin, PPR2 bit 9
 (P2_9 SSIWS0) and PPR3 bit 5 (P3_5), under a 1 ms MTU2 ch0 timeout (FUN_20063448(32000) /
 flag 0x203903ac). The pins never move, so bring-up times out and the pump gate 0x2039038c stays
@@ -350,6 +350,11 @@ flag 0x203903ac). The pins never move, so bring-up times out and the pump gate 0
 - DMAC ch3/4/5 register-set ping-pong with CHSTAT END/SR, at one buffer per 0.75 ms (one ptimer
   per buffer, not per frame);
 - a fake-DSP producer for DX_REC/DX_FMT.
+
+**Model (built 2026-09-24) ✅:** `qemu-machine/src/ssif.c`, the gpio.c word-select pins and
+the dmac.c streaming channels implement the list above; details and knobs are in
+`qemu-machine/README.md` ("the DSP audio link streams"). A 1000 Hz DX_REC L tone arrives at
+exactly 1000 Hz in both the 48 kHz ring and the 8 kHz recorder staging.
 
 ## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
 

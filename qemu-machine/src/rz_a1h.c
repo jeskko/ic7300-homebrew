@@ -417,6 +417,14 @@ static void rza1h_init(MachineState *machine)
                        qdev_get_gpio_in(gic, RZA1H_RSPI2_SPRI_IRQ -
                                              RZA1H_GIC_NUM_INTERNAL));
 
+    /* ssif.c -- SSIF0/1, the CPU end of the DSP audio link (2026-09-24, see ssif.c).
+     * Overlap-mapped inside "io-e8200000"; no IRQs (the firmware polls DMAC CHSTAT). */
+    {
+        DeviceState *ssif = qdev_new(TYPE_RZA1H_SSIF);
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(ssif), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(ssif), 0, RZA1H_SSIF_BASE, 0);
+    }
+
     /* openvg.c -- added 2026-09-21 (icom-main-idle-loop-not-reached thread).
      * The OpenVG graphics processor's completion interrupt (GIC ID 130,
      * INT0) is what releases the TMO_FEVR event-flag wait inside
