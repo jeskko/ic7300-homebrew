@@ -257,3 +257,25 @@ external clock and sync, so the CPU clocks every link frame.
 
 Consequence: speaker and AGC audio go DSP → FPGA → DAC and never touch the CPU. The CPU gets
 DX_REC/DX_FMT on its SSIF receive side (the spectrum-scope ring) and feeds DR_AF/DR_RSV to the DSP.
+
+## DSP → CPU audio (SSIF receive) and the QSO recorder feed (2026-09-24)
+
+Pins (user's schematic reading): **DFX_DET = DSP pin 113, DFX_AGC = DSP pin 111** (→ FPGA → FPX_DET /
+FPX_AGC → IC991 / IC971). The spacing from the known pins (116/117/118/120 = AXR0[4]/[5]/[6]/[7])
+suggests 113 = AXR0[2] and 111 = AXR0[0]. That's inferred, not checked against the datasheet. Both
+are DSP TX serializers either way.
+
+CPU side (body.bin), one driver cluster at 0x2005f880–0x200607xx:
+- `FUN_200605fc` (bring-up): SSIFCR_0 = 0xCC (TX and RX interrupts), SSIFCR_1 = 0xC4 (RX only), DMAC
+  channels 3/4/5. The literal pool holds SSIFRDR_0 0xE820B01C, SSIFRDR_1 0xE820B81C, SSIFTDR_0
+  0xE820B018, and buffers 0x203faf40/b180/b3c0/b840/ba80/bcc0.
+- It exposes a ring at 0x203fbdc0: 8 × 72-byte blocks (36 int16), write index +0x240, read index +0x241.
+  The reader is `FUN_2005fb64`, whose only caller is `FUN_20067254`, which is called from `FUN_2006759c`.
+- `FUN_20067254`: per block, `FUN_20066fc4` reduces 36 → 6 samples. Those go to
+  (1) `FUN_20008868` → the FFT task named `spectrum_scope_fft_task`, which is therefore an **audio**
+  FFT; and (2) `FUN_20066ed0`, which packs them into 216-byte blocks (mode 3 = zeros, i.e. mute; one
+  mode scales by 0xB5/256 = −3 dB). `FUN_20066f18` then stores each block as a 0xDC-byte record in a
+  **circular buffer of 0x77A records**: 1914 × 108 samples, about 26 s at an assumed 8 kHz. This
+  looks like the QSO recorder's pre-record capture and is very likely the missing audio source of
+  `voice_recording_file_task` ([[kernel-rtos]]). That last link isn't proven.
+- Open: which of DX_REC / DX_FMT fills the ring, the sample rate, and what DX_FMT carries.
