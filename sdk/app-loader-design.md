@@ -20,34 +20,54 @@ command dispatch" sections for the full verified detail; spot-checked against re
 before being recorded, per this project's own verification discipline). That work also surfaced a cleaner
 hook point than the one this file originally proposed — see below.
 
-## Hook point: revised — a dead SD-UI *state* over a dead dispatch *case*
+## Hook point: revised twice — landed on a `main_idle_loop` call-site retarget
 
-The first draft of this design proposed repurposing one of `sd_menu_dispatch_task`'s 12 dead case IDs
-(still a completely valid, verified mechanism — see `notes/kernel-rtos.md`). **Revised recommendation**:
-hook a dead entry in the **SD-UI per-state tick table** (`0x2019b70c`, 104 entries, ticked every pass of
-`main_idle_loop`/`main_operating_loop` by the function currently misnamed `digital_mode_log_writer_tick`,
-`0x2005d234`) instead, for one concrete reason the case-based approach doesn't have:
+The first draft proposed a dead `sd_menu_dispatch_task` case ID (still fully valid, see
+`notes/kernel-rtos.md`). The second pass proposed a dead SD-UI *state* instead, to get `main_idle_loop`'s
+own execution context (matching the CI-V TX pump, avoiding a cross-task race). **That lead was checked and
+came back negative**: all 104 entries of the `0x2019b70c` state-tick table were read directly (raw memory
+read, not inferred) — every single one is a real, non-null function pointer in the `0x2005xxxx`-`0x2020ccxx`
+range. No dead slot exists in this table; it's fully populated. Recorded here so a future pass doesn't
+re-attempt the same sweep.
 
-- **Context match with the CI-V TX pump avoids a real race.** The verified CI-V cookbook
-  (`notes/kernel-rtos.md`) requires staging a reply and setting `drv |= 0x40` for `civ_tx_pump` to pick up
-  — but `civ_tx_pump` itself runs from `main_idle_loop`'s own polling sites. If the app's CI-V emission
-  runs inside `sd_menu_dispatch_task` (a separate RTOS task, scheduled independently), there's a genuine
-  window where the pump reads/write-backs `drv` in the middle of the app's own read-modify-write,
-  silently dropping the frame — survivable with a lock/poll/retry loop, but avoidable entirely by running
-  the whole app (load, call, CI-V emit) from a hook that ticks in `main_idle_loop`'s **own** context, the
-  same one the pump uses. A dead state in the `0x2019b70c` table gives exactly that.
-- **This table has not yet been swept for a dead/no-op entry** the way `sd_menu_dispatch_task`'s case
-  table was — concrete next step, same methodology (read the raw dispatch code/table, find an ID that
-  currently resolves to a no-op).
-- The `sd_menu_dispatch_task` case-based hook remains a fully valid fallback (e.g. if every SD-UI state
-  turns out to be live, or for a later app that specifically wants SD-menu-task context for heavier file
-  I/O) — nothing about it was wrong, it just carries the cross-task CI-V race that the state-table hook
-  avoids for free. Keep both documented; pick per-app.
+**Final choice: retarget one existing `main_idle_loop` call-site instruction**, the same "change one 4-byte
+instruction, touch nothing else" philosophy as the dead-case approach, but applied to a *call site* instead
+of a *dead table slot* — which gets the context-match benefit without needing a table to have spare room at
+all:
 
-Either hook point shares the same fail-closed shape: return/reset to idle (`0` for the dispatch-task case
-convention, or the SD-UI state byte `0x20390368` back to `0`) on any missing/unreadable app file, exactly
-matching how every existing real case/state already behaves on completion — no new "resume radio
-operation" logic needs writing, it's the existing convention for free either way.
+- `main_idle_loop` calls `civ_tx_pump` directly and unconditionally every pass, at `0x20052f64`
+  (`bl 0x20011384` — verified by listing; the neighboring instruction at `0x20052f5c`,
+  `bl 0x2000b258`/`civ_rx_frame_stage_and_dispatch`, matches this task's own earlier finding exactly,
+  cross-confirming the address range really is inside `main_idle_loop`).
+- Retarget that one instruction to `bl <homebrew_tick>` (an appended trampoline), where `homebrew_tick`
+  is: `push {lr}; bl civ_tx_pump; bl homebrew_check_and_run; pop {lr}; bx lr` — calls the original target
+  first (100% preserves existing behavior, including its own return-address handling — this is why the
+  trampoline needs its own `push`/`pop {lr}`, since it now nests two calls where the original site made
+  one), then our own addition, then returns exactly where `main_idle_loop` expects.
+- **This one retarget gives every future app the right context for free** — no per-app race analysis
+  needed, since `homebrew_check_and_run` (and anything it calls, including a loaded app's `app_main`) now
+  always executes from inside `main_idle_loop`'s own tick, same as `civ_tx_pump` itself.
+- **Trigger and action collapse into one place.** `homebrew_check_and_run` can itself test a cheap,
+  no-I/O condition every tick (see "Trigger" below) and, on a fresh (debounced) match, do the SD load +
+  call + CI-V emit inline — no separate "arm a flag, a later hook consumes it" indirection needed, and no
+  dependency on `sd_menu_dispatch_task` or any menu/case machinery at all for this first proof of concept.
+  Fail-closed is automatic: any failure (file missing, read error) just returns without emitting anything;
+  `main_idle_loop` never sees a difference from the case where the trigger condition wasn't met at all.
+- The two earlier hook candidates (dead `sd_menu_dispatch_task` case, SD-UI state) remain valid ideas for
+  a *later* app that specifically wants SD-menu-task's own execution context (e.g. heavier file I/O
+  alongside real SD-menu traffic) — not wrong, just not needed for this first, CI-V-focused proof of
+  concept, and the SD-UI-state option specifically is now a closed, checked-negative lead.
+
+## Trigger: a debounced front-panel key combo, checked inline in `homebrew_check_and_run`
+
+No SD-card polling needed for the trigger itself (only for the actual app-load, once triggered) — cheapest
+and lowest-ambiguity is a bitfield test against the already-resident front-panel status buffer
+(`notes/front-panel-report.md`'s fully live-verified key-code table, offsets `0x0d`-`0x11` of
+`g_scif3_rx_status_buffer`/`g_frontpanel_latched_status`), debounced with a one-byte "already handled this
+press" latch so it fires once per press/hold rather than once per tick. Concrete combo choice deferred to
+implementation (any two-key combo not already tested together elsewhere is fine — the existing service-mode
+combos, e.g. MENU+FUNCTION, are all single-purpose and already gated well before this new code would run,
+so no collision risk either way).
 
 ## Loader code lives appended to `body.bin`; the app blob loads fresh from SD into free RAM
 
@@ -116,12 +136,17 @@ options, either wired into the same hook location chosen above:
 Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
 other design pieces above.
 
-## Open items (as of 2026-09-25, second pass)
+## Open items (as of 2026-09-25, third pass)
 
-- **Sweep the `0x2019b70c` SD-UI state table for a dead/unused entry** (this design's new preferred hook).
-- **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button.
+- **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button
+  (separate from, and not blocking, this design's CI-V proof of concept).
 - **`file_rpc_post_command`'s close command ID.**
 - **The `ram_placeholder` execute-permission assumption.**
+- **Not yet written**: the actual `homebrew_tick`/`homebrew_check_and_run`/loader/app machine code, the
+  one-instruction `main_idle_loop` retarget, and an `icom_fw`-packed test image — this design is now
+  concrete enough to build against; implementation is the next step.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.
+- Closed, checked negative: the `0x2019b70c` SD-UI state table has no dead/unused entry (see above) — don't
+  re-sweep it.
