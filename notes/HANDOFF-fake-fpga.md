@@ -1,5 +1,7 @@
 # Handoff: what the firmware expects to receive from the FPGA → a "fake FPGA"
 
+> **Done 2026-09-24:** the static analysis is written up in [fpga-link.md](fpga-link.md) (receive path, header handshake, 475-byte sweep, DMA, timing, fake-FPGA checklist). Next: build the model.
+
 **For a fresh session.** Written 2026-09-24 at the end of the session that built the fake DSP,
 CI-V injection and the factory-default EEPROM. Goal of the next session: **static analysis** (Ghidra
 on `body.bin`, loaded at 0x20005000) of how the main CPU reads data **from** the FPGA (IC1351,

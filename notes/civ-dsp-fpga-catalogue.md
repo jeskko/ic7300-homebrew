@@ -10,7 +10,7 @@ either link, i.e. the CPU handles it itself (or it only matters in TX).
 ## FPGA (RSPI2): scope configuration only
 
 Each change is two transfers: a command frame whose last byte is a sequence number (`seq<<4`,
-+0x10 per frame), then a lone `90` (a latch or commit).
++0x10 per frame), then a lone `90`. **Correction (2026-09-24):** `90` is the sweep-read command, not a latch or commit. The CPU then reads a header byte and 475 samples; see [fpga-link.md](fpga-link.md), which also decodes every register.
 
 | Frame | Meaning | Evidence |
 |---|---|---|
