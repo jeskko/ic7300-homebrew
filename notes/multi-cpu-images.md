@@ -39,7 +39,8 @@ AIS magic `0x41504954` ("TIPA") followed by `0x585359xx` AIS commands, i.e. exac
 boot ROM loads from its SPI flash (IC902). Parsing it gives section load addresses and the entry
 point (not done yet). It ends with the ASCII tag `31101070`, consistent with the version "3.11"
 the main CPU's `dsp_fpga_identity_version_check` expects from the DSP. `dsp_program.bin`
-(really DSP Data) has no AIS header at offset 0. Next steps: `notes/HANDOFF-dsp-analysis.md`.
+(really DSP Data) has no AIS header at offset 0. Next steps: `notes/archive/HANDOFF-dsp-analysis.md`
+(done 2026-09-24, see `notes/dsp-protocol.md`).
 
 **Component identity fully resolved, 2026-08-30, by correlating against Icom's own published sub-component
 version history** (the same official EN+JP scrape done for the IC-9700 thread, see
@@ -128,20 +129,14 @@ buffer reused by whichever screen currently owns it, architecturally identical t
 — see [[band-scope-state]]. There was never a single dedicated writer to find; "which screen currently
 owns this buffer" is the only question that ever made sense here.
 
-**CORRECTION 2026-09-24 — `DRESD` IS released at boot:** the qemu-machine live log shows the
-firmware writing `PSR2 = 0x00400040` (RZ/A1H PSR: high half = write-enable, low half = data →
-drive `P2_6`/`DRESD` high) from `0x2002b078`, right after clearing `P2_7`/`DRESH`
-(`PSR2 = 0x00800000`), at t≈24 s. The static search below missed it because the port address is
-computed from a base, and qemu-machine's own `gpio.c` misread PSR as "low = set, high = clear",
-which turned this write into a no-op. The paragraph below is kept for the trail.
-
-**`DRESD` (DSP hardware reset) release — still not located.** Confirmed driven low once at boot
-(`port_bulk_gpio_init_pass2`) and never touched again anywhere traced in `body.bin` — checked for a net
-inverter (none, purely resistive), a tri-state/direction release via `PM2` (ruled out), and every
-neighboring boot-init call (all ruled out). Since the DSP is clearly running and receiving live `SCIF5`
-traffic, either the release happens somewhere not yet traced (the `base.dat` boot-ROM stage, which runs
-before `body.bin`, is the next candidate — see [[base-loader]]) or it only ever needs releasing once and
-the DSP manages everything else autonomously from there.
+**`DRESD` (DSP hardware reset) release — confirmed released at boot, 2026-09-24.** The qemu-machine live
+log shows the firmware writing `PSR2 = 0x00400040` (RZ/A1H PSR: high half = write-enable, low half =
+data → drive `P2_6`/`DRESD` high) from `0x2002b078`, right after clearing `P2_7`/`DRESH`
+(`PSR2 = 0x00800000`), at t≈24 s. The earlier static search (driven low once at
+`port_bulk_gpio_init_pass2`, never found touched again) missed this because the port address is
+computed from a base, and `qemu-machine`'s own `gpio.c` misread PSR polarity as "low = set, high =
+clear," turning this write into a no-op — corrected. Full old static-search trail (net-inverter check,
+`PM2` tri-state check, neighboring boot-init calls, all ruled out at the time) in the history file.
 
 **DSP disassembly is possible** — Ghidra has no SLEIGH module for TMS320C6000/C674x (confirmed, still an
 open upstream feature request), but **binutils' `tic6x` target, Capstone's `TMS320C64X`, and TI's own
@@ -155,23 +150,6 @@ and silicon-version are set up correctly, and all three agree byte-for-byte on d
 - The 64 MB SPI flash holds **two complete copies of the container** (A/B slots at `0x18010000`/
   `0x18400000`), and `"SX3765 Vx.xx-xxx"` at `0x187f0000` is a generation/active-slot marker checked by
   both the boot loader and the running firmware (`FUN_20062c64`) — not evidence of a companion-chip image.
-
-## Retracted or superseded along the way (kept for history only)
-
-- Early belief that no C6x disassembler exists anywhere (only custom-disassembler/live-JTAG were viable) —
-  retracted; real tools exist upstream (binutils `tic6x`, Capstone `TMS320C64X`, TI's own `dis6x`).
-- Reading component2's (internally named `dsp_data.bin`, really `FPGA`) leading 64 bytes as small
-  calibration constants — superseded by the whole-file histogram/size/preamble evidence for an Altera FPGA
-  bitstream, itself now confirmed by version-field correlation (see above).
-- The original boot-loader-only read of the dual-flash-slot mechanism (via `base.dat`'s
-  `unpack_from_flash_to_mem`) — superseded by the fuller confirmation via `body.bin`'s own
-  `FUN_20062c64` (same conclusion, firmer evidence).
-- The `FUN_20025044` runtime-populated RAM-destination-table investigation (whether/where `chunk4`/
-  `chunk5-tail`'s bytes land in RAM) — mooted once `SCIF5` tracing showed the data is addressed by the
-  DSP-side protocol, not a literal RAM buffer with a findable static destination.
-- The `0xb0`/`0xe2` ring-buffer tag range was chased as a possible RSPI2/SSIF-audio/front-panel-UART
-  consumer (all 3 ruled out) before the real consumer (`chunk_transport_send_data` →
-  `dsp_page_transfer_verify` → `SCIF5`) was found directly.
 
 ## Open questions / next steps
 

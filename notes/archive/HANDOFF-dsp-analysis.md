@@ -1,6 +1,6 @@
 # Handoff: DSP (TMS320C6745) code analysis — tooling check + CPU↔DSP communication
 
-> **DONE 2026-09-24 — kept for the trail.** Results: [dsp-protocol.md](dsp-protocol.md), [civ-dsp-fpga-catalogue.md](civ-dsp-fpga-catalogue.md). Next thread: [HANDOFF-fake-fpga.md](HANDOFF-fake-fpga.md).
+> **DONE 2026-09-24 — kept for the trail.** Results: [dsp-protocol.md](../dsp-protocol.md), [civ-dsp-fpga-catalogue.md](../civ-dsp-fpga-catalogue.md). Next thread: [HANDOFF-fake-fpga.md](HANDOFF-fake-fpga.md).
 
 **For a fresh session starting the DSP thread.** Written 2026-09-24 at the end of the session that
 got the main CPU emulator (`qemu-machine/`) to boot to a fully drawn main screen. Goal of the next

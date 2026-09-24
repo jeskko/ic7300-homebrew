@@ -43,109 +43,61 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
   confirmed real target yet.
 
 - **Resolved, 2026-09-07 — how the main CPU gets the front-panel version shown on the version-info
-  screen.** `scif3_frontpanel_identify_handshake` (`0x20037424`, renamed from `FUN_20037424`) runs exactly
-  once, at cold boot (called only from `scif3_frontpanel_init_and_latch_version`/`0x2002af80`, itself
-  called only from `cold_boot_hw_init`): it sends a genuine **outbound** `0xF0`-type frame over `SCIF3`
-  (the same `0xFE`/`0xFD`-framed protocol, via `scif3_send_frame`/`0x20037214`) and blocks with a timeout
-  waiting for the front panel's reply. Whatever comes back lands in `g_scif3_rx_status_buffer`
-  (`0x203dcab6`, the same buffer `scif3_frame_dispatch_by_type` writes into) at the per-type offsets;
-  bytes 1-12 of that reply then get copied into a separate "latched" struct,
-  `g_frontpanel_latched_status` (`0x203dca96`) — and bytes 1-3 of *that* struct are exactly what
-  `ui_version_screen_populate_fields` (`0x2004366c`, renamed from `FUN_2004366c`) formats as
-  `<digit>.<digit><digit>` and displays as `"Front CPU:"` on the version-info screen
-  (`ui_version_screen_draw_and_compare`, `0x200a94c8`, renamed from `FUN_200a94c8`) — matching the known
-  `"SX3765 Vx.xx-xxx"` version-string format. **So yes, it's a real live query of `IC501` itself, not a
-  cosmetic/stored value** — but it only happens once per boot, not on every visit to the version-info
-  screen. Full trace in `notes/front-panel-firmware-history.md`'s "How the main CPU gets the front-panel
-  version" section.
-- **Correction, 2026-09-07, same day**: the Front CPU version is *not* "only stored and displayed" — it
-  IS actively compared. `ui_version_screen_draw_and_compare` diffs `g_screen_display_scratch_buf+0xa4`
-  (the live, `SCIF3`-latched current value) against `g_update_candidate_version_struct+8` via a 4-byte
-  compare, alongside the same check for all 5 components; any mismatch sets a flag that gates a whole
-  detail panel plus 3 status-row widgets (full scenario breakdown in the history file). A second,
-  structurally identical comparison function (`FUN_2009e8c0`) does the same diff structure — but
-  **correction, same day**: it's *not* a firmware-related screen at all (an initial guess it was "likely
-  the SD-card-insert notification" was wrong too) — it's a recording/QSO-recorder storage-capacity display
-  (its own string reference decodes to `"(REC:"`), a third confirmed unrelated screen reusing the same
-  generic comparison-struct pair. See `notes/front-panel-firmware-history.md`'s "A second unrelated screen
-  found" section.
-- **Correction, 2026-09-07, later same day**: retracting the "likely an SD-card update file's header"
-  guess for what `g_update_candidate_version_struct` holds. Found its base address (offset `+0x9c`) reused
-  **verbatim inside a completely unrelated screen** — a memory-channel-editor function (`FUN_2008cff8`)
-  comparing channel/mode/split data at the exact same offset, nothing to do with firmware versions.
-  `g_screen_display_scratch_buf` is even more widely shared (52 reference sites across unrelated screens).
-  **New leading hypothesis, not yet confirmed**: this is a generic previous-frame-vs-current-frame
-  snapshot pair used across many unrelated screens for redraw-skipping (only redraw a widget whose
-  underlying bytes actually changed since last render) — not specifically "installed vs. update-file
-  version." The version-info screen's own field *interpretation* (which offset means which component) is
-  still solid, verified independently via the label strings drawn alongside each value; what's genuinely
-  unresolved is what writes the candidate side and whether it's this screen's own "last frame" or
-  something update-file-related after all. See `notes/front-panel-firmware-history.md`'s "What the
-  candidate struct really is" section.
-- **Follow-up correction, 2026-09-07, later same day**: partially walking back the retraction above after
-  user pushback — RAM-sharing with unrelated screens doesn't actually disprove candidate holds real
-  update-file data for *this* screen specifically (mutually-exclusive screens sharing scratch RAM is
-  normal, independent of what each screen's own code does with it). The user's reading — this comparison
-  exists to tell the user "you're out of sync, go run a manual update," not to auto-push anything — is the
-  better-motivated explanation for why the comparison exists at all, and fits everything else found (the
-  only real update path requires explicit manual confirmation). The actual populate-candidate function is
-  still unfound after a further attempt this session; open for next time.
-- **Pinned down exactly what the mismatch scenario displays, 2026-09-07**: beyond the labeled version-value
-  panel already known, the 3 tail-row widgets draw real icon graphics (not text) — extracted and rendered
-  directly: an upward triangle ▲ (always shown), a downward triangle ▼, and a curved return/reload arrow ↩
-  (both conditional), each with a semi-transparent dimming/highlight overlay (a solid-black 50%-alpha
-  1×1-pixel icon, not a checkmark) applied to whichever row matches a state byte (1/2/3). Reads as a
-  version-ahead/version-behind/restart-needed three-state indicator. Full derivation and icon addresses in
-  `notes/front-panel-firmware-history.md`'s "Pinpointing exactly what the mismatch scenario displays"
-  section.
-- **Confirmed, 2026-09-07 — DSP Program/Data/FPGA fields really are live-queried at boot**: while searching
-  for the candidate-struct writer, confirmed `ui_version_screen_populate_fields`'s DSP-field source and
-  `dsp_identity_query_record0`'s destination are the exact same address (`0x203def00`) — closing a gap an
-  earlier (2026-08-29) session had left as "not fully proven." Several other new leads for the candidate
-  struct's writer were checked and ruled out this round too (`cold_boot_hw_init`, `system_mode_request_
-  dispatch`, `sd_menu_dispatch_task`'s neighboring cases) — still genuinely unfound; see the history file.
-- **Searched the raw disassembly directly for all 3 ARM address-formation idioms, 2026-09-07 — all zero,
-  but see the correction below.** Literal-pool loads (already covered), `MOVW`/`MOVT` immediate pairs, and
-  `ADR`/`ADD`/`SUB`-with-PC computation — checked each against the *entire* decoded instruction stream via
-  `tools/superset_disasm.py`'s database plus a fresh script for the PC-relative-add case. Zero hits for all
-  three — a genuinely new, valuable check (neither this nor an earlier session had tried it).
-- **Correction, 2026-09-07 — this exact question was already answered by two 2026-08-29 sessions; should
-  have checked existing notes first.** `notes/multi-cpu-images-history.md` and `notes/band-scope-state.md`
-  already ran this investigation via `references_to` and reached the same "generic multiplexed buffer"
-  conclusion this session did independently, with harder evidence (actual unrelated writers identified for
-  the sibling struct, one containing the literal string `"2 Scope Out of Range"`). Their more precise
-  framing: **not** "never populated," but "populated via `FUN_2008cff8`'s own generic dispatch logic, not a
-  dedicated writer function" — a real, sharper next step (find which internal case of `FUN_2008cff8`
-  handles this screen) that neither session has tried yet. See `notes/front-panel-firmware-history.md`'s
-  correction section for the full reconciliation.
+  screen.** `scif3_frontpanel_identify_handshake` (`0x20037424`) runs once at cold boot: sends an
+  outbound `0xF0`-type frame over `SCIF3` (`scif3_send_frame`/`0x20037214`) and blocks with a timeout
+  for the front panel's reply, which lands in `g_scif3_rx_status_buffer` (`0x203dcab6`); bytes 1-12 get
+  copied into `g_frontpanel_latched_status` (`0x203dca96`), and bytes 1-3 of *that* are what
+  `ui_version_screen_populate_fields` (`0x2004366c`) formats and displays as `"Front CPU:"` on the
+  version-info screen (`ui_version_screen_draw_and_compare`, `0x200a94c8`) — a real live query of
+  `IC501`, not a cosmetic/stored value, but only once per boot, not per screen visit. The value **is
+  actively compared** too: `ui_version_screen_draw_and_compare` diffs it against
+  `g_update_candidate_version_struct+8`, and a mismatch gates a detail panel plus 3 status-row widgets
+  (real triangle/return-arrow icons — an ahead/behind/restart-needed three-state indicator, not text).
+- **What feeds the "update candidate" side of that comparison is genuinely still unknown, despite an
+  extensive search.** `g_update_candidate_version_struct`'s base offset and the much-more-widely-shared
+  `g_screen_display_scratch_buf` (52 reference sites) both turned out to be reused verbatim by several
+  completely unrelated screens (a QSO-recorder storage-capacity display, a memory-channel editor) — real
+  evidence this is a generic, heavily-multiplexed scratch buffer, not a dedicated "update file info"
+  struct. Leading (unconfirmed) hypothesis: a generic previous-frame-vs-current-frame snapshot pair used
+  for redraw-skipping across many screens — though RAM-sharing with unrelated screens doesn't actually
+  disprove it still carries real update-file data specifically for *this* screen when it's active
+  (mutually-exclusive screens legitimately share scratch RAM). The version-info screen's own field
+  *interpretation* (which offset means which component) is solid, independently verified via the label
+  strings drawn alongside each value. `notes/multi-cpu-images-history.md`/`notes/band-scope-state.md`
+  independently reached the same "generic multiplexed buffer" conclusion earlier, with a sharper framing
+  worth trying: populated via `FUN_2008cff8`'s own generic dispatch logic, not a dedicated writer — which
+  internal case of `FUN_2008cff8` handles this screen is the concrete next step, not yet tried. DSP
+  Program/Data/FPGA fields on the same screen, by contrast, **are** confirmed live-queried at boot
+  (`ui_version_screen_populate_fields`'s DSP-field source and `dsp_identity_query_record0`'s destination
+  are the same address, `0x203def00`). All 3 ARM address-formation idioms (literal-pool, `MOVW`/`MOVT`,
+  `ADR`/PC-relative) were swept against the full decoded instruction stream for a writer — zero hits.
+  Full trace, every ruled-out candidate, and the narrative behind this in the history file.
 - **Checked, 2026-09-07 — does a detected mismatch actually trigger a firmware push? No, from 3 angles.**
   The mismatch branch's own calls are 100% UI-drawing, nothing touches flash/transport code. The real
   updater (`firmware_update_main`) shares zero code or data with the comparison structs — reached only via
   a manual SD-card-menu confirmation. Even `firmware_update_main`'s own per-chunk trigger
   (`chunk_needs_update`/`DAT_2002217c`) has no writer found anywhere (checked exhaustively, a real open
   mystery of its own). And the transport those 3 chunks would use (`chunk_transport_send_data`) is
-  reconfirmed non-`SCIF3` regardless. See `notes/front-panel-firmware-history.md`'s "Does a version
-  mismatch actually trigger a firmware push?" section.
+  reconfirmed non-`SCIF3` regardless.
 - **Checked, 2026-09-07 — no firmware-image-write mechanism found for the front panel (not exhaustive).**
   `scif3_send_frame` (the only outbound-frame-construction primitive found) is called exclusively from
-  `scif3_driver_pump_tick` (`0x200373ac`, renamed from `FUN_200373ac`), which is in turn the *only* caller
-  of `scif3_send_frame` — a fully self-contained, narrow outbound driver. Every send in it is a single
-  bounded frame (≤33 bytes, matching the known packet size) triggered by a simple status-bit flag or the
-  boot-time `0xF0`/`0xF1` handshake above — no loop, no offset/size-header parsing, nothing shaped like an
-  erase/program sequence. This is a real negative result for the handout's goal 2, but not a whole-image
-  sweep — it only rules out this specific call graph, not every possible path.
+  `scif3_driver_pump_tick` (`0x200373ac`), which is in turn its *only* caller — a fully self-contained,
+  narrow outbound driver. Every send is a single bounded frame (≤33 bytes) triggered by a simple
+  status-bit flag or the boot-time handshake above — no loop, no offset/size-header parsing, nothing
+  shaped like an erase/program sequence. A real negative result for the handout's goal 2, but not a
+  whole-image sweep — it only rules out this specific call graph, not every possible path.
 
 ## Open questions
 
-**Correction, 2026-09-24 — "bit 16 = MENU, bit 23 = QUICK" below was wrong, don't reuse it.**
-Those two lookup-table entries were checked against FRONT CHECK MODE's *list positions* (9 and
-12), not real `SCIF3` key codes, so the identification was off. `g_scif3_bit_to_keycode_table`
-bit-index 16 (bitfield byte `0x0f` bit 0) is actually **A/B** (code `0x09`), and bit-index 23
-(byte `0x0f` bit 7) is actually **SPLIT** (code `0x0c`). The real `MENU`/`QUICK` bits are byte
-`0x0d` bit 3 (code `0x0f`, `MENU`) and byte `0x0d` bit 6 (code `0x11`, `QUICK`). The mechanism
-described below — `scif3_key_bitfield_scan_and_resolve` diffing the buffer and resolving through
-this table — is still correct; only the two example bit→key identifications were wrong. Full
-`SCIF3` field layout and key-code table: [notes/front-panel-report.md](front-panel-report.md).
+**Correction, 2026-09-24** — `g_scif3_bit_to_keycode_table` bit-index 16 (bitfield byte `0x0f` bit 0)
+is actually **A/B** (code `0x09`), and bit-index 23 (byte `0x0f` bit 7) is actually **SPLIT** (code
+`0x0c`) — an earlier pass checked these two entries against FRONT CHECK MODE's *list positions* (9 and
+12) instead of real `SCIF3` key codes. The real `MENU`/`QUICK` bits are byte `0x0d` bit 3 (code `0x0f`,
+`MENU`) and byte `0x0d` bit 6 (code `0x11`, `QUICK`) — this is the mapping the "physical button presses
+reach the main CPU" finding in Current state above relies on; the mechanism itself
+(`scif3_key_bitfield_scan_and_resolve` diffing the buffer and resolving through this table) is correct,
+only the two example bit→key identifications were wrong. Full `SCIF3` field layout and key-code table:
+[notes/front-panel-report.md](front-panel-report.md).
 
 - **Where real `IC501` firmware actually lives, if the update container carries it at all.** Checked one
   specific angle 2026-09-07 (see above): the update file's "Front CPU" version field
@@ -154,29 +106,7 @@ this table — is still correct; only the two example bit→key identifications 
   comparison is real and meaningful — but this doesn't itself locate an image; still open.
 - Whether `IC501` is field-updated at all, or factory-programmed once and never touched by this mechanism —
   leaning further towards "never updated over `SCIF3`" after the negative result above, but not settled.
-- **The exact `SCIF3` type→offset→field mapping (which bit is `MENU`, which is `FUNCTION`, etc.) is still
-  not fully decoded**, but a real, verified piece of it now exists: see the resolved item below —
-  buffer offset `0xd`-`0x11` (bits 0-39) is a physical-key bitfield, and `g_scif3_bit_to_keycode_table`
-  gives at least 2 of the 40 bit→key-code mappings directly (bit 16 = `MENU`, bit 23 = `QUICK`); the
-  rest of that table (`0x2018d980`, 40 bytes) is straightforward to read off for the remaining bits.
-- **Resolved, 2026-09-07 — physical button presses DO reach the main CPU over `SCIF3`.** The previous
-  entry here (below, kept for the record) asked whether `key_event_resolve_and_route`'s key-code struct
-  connects to the confirmed `SCIF3` status buffer at all, since a same-day `references_to` search on both
-  addresses found zero links. Two things had been masking the connection: **(a) a transcription typo** —
-  the struct address is `0x203901f2`, not `0x200301f2` as first recorded (no symbol exists at the latter;
-  every search run against the wrong address necessarily came back empty), and **(b) genuine indirection**
-  — the actual copy happens through `scif3_key_bitfield_scan_and_resolve` (`0x2002fbc8`, called every tick
-  from `ui_input_poll_tick` right before `key_event_resolve_and_route`), which diffs 5 live bytes read
-  straight from the `SCIF3` buffer (via a pointer confirmed to hold `0x203dcab6`) against a shadow copy,
-  resolves the changed bit through a lookup table, and writes the result into the key-code struct.
-  Verified against already-known ground truth, not just plausible-looking: the lookup table's byte at
-  bit-index 16 is `0x09` (`MENU`) and at bit-index 23 is `0x0c` (`QUICK`), matching `notes/ui-menu.md`'s
-  independently-confirmed key codes. Full derivation, renamed functions, and the one still-open loose end
-  (a second, not-yet-fully-understood fallback scan in `FUN_2002fa9c`, possibly the encoder/dial) are in
-  `notes/front-panel-firmware-history.md`'s "Priority-1 handout question resolved" section.
-- *(Superseded by the entry above — kept for the record, not a live question anymore)* New, sharper
-  question surfaced 2026-09-07 as a side effect of unrelated UI-menu tracing (`notes/ui-menu.md`): found
-  the actual main-CPU-side consumer of physical key/touch events (`key_event_resolve_and_route`,
-  `0x2002ef98`) reading a raw key-code byte from a small fixed struct, apparently disconnected from the
-  confirmed `SCIF3` status buffer — raised the question of whether button-press data reaches the main CPU
-  via `SCIF3` at all. See the resolved entry above for the answer.
+- **The exact `SCIF3` type→offset→field mapping (which bit is which physical key) is still not fully
+  decoded** beyond the corrected `MENU`/`QUICK` entries above — buffer offset `0xd`-`0x11` (bits 0-39) is
+  a physical-key bitfield, and the rest of `g_scif3_bit_to_keycode_table` (`0x2018d980`, 40 bytes) is
+  straightforward to read off for the remaining bits.

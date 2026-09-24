@@ -1,7 +1,7 @@
 # FPGA ↔ CPU link (band scope): spec for a fake FPGA
 
 Static analysis of `body.bin` v1.42 (Ghidra, base 0x20005000), 2026-09-24, with QMP checks in the
-emulator. Picks up from [HANDOFF-fake-fpga.md](HANDOFF-fake-fpga.md). Confidence: ✅ confirmed
+emulator. Picks up from [HANDOFF-fake-fpga.md](archive/HANDOFF-fake-fpga.md). Confidence: ✅ confirmed
 (decompile, disassembly and a live check agree), 🟢 static only but unambiguous, 🟡 inferred.
 
 **Summary.** Everything goes over **RSPI2**. Neither SCIF5/FPDX nor FPSX/FPSR is involved: the

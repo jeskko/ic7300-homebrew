@@ -1587,3 +1587,31 @@ FPGA-config relationship one hop later (DSP → FPGA, not flash → FPGA).
   further main-CPU `P2_6` writes), a single early release — however it happens — would be entirely
   sufficient to explain every SCIF5 observation in this session, live traffic included. Doesn't close the
   question, but narrows what kind of mechanism is worth still looking for.
+
+## Archived from multi-cpu-images.md on 2026-09-24
+
+## Retracted or superseded along the way (kept for history only)
+
+- Early belief that no C6x disassembler exists anywhere (only custom-disassembler/live-JTAG were viable) —
+  retracted; real tools exist upstream (binutils `tic6x`, Capstone `TMS320C64X`, TI's own `dis6x`).
+- Reading component2's (internally named `dsp_data.bin`, really `FPGA`) leading 64 bytes as small
+  calibration constants — superseded by the whole-file histogram/size/preamble evidence for an Altera FPGA
+  bitstream, itself now confirmed by version-field correlation (see above).
+- The original boot-loader-only read of the dual-flash-slot mechanism (via `base.dat`'s
+  `unpack_from_flash_to_mem`) — superseded by the fuller confirmation via `body.bin`'s own
+  `FUN_20062c64` (same conclusion, firmer evidence).
+- The `FUN_20025044` runtime-populated RAM-destination-table investigation (whether/where `chunk4`/
+  `chunk5-tail`'s bytes land in RAM) — mooted once `SCIF5` tracing showed the data is addressed by the
+  DSP-side protocol, not a literal RAM buffer with a findable static destination.
+- The `0xb0`/`0xe2` ring-buffer tag range was chased as a possible RSPI2/SSIF-audio/front-panel-UART
+  consumer (all 3 ruled out) before the real consumer (`chunk_transport_send_data` →
+  `dsp_page_transfer_verify` → `SCIF5`) was found directly.
+
+
+**`DRESD` (DSP hardware reset) release — still not located.** Confirmed driven low once at boot
+(`port_bulk_gpio_init_pass2`) and never touched again anywhere traced in `body.bin` — checked for a net
+inverter (none, purely resistive), a tri-state/direction release via `PM2` (ruled out), and every
+neighboring boot-init call (all ruled out). Since the DSP is clearly running and receiving live `SCIF5`
+traffic, either the release happens somewhere not yet traced (the `base.dat` boot-ROM stage, which runs
+before `body.bin`, is the next candidate — see [[base-loader]]) or it only ever needs releasing once and
+the DSP manages everything else autonomously from there.

@@ -2764,3 +2764,259 @@ User fixed the disassembly at `0x20058d78`. The old merged function (`FUN_2005d2
 **This fully closes the two-session-old "what is `0x20058d78`" question**: it's the shared SD-card decode-log writer's own state machine (open/write/close cycle, running continuously in the background for whichever digital mode is active), essentially the real internals behind `rtty_decode_log_poll_task`'s previously-opaque "generic file-I/O client" characterization — not a screen/UI controller, and not the demodulator. **It does not show a "MENU → Decode" screen-open gate anywhere** — nothing in this state machine waits for a screen to be opened; it appears to run whenever the operating mode is a supported digital mode, independent of whether the on-screen decode box is currently displayed.
 
 **Updated working theory**: "RTTY mode → MENU → Decode" most likely toggles a **separate, still-unfound UI-only consumer** (the on-screen decode-text box renderer) that reads from the same underlying decoded-character stream this log-writer also consumes — the log-to-SD-card feature and the on-screen live-decode display are two independent readers of one producer, not sequential steps of one pipeline. The actual producer (whatever converts demodulated audio into characters) remains exactly as unfound as before this whole `0x20058d78` thread started — this was a real, substantial resolution of an adjacent question, not the one originally being chased. **This static-analysis approach (CPU-side code tracing) has now been pushed about as far as it profitably goes** across three full sessions and every plausible entry point (file-write path, mode-change path, screen/log-writer state machine); live JTAG (breakpointing around `SCIF5` traffic or the DSP interface during real RTTY reception) is the honest next step if the underlying producer is still wanted, not further static tracing from here.
+
+## Archived from kernel-rtos.md on 2026-09-24
+
+Verbatim narrative moved out of the current-state file to keep it a living reference rather than
+a session log. Two blocks, kept in original order.
+
+## CI-V command dispatcher — found, and one genuine undocumented command (2026-08-30)
+
+The long-open "real CI-V command dispatcher consumer" item above is resolved. Full derivation in the
+history file's "The real CI-V command dispatcher found, and a genuine undocumented command (0x2A)
+confirmed" section — summary:
+
+- **`civ_rx_frame_stage_and_dispatch`** (`0x2000b258`) → **`civ_dispatch_lookup_validate`** (`0x2000b03c`,
+  indexes **`g_civ_cmd_table`**, base `0x2018aa2c`, 43 entries covering wire command bytes `0x00`-`0x2A`,
+  each `{handler_base_idx; subcmd_list ptr}`) → **`civ_dispatch_invoke_handler`** (`0x2000acd8`, permission-
+  gates against **`g_civ_handler_table`**, base `0x2018ab84`, 16 bytes/entry, function pointer at `+4`) →
+  the real per-command handler.
+- Cross-checked entry-by-entry against the real manual (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`,
+  pages 19-2 to 19-13): every unimplemented table slot (`0x0C`/`0x0D`/`0x12`/`0x1D`/`0x1F`/`0x20`/`0x22`/
+  `0x23`/`0x24`/`0x29`) matches a real gap in the manual's own command list — strong confirmation this
+  table really is CI-V's (unlike the retracted `sdcard_file_rpc_dispatch_task` false lead below).
+- **Command `0x2A`, subcommand `0x01` is real, fully implemented, and completely absent from the manual**
+  (whose table ends at `28 00`) — **the undocumented CI-V command**. Cross-checked against `wfview`
+  (open-source multi-model CI-V control suite, github.com/wf-group/wfview): **zero knowledge of `0x2A`
+  across all ~40 of its supported Icom models**, not just the IC-7300 — no third-party implementation
+  anywhere in that project's rig database has ever encountered it either. Handler:
+  **`civ_cmd_2a_handler_UNDOCUMENTED`** (`0x20010710`).
+- **Continued tracing (same day) — converges on the antenna tuner engage hardware.** The frequency
+  ceiling is `60,000,000` (60 MHz) exactly. Far more significantly: the handler's data byte `2`
+  ("engage") reaches **`tuner_engage_gpio_toggle(1)`** (renamed `FUN_2001e720`, bit-twiddles
+  `DAT_2001f50c`/`DAT_2001f510` in tandem) — the *identical* call the real, documented `1C 01` tuner
+  command's own "start tuning" path (`civ_cmd_1c01_tuner_handler` → `civ_cmd_1c01_tuner_dispatch` →
+  `tuner_start_tuning_sequence`) makes, and data byte `1` ("arm") shares `tuner_freq_and_txstate_precheck`
+  with that same documented path. Reads as an **alternate/bypass trigger for the tuner engage hardware**,
+  independently coded with lighter gating (skips the documented path's TX-state/split/mode checks) —
+  plausibly a factory/production-test shortcut, not confirmed as literally "the tuner command" since its
+  own state machine (`g_civ_2a_state`) is fully independent.
+- **Correction, same day**: `DAT_2001f50c`/`DAT_2001f510` are **not** a GPIO shadow as first guessed —
+  they're pointers to `0x203902d4`/`0x203902d6`, a generic shared status/interlock flags byte pair with
+  60+ unrelated call sites across the firmware (checked via `references_to`), not tuner-specific state.
+  The user supplied a real schematic/parts-list map of the tuner's relay network (4× `BU2092FV-E2`
+  serial-in/parallel-out relay drivers, shared `TDAT`/`TCLK`/`TOE`, individually latched by `TSTB1`-`4`
+  — full relay map now in `notes/ic7300-hardware.md`), but the raw P7 port data register
+  (`0xFCFE301C`) that would carry those signals has exactly one reference in the whole image — the
+  generic one-time boot GPIO init, same signature as the already-solved `DRESD`/`P2_6` case — so the
+  real runtime relay-shift-out code goes through some other, not-yet-found indirection.
+  **Exact bit assignments confirmed off the schematic, 2026-09-09** (previously only known as
+  "shared `TDAT`/`TCLK`/`TOE`, individually latched by `TSTB1`-`4`" with no bit numbers): `TSTB1`=`P7_1`,
+  `TSTB2`=`P7_2`, `TSTB3`=`P7_5`, `TSTB4`=`P7_6`, `TCLK`=`P7_3`, `TDAT`=`P7_4`; also on the same port,
+  `TOE`=`P7_7`, and both `PHASEI`/`IMPI` read as `P7_8` (unconfirmed whether that's a genuine shared/
+  muxed pin or a transcription slip — don't treat as settled either way).
+
+  **Found, same day, using those exact bit numbers as a targeted search** — the standing "some other,
+  not-yet-found indirection" is resolved. `TCLK`/`TDAT` are **not** bit-banged GPIO at all —
+  `tuner_relay_serial_bus_init` (renamed from `FUN_200b3a30`) configures `PFC7`/`PFCE7`/`PFCAE7`/`PMC7`
+  to put `P7_3`/`P7_4` into real peripheral (alt-function) mode, routing them to a small on-chip
+  serial-shift peripheral at `0xE800A800`-`0xE800A814` (register shape matches the confirmed RSPI2
+  poll-status-then-write-data pattern, but at different addresses — **not yet identified against the
+  RZ/A1H manual**, a real open item if the exact shift-clock timing ever matters). This fully explains
+  why no `TCLK`/`TDAT` bit-bang loop on raw `P7` was ever found — it was never going to be GPIO.
+
+  `TSTB1`-`4`, however, genuinely **are** GPIO, driven by `tuner_relay_tstb_strobe_dispatch` (renamed
+  from `FUN_200b391c`, registered as event `0xa0` off the same generic per-tick dispatcher already
+  confirmed servicing RSPI2/SSIF/front-panel) via masked writes to `PSR7` (`0xFCFE311C`, not the plain
+  `P7` data register — this is why the earlier `0xFCFE301C`-only search came back empty, the exact same
+  "check the *actual* register used, not just the data register" lesson this project has hit before).
+  Picks one of 4 pending "dirty" bits (one per relay-driver chip) and pulses it via a 2-phase write pair
+  (the "hi" half then, after a ~35-iteration software delay, the "lo" half) from a 32-byte table labeled
+  `g_tuner_tstb_pulse_table` (`0x20335F98`, lo half at the base, hi half at `+0x10`) — **the touched bit
+  for index 0/1/2/3 is bit 1/2/5/6, an exact, independent match to the schematic's `TSTB1`/`TSTB2`/
+  `TSTB3`/`TSTB4` = `P7_1`/`P7_2`/`P7_5`/`P7_6`**, real code confirming the real pin reading with zero
+  ambiguity in the bit selection itself (the two 16-bit halves' precise set-vs-clear polarity within
+  `PSR7` carries the same "structurally motivated, not independently confirmed" caveat `gpio.c`'s own
+  docstring already flags for this register family generally). **Renamed and PLATE-commented in Ghidra,
+  2026-09-09** (both functions plus the table) — high-confidence findings only; the still-open items
+  below were deliberately left as their auto-generated `FUN_*` names.
+
+  Surrounding cluster, also found (not yet renamed — their own roles read clearly from direct decompile,
+  but weren't independently cross-checked against real hardware the way the two renamed functions were):
+  `FUN_200b3c5c` (cold-boot driver init, called from the same init-sequence block as the front-panel/
+  SD-card driver inits) calls `tuner_relay_serial_bus_init`, sets all 4 chips' target state to `0x555`,
+  asserts `TOE` active-low via `PSR7`, waits 10ms, then calls `FUN_200b3bf4` (default/all-off relay
+  pattern). `FUN_200b3d34` (the periodic per-tick state machine, serviced by the same generic dispatcher
+  as `tuner_relay_tstb_strobe_dispatch`) builds a 2-bit-per-output pattern from two 24-byte target
+  arrays — sizes matching `notes/ic7300-hardware.md`'s own `RL20xx`/`RL21xx` relay table almost exactly
+  (4 chips × 6 outputs × 2 bits) — and hands it to `FUN_200b3718`/`FUN_200b37dc`, which marks the
+  per-chip dirty bits `tuner_relay_tstb_strobe_dispatch` consumes.
+
+  **Not yet proven, medium confidence**: the concrete end-to-end link from `tuner_engage_gpio_toggle`/
+  `civ_cmd_1c01_tuner_handler`/CI-V `0x2A` down to this specific cluster — plausible (same general RAM
+  region, same idle-tick-dispatcher servicing pattern already confirmed for other tuner-adjacent code)
+  but no direct pointer/call chain traced yet connecting them. `PHASEI`/`IMPI` (`P7_8`) ambiguity also
+  still open — `port_bulk_gpio_init_pass1` does configure that bit as *input*, at least consistent with
+  either/both being a CPU-read sense signal rather than an output, but no specific `PPR7` bit-8 read
+  found yet to confirm which.
+- **First real hardware-pin-level confirmation, same day**: following up the user's `EKEY`/`PHASEI`/
+  `IMPI`/`SWRL`/`TPWRL` hint found **`tuner_jack_poll_and_autotrigger`** (renamed `FUN_2006672c`, runs
+  every idle-loop tick) and **`tuner_jack_signal_precheck`** (renamed `FUN_20066154`) — both read the
+  `[TUNER]` jack's `TCON`/`EKEY` pins (`P0_4`/`P6_2`) directly via the real port-pin-read register
+  (`g_ppr_register_base`, `0xFCFE3200` family), the first genuine GPIO-level tie of this code cluster to
+  a real, schematic-named signal (see `notes/ic7300-signal-chain.md`'s `P0_4`/`P6_2` rows). On a
+  successful `EKEY` + frequency/TX-state check, `tuner_jack_poll_and_autotrigger` calls
+  **`tuner_engage_from_jack_trigger`** → `tuner_engage_gpio_toggle` — a **third independent trigger path**
+  into the same primitive, alongside documented CI-V (`1C 01`) and undocumented CI-V (`0x2A`).
+  **Open refinement**: `TCON`/`EKEY`/`ESTA` are the *external* tuner-accessory jack's own signals — not
+  confirmed to be the *internal* relay network's own `TSTB`/`TCLK`/`TDAT` bus, so "coordinates with the
+  tuner subsystem" and "physically drives the internal relay network" remain two separately-unconfirmed
+  claims. The `SWRL`/`TPWRL` hint didn't pan out on this function's own threshold locals (traced to
+  generic shared state, not power/SWR samples) — best remaining lead is checking `0x2001f168` (the
+  paired tuner housekeeping function) for a `PPR1` read, not yet done. **`PPR1` clarified, 2026-09-09**:
+  not a distinct schematic-named signal (the user checked and couldn't find one under that name) —
+  it's this project's own already-established register-naming shorthand for "the Port Pin Read
+  register, Port 1" (`0xFCFE3204`, already used this way in `notes/firmware-update.md`'s own
+  `P1_6`/`PDV` trace), which reads all of Port 1's pins at once. `SWRL`=`P1_15`/`TPWRL`=`P1_14` (both
+  already in `notes/ic7300-signal-chain.md`'s own P1 pin table) are just two bits *of* that same
+  register, not separate registers of their own — so the still-open lead is unchanged in substance
+  (does `0x2001f168` read `0xFCFE3204` at all, and if so do bits 14/15 matter to it), just no longer
+  confusing to phrase. See the history file for full derivation.
+
+## Follow-up, 2026-09-20/21 — independent Opus review of the sweep's own uncertain items. Three
+## hypotheses above were WRONG and are now replaced with confirmed answers; two are now
+## confirmed; two are honestly bounded with proof they can't go further without live RAM access.
+
+Requested specifically to stress-test the sweep's own shakiest calls before they hardened into
+assumed fact — this project's own standing discipline of getting a second opinion on uncertain
+findings. Full detail in the request/response; summarizing the corrected state here.
+
+**Corrected: `FUN_200293c8`/`FUN_200506d0` are external-IRQ pin config, not a 6-channel
+peripheral.** The "6 similarly-offset struct instances" reading was a misread — those six offsets
+are six different GPIO port-mux register groups (PBDC/PFC/PFCE/PFCAE/PIPC/PMC) at the *same* port
+offset, the identical septet idiom already documented on `pwrk_irq7_config_init`, sharing its own
+base pointers. Cross-checked three independent signals (port-mux bit, `INTC.ICR1` sense bits, GIC
+ID) and derived `IRQ_n = GIC ID 32+n` from this project's own confirmed IRQ7=39/IRQ4=36/IRQ3=35
+map: `0x200293c8` configures **external IRQ6** (`P1_6`), `0x200506d0` configures **external IRQ1**
+(`P1_1`) — renamed `ext_irq6_config_init`/`ext_irq1_config_init`. Bonus cross-link:
+`notes/memory-map.md` already has RTC (`IC351`)'s `RTC_IRQ` on `P1_1`-`P1_3`, so **IRQ1 is the RTC
+interrupt line** — nicely ironic given the next finding. Note `ext_irq1_config_init` never
+registers/unmasks a handler (config only) — where that happens is still open.
+
+**Corrected: the RTC bit-bang hypothesis for `FUN_200605fc` was WRONG — it's SSIF (I2S audio)
+bring-up.** Resolved its literal pool directly: `0xE820B000` = `SSICR_0` (already in
+`notes/memory-map.md:189`, whose own docs note `0x2005fdb4` as SSIF0/1's shared init — and this
+function's third instruction calls exactly that), `0xFCFE3200` = `PPR0` (pin-*read* register, so
+the ~20 wait loops are startup pin-state synchronization on I2S clock/word-select lines settling,
+not a bit-banged data protocol), and the DMAC/MTU2-status addresses referenced alongside match
+`notes/ic7300-signal-chain.md`'s own already-noted SSIF+DMAC pairing. The `32000` passed to
+`FUN_20063448` is a coincidental MTU2 interval unrelated to OSTM0's own `CMP=32000` tick source —
+confirmed by decompiling it (writes an MTU2 compare-match target one interval ahead). Independent
+confirmation RTC can't be the answer: the real RTC (`IC351`) is an I2C part on `RIIC1`, not
+bit-banged — its only GPIO tie-in is the `RTC_IRQ` pin just resolved above, a completely different
+function. The misleading RTC plate comment on `FUN_200605fc` has been replaced with this finding;
+`FUN_2006099c` (part of the same SSIF cluster) decompiled and confirmed as a state-block reset,
+not a separate subsystem. `FUN_200b7020`'s earlier guessed connection to this cluster is
+**unsupported** — retracted, no evidence found either way.
+
+**Confirmed: `FUN_2007ed9c`/`FUN_2007ede0` really do belong to `ui_graphics_lifecycle_task`** —
+by real data this time, not the original address-proximity guess. Both store message-buffer
+handles into the same struct (`0x20390634`), which `references_to` shows is read from inside
+`ui_graphics_lifecycle_task`'s own address range. Not renamed (what the buffers carry is still
+unknown), but the linkage itself is now a confirmed fact, documented in plate comments.
+
+**Resolved, all three "never decompiled" candidates — two guesses were wrong**:
+- `FUN_2017c618` is **not a checksum** — it's a textbook unsigned 32-bit restoring-division
+  routine (an `__aeabi_uidiv` equivalent). Renamed `udiv32_generic`. The `nvram_multirecord_load_
+  and_verify` call site is computing a record/page-count division, not an integrity check —
+  correcting that part of the original NVRAM-cluster writeup.
+- `FUN_2017c766` is confirmed a zero-fill wrapper tail-calling the *real* 3-argument memset,
+  found in the same pass: `FUN_2017c758` (arg order `(dst, count, fill)` — renamed `memset_generic`,
+  confirmed with a nonzero fill from another caller), so `FUN_2017c766` becomes
+  `memset_zero_generic`. Sibling to `memmove_generic`/`memcmp_generic`, same runtime cluster.
+- `FUN_20024738` is a **signature-keyed NVRAM boot-mode dispatcher** — reads a 16-byte tag from
+  NVRAM offset `16000`, walks a 4-entry signature+function-pointer table, and calls the match.
+  Connects directly to `FUN_2002aeac` below (same NVRAM offset). Not renamed; enumerating its 4
+  table entries would name all 4 boot modes — flagged as a good next step, not attempted.
+
+**`FUN_2002aeac` reassessed: not merely a trivial stub — an always-false predicate that's
+load-bearing.** Its single, always-`0` return value is genuinely stored and branched on inside
+`cold_boot_hw_init`, permanently selecting one path over an alternative. That alternative's own
+sibling branch ends by writing the *same* 16-byte NVRAM slot `FUN_20024738` (above) reads and
+dispatches on — offset `16000` is a persistent "what should the next boot do" request slot,
+written by reset paths and consumed by the dispatcher. Read as a plausible (not proven)
+deliberately-disabled feature gate, not dead/meaningless code — a genuine constant wouldn't
+normally be persisted and branched on this way.
+
+**Confirmed: `FUN_20005dd8`'s delay unit is microseconds, on `OSTM1` (not `OSTM0`, not
+`dly_tsk`).** Resolved the full register set (`OSTM1TS`/`OSTM1TT`/`OSTM1CNT` at `0xFCFEC414`/
+`...18`/`...04`) and the exact comparison (`us*32 <= counter`, i.e. real microseconds at the
+confirmed 32MHz `P0φ`). So `cold_boot_hw_init`'s own three calls are `10ms`, `30ms`, `100µs` —
+not ticks. Renamed the whole cluster: `ostm1_busywait_delay_us`/`ostm1_counter_start`/
+`ostm1_delay_target_reached`/`ostm1_counter_stop`.
+
+**Honestly bounded, not resolved further — proven to need live RAM access, not more static
+work**: `FUN_2000a0a8`'s (`0x20396AC8`), `FUN_2000a264`'s (`0x20390028`), and `FUN_20035af4`'s
+(`0x203901FD`/`0x203FC621`) target addresses each appear in **exactly one** literal pool
+image-wide (their own) — a real, checked negative result, not "didn't look hard enough." Two
+others got partial answers: `FUN_200b47f0` writes `PSR1` (Port Set/Reset), plausibly driving pin
+`P1_0` high (PSR base inferred, not manual-confirmed); `FUN_200b4800`'s target (`0x203DEF00`) is
+the firmware's big shared global state block (36 literal-pool references image-wide, `cold_boot_
+hw_init` is its only direct caller here); `FUN_2006756c`'s target (`0x2039041C`) is a small
+feature-state block with 2 real readers, one of them the front-panel status-frame builder — the
+specific feature itself still unnamed. Concrete next step for all of these, not attempted:
+a QEMU RAM watchpoint on the unresolved addresses (this project's own established technique,
+see `qemu-machine/README-history.md`'s GDB-perturbation entries for how to do this safely).
+
+**Two caveats the reviewing agent flagged on its own work, worth a manual check before treating
+as fully hardened**: the `P1_6`/`P1_1` pin identifications rest on a stride-4 port-numbering
+pattern derived from 2 already-confirmed data points, not read directly from the RZ/A1H manual;
+`FUN_200b47f0`'s `PSR1` base address (`0xFCFE3100`) is inferred from confirmed neighboring
+registers, same caveat.
+
+Ghidra state: 9 further renames, 17 further plate comments (2 of which explicitly replace
+earlier, now-corrected comments — `0x200605fc`'s RTC guess and `0x2007ed9c`'s proximity-only
+guess), all saved.
+
+## Follow-up, 2026-09-21 — every one of the previous section's own two flagged caveats (the
+## derived-not-manual-confirmed pin/register identifications) now directly confirmed against the
+## real RZ/A1H hardware manual (`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_...pdf`, already
+## sitting locally, extracted via `pdftotext`) and the real IC-7300 schematic (user-supplied)
+
+**The stride-4 port-register derivation for `ext_irq6_config_init`/`ext_irq1_config_init` is
+exactly right, confirmed address-by-address, not just pattern-matched.** The manual's own port
+register table gives `PMC1`=`0xFCFE3404`, `PBDC1`=`0xFCFE7104`, `PFC1`=`0xFCFE3504`,
+`PFCE1`=`0xFCFE3604`, `PFCAE1`=`0xFCFE3A04`, `PIPC1`=`0xFCFE7204` — every single one matches the
+2026-09-21 review's derived offsets from `DAT_2002a0bc` (`0xFCFE7100`) exactly. The manual's own
+interrupt-source table also directly confirms `IRQ_n = GIC ID 32+n` (`IRQ0`=32, `IRQ1`=33, ...,
+`IRQ6`=38) — no longer just derived from 2 known-good examples.
+
+**Real schematic ground truth (user-supplied) resolves both physical-pin questions the last
+section left open**:
+- **`P1_6`** (external IRQ6) is net **"PDV"**, connected to `VOUT` of `IC361` (**NJU770F43**, a New
+  Japan Radio voltage-detector/supervisor IC) — so external IRQ6 is a real power/voltage-detect
+  interrupt, not a data peripheral. Plausibly connects to this project's own extensive PWRK/
+  power-state work, not yet cross-linked.
+- **`P1_0`** (written by the newly-renamed `frontpanel_mcu_release_reset`, see the table above)
+  is net **"FRES"**, wired to the front-panel board's JTAG connector `RESET_IN` → a 10k resistor
+  → `RESET_OUT` → the front-panel CPU's (`IC501`, RL78) own reset pin. **`cold_boot_hw_init`'s
+  2nd action is releasing the front-panel MCU from reset**, right before any SCIF3 front-panel
+  traffic — a clean, concrete answer, not a hypothesis anymore.
+
+**`FUN_200605fc`'s SSIFCR "magic values" decoded against the manual's own bit layout** —
+`0xCC`→`SSIFCR_0`: `TIE`=1, `RIE`=1 (both TX/RX FIFO interrupts enabled, channel 0); `0xC4`→
+`SSIFCR_1`: `TIE`=0, `RIE`=1 (RX-interrupt-only, channel 1). The DMAC addresses referenced
+alongside resolve to `CHCTRL_4`/`CHCTRL_3`/`CHCTRL_5` in the manual's own DMAC register table —
+this SSIF0/1 bring-up touches DMAC channels 3, 4, and 5. The real audio-format register write
+(`SSICR_0`) itself uses a computed value, not a literal, so its exact sample-rate/format bits
+remain unresolved without live QMP capture or tracing `FUN_2005fdb4`'s own computation — a
+reasonable stopping point, not pursued further here.
+
+**Lesson reinforced**: the RZ/A1H manual and the IC-7300 schematic were already sitting locally
+in `/data/misc/icom/7300/doc/` the whole time — every one of this pass's answers came from
+material already on disk, not new acquisition. Worth checking that directory before spending
+more static-analysis effort deriving something a datasheet states directly.
+
+Ghidra state: 4 further renames/comments (`frontpanel_mcu_release_reset` renamed; `ext_irq6_
+config_init`, `ext_irq1_config_init`, `FUN_200605fc` plate comments updated with the confirmed
+findings), saved.
