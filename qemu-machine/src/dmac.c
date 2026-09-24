@@ -171,6 +171,7 @@ struct RZA1HDmacState {
     uint8_t stream_set[RZA1H_DMAC_CHANNELS];   /* register set the next completion uses */
     uint32_t chstat[RZA1H_DMAC_CHANNELS];      /* ch1-7 CHSTAT (EN, END, SR) */
     uint64_t stream_blocks[RZA1H_DMAC_CHANNELS];
+    uint64_t stream_overruns[RZA1H_DMAC_CHANNELS]; /* END still set at the next block */
 
     uint8_t regs[RZA1H_DMAC_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case */
@@ -301,12 +302,15 @@ static void rza1h_dmac_stream_tick(void *opaque)
         if (!(s->stream_active & (1u << ch))) {
             continue;
         }
+        if (s->chstat[ch] & DMAC_CHSTAT_END) {
+            s->stream_overruns[ch]++;   /* the firmware hasn't taken the previous buffer */
+        }
         rza1h_dmac_transfer_set(s, ch, set, true);
         s->stream_set[ch] = !set;
         s->chstat[ch] = DMAC_CHSTAT_EN | DMAC_CHSTAT_END | (set ? 0 : DMAC_CHSTAT_SR);
-        if (++s->stream_blocks[ch] % 4000 == 1) {
-            rza1h_debug("dmac", "ch%d stream: block %" PRIu64 " (set N%d)", ch,
-                       s->stream_blocks[ch], set);
+        if (++s->stream_blocks[ch] % 1000 == 1) {
+            rza1h_debug("dmac", "ch%d stream: block %" PRIu64 " (set N%d), %" PRIu64
+                       " overruns so far", ch, s->stream_blocks[ch], set, s->stream_overruns[ch]);
         }
         if (!(dmac_reg32(s, ch * DMAC_CH_STRIDE + DMAC_CHCFG_0) & DMAC_CHCFG_DEM)) {
             qemu_irq_pulse(s->irq[ch]);

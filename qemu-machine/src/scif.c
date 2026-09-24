@@ -202,6 +202,7 @@
 #include "qemu/module.h"
 #include "qom/object.h"
 #include "system/address-spaces.h"
+#include "ui/input.h"
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
@@ -263,6 +264,23 @@ struct RZA1HScifState {
     uint8_t  frontpanel_pending_ack_type; /* stashed for the timer callback,
                                             * since ptimer callbacks only
                                             * get `opaque`, not an argument */
+
+    /* Virtual front panel (channel 3, 2026-09-24): the 32-byte report the RL78 front CPU
+     * presents (g_scif3_rx_status_buffer layout, see rza1h_scif3_fp_reset), a queue of frames
+     * still to deliver (snapshots, [offset][data...]), the fpctl control chardev, and the
+     * mouse-as-touchscreen input handler. frontpanel_ack_timer paces the queue. */
+    uint8_t  fp[32];
+    bool     fp_booted;      /* the full report has been sent */
+    uint8_t  fpq[16][34];
+    uint8_t  fpq_len[16];
+    int      fpq_head, fpq_count;
+    bool     fpq_timer_armed;
+    CharFrontend fpctl;
+    char     fpctl_line[160];
+    int      fpctl_pos;
+    QemuInputHandlerState *fp_input;
+    int      fp_mouse_x, fp_mouse_y;
+    bool     fp_mouse_down, fp_mouse_dirty;
 
     /* Bus logger (2026-09-20) -- generic per-channel TX frame assembly for
      * observability, deliberately independent of the channel-3/5 virtual-
@@ -511,56 +529,262 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
  * this file's own front-panel-responder comment and README.md's heat-map Status section). */
 #define FRONTPANEL_ACK_DELAY_NS 1000000
 
-static void rza1h_scif3_frontpanel_ack(uint8_t type)
+/* (rza1h_scif3_frontpanel_ack, the original one-frame precompute, was folded into
+ * rza1h_scif3_deliver_frame below on 2026-09-24.) */
+
+/* Deliver one complete inbound frame, [type/offset][data...], to the firmware: precompute what
+ * scif3_frame_rx_statemachine would hold after 0xFE and those bytes (frame buffer, byte count =
+ * 1 + len, "escape pending" bit clear) and deliver only the 0xFD terminator through the real
+ * FRDR/RXI path -- the technique rza1h_scif3_frontpanel_ack pioneered (see its comment). The
+ * state machine accepts up to 33 bytes after 0xFE, i.e. offset + 32 data bytes. */
+static void rza1h_scif3_deliver_frame(RZA1HScifState *s, const uint8_t *f, int len)
 {
     AddressSpace *as = &address_space_memory;
     uint32_t frame_buf, desc, status_addr;
     uint8_t byte, status;
-    bool identify = (type == 0xF0);
 
-    address_space_read(as, SCIF3_FRAME_BUF_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
-                       &frame_buf, 4);
-    address_space_read(as, SCIF3_DESC_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
-                       &desc, 4);
-    address_space_read(as, SCIF3_STATUS_PTR_ADDR, MEMTXATTRS_UNSPECIFIED,
-                       &status_addr, 4);
-
-    byte = type; /* frame buffer byte 0 = the dispatched frame's type */
-    address_space_write(as, frame_buf, MEMTXATTRS_UNSPECIFIED, &byte, 1);
-    if (!identify) {
-        byte = 0; /* one dummy payload byte, at frame buffer byte 1 */
-        address_space_write(as, frame_buf + 1, MEMTXATTRS_UNSPECIFIED,
-                            &byte, 1);
-    }
-
-    /* desc byte count, as if 0xFE then <type> (then, for the generic
-     * case, one payload byte) were each already processed by a real
-     * scif3_frame_rx_statemachine call. */
-    byte = identify ? 2 : 3;
+    address_space_read(as, SCIF3_FRAME_BUF_PTR_ADDR, MEMTXATTRS_UNSPECIFIED, &frame_buf, 4);
+    address_space_read(as, SCIF3_DESC_PTR_ADDR, MEMTXATTRS_UNSPECIFIED, &desc, 4);
+    address_space_read(as, SCIF3_STATUS_PTR_ADDR, MEMTXATTRS_UNSPECIFIED, &status_addr, 4);
+    address_space_write(as, frame_buf, MEMTXATTRS_UNSPECIFIED, f, len);
+    byte = len + 1;
     address_space_write(as, desc, MEMTXATTRS_UNSPECIFIED, &byte, 1);
-
     address_space_read(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
-    status &= 0xFE; /* clear bit 0 -- "frame in progress", set by a real
-                      * 0xFE byte's own processing */
+    status &= 0xFE;
     address_space_write(as, status_addr, MEMTXATTRS_UNSPECIFIED, &status, 1);
-}
 
-/* Fires FRONTPANEL_ACK_DELAY_NS after the outbound frame's terminator byte was seen -- does the
- * precompute (rza1h_scif3_frontpanel_ack) and delivers the one real terminator byte through the
- * normal FRDR/RXI path, exactly what the REG_FTDR case used to do synchronously in the same
- * instruction. Same split as rza1h_scif5_dsp_ack_timer_fire below. */
-static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
-{
-    RZA1HScifState *s = RZA1H_SCIF(opaque);
-
-    rza1h_scif3_frontpanel_ack(s->frontpanel_pending_ack_type);
-    s->frdr = 0xFD; /* the one byte actually delivered through the normal
-                      * RXI path -- see rza1h_scif3_frontpanel_ack's own
-                      * comment for why the other two aren't */
+    s->frdr = 0xFD;
     s->rx_pending = true;
     qemu_irq_lower(s->irq_rx);
     qemu_irq_raise(s->irq_rx);
 }
+
+static void rza1h_scif3_fp_arm(RZA1HScifState *s)
+{
+    if (s->fpq_timer_armed) {
+        return;
+    }
+    s->fpq_timer_armed = true;
+    ptimer_transaction_begin(s->frontpanel_ack_timer);
+    ptimer_set_count(s->frontpanel_ack_timer, FRONTPANEL_ACK_DELAY_NS);
+    ptimer_run(s->frontpanel_ack_timer, 1);
+    ptimer_transaction_commit(s->frontpanel_ack_timer);
+}
+
+/* Queue a frame: 0xF0 (identify reply) when off == 0xF0, else [off][fp[off..off+n-1]] as they
+ * are now. A touch frame (off 0x13) replaces a touch frame still waiting, so mouse drags
+ * coalesce instead of piling up. */
+static void rza1h_scif3_fp_queue(RZA1HScifState *s, int off, int n)
+{
+    uint8_t f[34];
+    int len = 1;
+
+    f[0] = off;
+    if (off != 0xF0) {
+        n = MIN(n, 32 - off);
+        memcpy(f + 1, s->fp + off, n);
+        len += n;
+    }
+    if (off == 0x13) {
+        for (int i = 0; i < s->fpq_count; i++) {
+            int k = (s->fpq_head + i) % 16;
+            if (s->fpq[k][0] == 0x13) {
+                memcpy(s->fpq[k], f, len);
+                s->fpq_len[k] = len;
+                return;
+            }
+        }
+    }
+    if (s->fpq_count == 16) {
+        rza1h_debug("scif", "scif3: front-panel queue full, dropping frame at %#x", off);
+        return;
+    }
+    memcpy(s->fpq[(s->fpq_head + s->fpq_count) % 16], f, len);
+    s->fpq_len[(s->fpq_head + s->fpq_count) % 16] = len;
+    s->fpq_count++;
+    rza1h_scif3_fp_arm(s);
+}
+
+/* The queue's pacing timer (FRONTPANEL_ACK_DELAY_NS between frames): deliver the next frame
+ * once the firmware has taken the previous terminator byte. */
+static void rza1h_scif3_frontpanel_ack_timer_fire(void *opaque)
+{
+    RZA1HScifState *s = RZA1H_SCIF(opaque);
+    int k = s->fpq_head;
+
+    s->fpq_timer_armed = false;
+    if (!s->fpq_count) {
+        return;
+    }
+    if (s->rx_pending) {
+        rza1h_scif3_fp_arm(s);
+        return;
+    }
+    rza1h_debug("scif3fp", "deliver frame at %#x, %d data bytes", s->fpq[k][0],
+                s->fpq_len[k] - 1);
+    rza1h_scif3_deliver_frame(s, s->fpq[k], s->fpq_len[k]);
+    s->fpq_head = (s->fpq_head + 1) % 16;
+    s->fpq_count--;
+    if (s->fpq_count) {
+        rza1h_scif3_fp_arm(s);
+    }
+}
+
+/* Power-on report: version text, no touch, knobs at rest, pots from env. Layout (field map
+ * from body.bin, notes in qemu-machine/README.md "front panel"): 0x01-0x0c version ASCII (1-3
+ * shown as d.dd), 0x0d-0x11 key bits, 0x13 touch tag (0 = touching), 0x14/0x16 touch X/Y BE16
+ * pixels, 0x18 main dial BE16 counter, 0x1b/0x1c TWIN PBT counters, 0x1d MULTI counter,
+ * 0x1e AF pot, 0x1f RF/SQL pot. */
+static void rza1h_scif3_fp_reset(RZA1HScifState *s)
+{
+    const char *ver = getenv("RZA1H_FP_VERSION");
+    const char *e;
+
+    memset(s->fp, 0, sizeof(s->fp));
+    memset(s->fp + 1, ' ', 12);
+    ver = ver ? ver : "100";
+    memcpy(s->fp + 1, ver, MIN(strlen(ver), 12));
+    s->fp[0x13] = 0xFF;
+    s->fp[0x1e] = (e = getenv("RZA1H_FP_AF")) ? strtol(e, NULL, 0) : 0x80;
+    s->fp[0x1f] = (e = getenv("RZA1H_FP_RFSQL")) ? strtol(e, NULL, 0) : 0x60;
+    s->fp_booted = false;
+    s->fpq_head = s->fpq_count = 0;
+    s->fpq_timer_armed = false;
+}
+
+/* fpctl: one ASCII command per line, one reply line ("ok ..." / "err ..."). The command set
+ * is what tools/fp.py speaks: get | w OFF HEX | bit OFF BIT 0/1 | add8 OFF N | add16 OFF N |
+ * touch X Y | release. OFF is hex, N and X/Y decimal. */
+static void rza1h_scif3_fpctl_exec(RZA1HScifState *s, char *line)
+{
+    char reply[80] = "ok";
+    char *argv[40];
+    int argc = 0;
+    char *save, *t;
+
+    for (t = strtok_r(line, " \t\r", &save); t && argc < 40; t = strtok_r(NULL, " \t\r", &save)) {
+        argv[argc++] = t;
+    }
+    if (!argc) {
+        return;
+    }
+    if (!strcmp(argv[0], "get")) {
+        int n = snprintf(reply, sizeof(reply), "ok ");
+        for (int i = 0; i < 32; i++) {
+            n += snprintf(reply + n, sizeof(reply) - n, "%02x", s->fp[i]);
+        }
+    } else if (!strcmp(argv[0], "w") && argc == 3) {
+        int off = strtol(argv[1], NULL, 16), n = strlen(argv[2]) / 2;
+        if (off < 0 || off + n > 32 || !n) {
+            snprintf(reply, sizeof(reply), "err range");
+        } else {
+            for (int i = 0; i < n; i++) {
+                char h[3] = { argv[2][2 * i], argv[2][2 * i + 1], 0 };
+                s->fp[off + i] = strtol(h, NULL, 16);
+            }
+            rza1h_scif3_fp_queue(s, off, n);
+        }
+    } else if (!strcmp(argv[0], "bit") && argc == 4) {
+        int off = strtol(argv[1], NULL, 16), bit = atoi(argv[2]);
+        if (off < 0 || off >= 32 || bit < 0 || bit > 7) {
+            snprintf(reply, sizeof(reply), "err range");
+        } else {
+            s->fp[off] = atoi(argv[3]) ? s->fp[off] | (1 << bit) : s->fp[off] & ~(1 << bit);
+            rza1h_scif3_fp_queue(s, off, 1);
+        }
+    } else if ((!strcmp(argv[0], "add8") || !strcmp(argv[0], "add16")) && argc == 3) {
+        int off = strtol(argv[1], NULL, 16), n = atoi(argv[2]);
+        bool w16 = argv[0][3] == '1';
+        if (off < 0 || off + (w16 ? 2 : 1) > 32) {
+            snprintf(reply, sizeof(reply), "err range");
+        } else if (w16) {
+            uint16_t v = (s->fp[off] << 8 | s->fp[off + 1]) + n;
+            s->fp[off] = v >> 8;
+            s->fp[off + 1] = v;
+            rza1h_scif3_fp_queue(s, off, 2);
+        } else {
+            s->fp[off] += n;
+            rza1h_scif3_fp_queue(s, off, 1);
+        }
+    } else if (!strcmp(argv[0], "touch") && argc == 3) {
+        int x = MIN(MAX(atoi(argv[1]), 0), 479), y = MIN(MAX(atoi(argv[2]), 0), 271);
+        s->fp[0x13] = 0;
+        s->fp[0x14] = x >> 8; s->fp[0x15] = x;
+        s->fp[0x16] = y >> 8; s->fp[0x17] = y;
+        rza1h_scif3_fp_queue(s, 0x13, 5);
+    } else if (!strcmp(argv[0], "release")) {
+        s->fp[0x13] = 0xFF;
+        rza1h_scif3_fp_queue(s, 0x13, 1);
+    } else {
+        snprintf(reply, sizeof(reply), "err unknown command");
+    }
+    rza1h_debug("scif3fp", "fpctl: %s -> %s", argv[0], reply);
+    strcat(reply, "\n");
+    qemu_chr_fe_write_all(&s->fpctl, (const uint8_t *)reply, strlen(reply));
+}
+
+static int rza1h_scif3_fpctl_can_receive(void *opaque)
+{
+    return 64;
+}
+
+static void rza1h_scif3_fpctl_receive(void *opaque, const uint8_t *buf, int size)
+{
+    RZA1HScifState *s = RZA1H_SCIF(opaque);
+
+    for (int i = 0; i < size; i++) {
+        if (buf[i] == '\n') {
+            s->fpctl_line[s->fpctl_pos] = 0;
+            rza1h_scif3_fpctl_exec(s, s->fpctl_line);
+            s->fpctl_pos = 0;
+        } else if (s->fpctl_pos < (int)sizeof(s->fpctl_line) - 1) {
+            s->fpctl_line[s->fpctl_pos++] = buf[i];
+        }
+    }
+}
+
+/* Mouse as touchscreen (GTK/SDL window): left button down/drag/up -> touch/move/release in
+ * LCD pixels. Coordinates are the console's absolute 0..0x7fff scaled to 480x272. */
+static void rza1h_scif3_fp_input_event(DeviceState *dev, QemuConsole *src, QemuInputEvent *evt)
+{
+    RZA1HScifState *s = RZA1H_SCIF(dev);
+
+    if (evt->type == INPUT_EVENT_KIND_ABS) {
+        int *v = evt->abs.axis == INPUT_AXIS_X ? &s->fp_mouse_x : &s->fp_mouse_y;
+        *v = qemu_input_scale_axis(evt->abs.value, INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
+                                   0, evt->abs.axis == INPUT_AXIS_X ? 479 : 271);
+        s->fp_mouse_dirty |= s->fp_mouse_down;
+    } else if (evt->type == INPUT_EVENT_KIND_BTN && evt->btn.button == INPUT_BUTTON_LEFT) {
+        s->fp_mouse_down = evt->btn.down;
+        s->fp_mouse_dirty = true;
+    }
+}
+
+static void rza1h_scif3_fp_input_sync(DeviceState *dev)
+{
+    RZA1HScifState *s = RZA1H_SCIF(dev);
+
+    if (!s->fp_mouse_dirty) {
+        return;
+    }
+    s->fp_mouse_dirty = false;
+    if (s->fp_mouse_down) {
+        s->fp[0x13] = 0;
+        s->fp[0x14] = s->fp_mouse_x >> 8; s->fp[0x15] = s->fp_mouse_x;
+        s->fp[0x16] = s->fp_mouse_y >> 8; s->fp[0x17] = s->fp_mouse_y;
+        rza1h_scif3_fp_queue(s, 0x13, 5);
+    } else {
+        s->fp[0x13] = 0xFF;
+        rza1h_scif3_fp_queue(s, 0x13, 1);
+    }
+}
+
+static const QemuInputHandler rza1h_scif3_fp_input_handler = {
+    .name  = "IC-7300 touch panel",
+    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
+    .event = rza1h_scif3_fp_input_event,
+    .sync  = rza1h_scif3_fp_input_sync,
+};
 
 /* Virtual DSP-link responder (channel 5 only) -- see this file's own
  * comment (2026-09-09, sixth pass) for the full live-traced derivation of
@@ -937,12 +1161,19 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
                          * rza1h_scif3_frontpanel_ack_timer_fire's own
                          * comment for why this is now a real, if
                          * arbitrary, delayed reply instead. */
-                        s->frontpanel_pending_ack_type = s->tx_frame_type;
-                        ptimer_transaction_begin(s->frontpanel_ack_timer);
-                        ptimer_set_count(s->frontpanel_ack_timer,
-                                        FRONTPANEL_ACK_DELAY_NS);
-                        ptimer_run(s->frontpanel_ack_timer, 1); /* oneshot */
-                        ptimer_transaction_commit(s->frontpanel_ack_timer);
+                        /* 2026-09-24: through the front-panel queue. The first data
+                         * frame gets the full power-on report (that's what latches the
+                         * version and ends the no-touch/zero state); later ones get a
+                         * 1-byte echo of the model's own byte, not a 0 (a 0 at 0x13
+                         * reads as a touch, at 0x1e as AF = 0). */
+                        if (s->tx_frame_type == 0xF0) {
+                            rza1h_scif3_fp_queue(s, 0xF0, 0);
+                        } else if (!s->fp_booted) {
+                            s->fp_booted = true;
+                            rza1h_scif3_fp_queue(s, 0, 32);
+                        } else {
+                            rza1h_scif3_fp_queue(s, s->tx_frame_type, 1);
+                        }
                     }
                     s->tx_frame_pos = -1;
                 }
@@ -1079,6 +1310,7 @@ static void rza1h_scif_reset(DeviceState *dev)
     ptimer_transaction_begin(s->frontpanel_ack_timer);
     ptimer_stop(s->frontpanel_ack_timer);
     ptimer_transaction_commit(s->frontpanel_ack_timer);
+    rza1h_scif3_fp_reset(s);
 }
 
 static void rza1h_scif_realize(DeviceState *dev, Error **errp)
@@ -1112,6 +1344,15 @@ static void rza1h_scif_realize(DeviceState *dev, Error **errp)
     ptimer_transaction_begin(s->frontpanel_ack_timer);
     ptimer_set_freq(s->frontpanel_ack_timer, 1000000000);
     ptimer_transaction_commit(s->frontpanel_ack_timer);
+
+    if (s->channel == 3) {
+        qemu_chr_fe_set_handlers(&s->fpctl, rza1h_scif3_fpctl_can_receive,
+                                 rza1h_scif3_fpctl_receive, NULL, NULL, s, NULL, true);
+        if (!getenv("RZA1H_FP_NO_MOUSE")) {
+            s->fp_input = qemu_input_handler_register(dev, &rza1h_scif3_fp_input_handler);
+            qemu_input_handler_activate(s->fp_input);
+        }
+    }
 }
 
 static void rza1h_scif_init(Object *obj)
@@ -1140,6 +1381,7 @@ static void rza1h_scif_init(Object *obj)
 
 static const Property rza1h_scif_properties[] = {
     DEFINE_PROP_CHR("chardev", RZA1HScifState, chr),
+    DEFINE_PROP_CHR("fpctl", RZA1HScifState, fpctl),   /* channel 3: front-panel control */
     DEFINE_PROP_UINT32("channel", RZA1HScifState, channel, 0),
 };
 

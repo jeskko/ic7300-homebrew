@@ -24,6 +24,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "chardev/char.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "hw/core/boards.h"
@@ -358,6 +359,11 @@ static void rza1h_init(MachineState *machine)
 
         qdev_prop_set_uint32(scif, "channel", i);
         qdev_prop_set_chr(scif, "chardev", serial_hd(i));
+        /* The front-panel control socket (scif.c's virtual front panel, tools/fp.py):
+         * `-chardev socket,id=fpctl,...` attaches to channel 3 only. */
+        if (i == 3 && qemu_chr_find("fpctl")) {
+            qdev_prop_set_chr(scif, "fpctl", qemu_chr_find("fpctl"));
+        }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(scif), &error_fatal);
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(scif), 0,
                                 RZA1H_SCIF0_BASE + i * RZA1H_SCIF_STRIDE, 0);

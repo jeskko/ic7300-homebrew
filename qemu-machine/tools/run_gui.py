@@ -7,6 +7,11 @@ running with `-display gtk` (or --display sdl/none) until you close it.
 --screendump FILE [--after S] instead captures one PPM of the console after S
 seconds and exits (a headless check that the console path works).
 
+Front panel: click in the window to touch the screen (scif.c maps the mouse to the
+touch panel), and drive keys/knobs with tools/fp.py over the control socket this
+starts at /tmp/qemu_run_gui_fp.sock, e.g. `RZA1H_FPCTL=/tmp/qemu_run_gui_fp.sock
+tools/fp.py press MENU`.
+
 Usage: run_gui.py [--display gtk|sdl|none] [--screendump out.ppm --after 170]
 """
 
@@ -32,12 +37,15 @@ def main():
     args = ap.parse_args()
 
     sock = "/tmp/qemu_run_gui.sock"
+    fpsock = "/tmp/qemu_run_gui_fp.sock"
     Path(sock).unlink(missing_ok=True)
+    Path(fpsock).unlink(missing_ok=True)
     proc = subprocess.Popen(
         [str(QEMU), "-M", "rz-a1h", "-display", args.display, "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none",
          "-global", f"rza1h-riic.image={HERE / 'riic2_eeprom_pwrk_test.img'}",
-         "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait"],
+         "-icount", DEFAULT_ICOUNT, "-qmp", f"unix:{sock},server,nowait",
+         "-chardev", f"socket,id=fpctl,path={fpsock},server=on,wait=off"],
         stdin=subprocess.DEVNULL)
     try:
         time.sleep(1.0)
@@ -48,6 +56,8 @@ def main():
         qmp_cmd(s, "qom-set", path=GPIO_PATH, property="pwrk-pressed", value=True)
         print("PWRK pressed and held -- the splash appears after ~40 s, the main screen "
               "after ~2 min (emulated time runs slower than real time).")
+        print(f"Front panel: click the screen to touch; keys/knobs: "
+              f"RZA1H_FPCTL={fpsock} tools/fp.py press MENU")
         if args.screendump:
             time.sleep(args.after)
             print(qmp_cmd(s, "screendump", filename=str(Path(args.screendump).resolve())))

@@ -275,6 +275,7 @@ struct RZA1HMtu2State {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     RZA1HMtu2Event ch3a; /* TGI3A, GIC ID 154 */
+    int64_t tcnt3_base_ns; /* virtual time at which the free-running TCNT_3 read 0 */
     RZA1HMtu2Event ch4a; /* TGI4A, GIC ID 159 */
     RZA1HMtu2Event ch4b; /* TGI4B, GIC ID 160 -- see file comment */
     RZA1HMtu2Event ch4c; /* TGI4C, GIC ID 161 */
@@ -322,6 +323,7 @@ struct RZA1HMtu2State {
 #define MTU2_TCR_3   0x200
 #define MTU2_TIER_3  0x208
 #define MTU2_TGRA_3  0x218
+#define MTU2_TCNT_3  0x210
 #define MTU2_TSR_3   0x22c
 
 #define MTU2_TCR_4   0x201
@@ -440,8 +442,37 @@ static void rza1h_mtu2_update_irq(RZA1HMtu2State *s, RZA1HMtu2Event *ev)
     qemu_set_irq(ev->irq, tgf && tgie);
 }
 
+/* Channel 3's TCNT as a live free-running 16-bit counter (2026-09-24). The system tick
+ * ISR (0x20005b98) re-arms TGI3A with `TGRA_3 += 8000` -- a compare match 8000 counts (250 us)
+ * after the previous one on a free-running counter. Modelling it as "one match per 16-bit
+ * wrap" (the earlier simplification) made the tick 2.048 ms, 8.2x slow: the main loop, the
+ * 500 us tick (FUN_200b7910) and the SSIF audio pumps all ran 8x too rarely (the audio pumps
+ * missed ~63% of DMA buffers). Now each TGRA_3 write schedules the match at
+ * (TGRA_3 - TCNT_3) mod 65536 counts from now, exactly like the hardware. */
+static uint16_t rza1h_mtu2_tcnt3(RZA1HMtu2State *s)
+{
+    int64_t ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->tcnt3_base_ns;
+
+    return (uint16_t)muldiv64(ns, MTU2_FREQ_HZ, NANOSECONDS_PER_SECOND);
+}
+
+static void rza1h_mtu2_ch3a_arm(RZA1HMtu2State *s)
+{
+    uint16_t tgr = s->regs[MTU2_TGRA_3] | (s->regs[MTU2_TGRA_3 + 1] << 8);
+    uint32_t delta = (uint16_t)(tgr - rza1h_mtu2_tcnt3(s));
+
+    ptimer_transaction_begin(s->ch3a.timer);
+    ptimer_set_limit(s->ch3a.timer, delta ? delta : 0x10000, 1);
+    ptimer_run(s->ch3a.timer, 0);
+    ptimer_transaction_commit(s->ch3a.timer);
+}
+
 static void rza1h_mtu2_rearm(RZA1HMtu2State *s, RZA1HMtu2Event *ev)
 {
+    if (ev == &s->ch3a) {
+        rza1h_mtu2_ch3a_arm(s);
+        return;
+    }
     uint32_t counts = ev->arms_on_tstr ? rza1h_mtu2_period_counts(s, ev)
                                         : MTU2_CH4A_ONESHOT_COUNTS;
 
@@ -462,6 +493,10 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
     uint64_t val = 0;
+
+    if (offset == MTU2_TCNT_3 && size == 2) {
+        return rza1h_mtu2_tcnt3(s);
+    }
 
     if (offset == MTU2_DSP_PACE_STATUS && size == 1) {
         /* Computed on read, not maintained by a ptimer callback --
@@ -551,6 +586,11 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         }
         return;
     }
+    case MTU2_TCNT_3:
+        s->tcnt3_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                           muldiv64((uint16_t)value, NANOSECONDS_PER_SECOND, MTU2_FREQ_HZ);
+        memcpy(&s->regs[offset], &value, size);
+        return;
     case MTU2_TCR_3:
     case MTU2_TGRA_3:
         memcpy(&s->regs[offset], &value, size);
@@ -653,6 +693,7 @@ static void rza1h_mtu2_ch3a_tick(void *opaque)
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
 
     rza1h_debug("mtu2", "ch3 TGI3A compare-match (GIC 154)");
+    ptimer_set_limit(s->ch3a.timer, 0x10000, 1);   /* next match: a full wrap later */
     s->regs[MTU2_TSR_3] |= (1 << s->ch3a.bit);
     rza1h_mtu2_update_irq(s, &s->ch3a);
 }
@@ -699,6 +740,7 @@ static void rza1h_mtu2_ch4d_tick(void *opaque)
 static void rza1h_mtu2_reset(DeviceState *dev)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(dev);
+    s->tcnt3_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     memset(s->regs, 0, sizeof(s->regs));
     rza1h_mtu2_stop(&s->ch3a);
