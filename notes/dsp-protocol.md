@@ -230,3 +230,30 @@ the three version tags.
 changed nothing on the main screen. The S/Po bar isn't driven by those fields as planted. C4
 (class 8, never sent: the L[18] setter is unknown) and the SSIF stream are the remaining
 candidates.
+
+## McASP pin directions and audio format (DSP init 0x11813d24, 2026-09-24)
+
+Read directly from the SRCTLn writes: SRMOD 1 = TX, 2 = RX, with DISMOD = 3 on all.
+PDIR = 0x55, so AXR0[0], [2], [4] and [6] are outputs, and PFUNC = 0 (all pins are McASP).
+
+| McASP0 pin | Dir | Net ([[ic7300-signal-chain]]) |
+|---|---|---|
+| AXR0[0] | TX | ? — likely DFX_DET or DFX_AGC → FPGA (user's schematic reading: FPGA → FPX_DET → IC991 PCM1754 speaker DAC, FPX_AGC → IC971 AGC DAC) |
+| AXR0[1] | — | unused |
+| AXR0[2] | TX | ? — the other of DFX_DET / DFX_AGC |
+| AXR0[3] | RX | ? — probably from the FPGA (IF samples?) |
+| AXR0[4] | TX | DX_REC → CPU SSIRxD0 |
+| AXR0[5] | RX | DR_AF ← CPU SSITxD0 |
+| AXR0[6] | TX | DX_FMT → CPU SSIRxD1 |
+| AXR0[7] | RX | DR_RSV ← CPU SSITxD1 |
+
+The CPU-facing directions match the net names (DX = DSP transmits, DR = DSP receives).
+
+Format: XFMT/RFMT 0x180f0 = 32-bit slots, MSB first, 1-bit data delay. AFSX/RCTL 0x111 = 2-slot
+(I2S) frame, word-wide sync, **external** frame sync. ACLKX/RCTL 0x81 = **external** bit clock. So
+the DSP is an I2S slave; BCLK/FRM/MCLK come from elsewhere (most likely the FPGA, which also
+clocks the DACs). McASP1 (the SCIF5 command link) is a clock slave too: SRCTL1 = TX, SRCTL2 = RX,
+external clock and sync, so the CPU clocks every link frame.
+
+Consequence: speaker and AGC audio go DSP → FPGA → DAC and never touch the CPU. The CPU gets
+DX_REC/DX_FMT on its SSIF receive side (the spectrum-scope ring) and feeds DR_AF/DR_RSV to the DSP.
