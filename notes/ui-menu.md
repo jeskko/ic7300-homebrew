@@ -158,6 +158,21 @@ are both falling out of the same table.
 
 ## The physical-button-press chain, traced end to end
 
+**Correction, 2026-09-24 — the "MENU=9, QUICK=12" identification below was wrong, don't reuse
+it.** Those are FRONT CHECK MODE's *list positions* (a display sequence for the factory
+self-test screen), not the actual `SCIF3` key codes, and treating them as if they were the key
+codes fed into `g_key_code_to_command_id` mixed up two different button-numbering schemes. Real
+`SCIF3` key codes, from static analysis of the front-panel report buffer: **MENU = code 0x0f**
+(bitfield byte 0x0d bit 3), **QUICK = code 0x11** (byte 0x0d bit 6). Code 9 (0x09) is actually
+**A/B**, and code 0x0c is actually **SPLIT** — so `menu_key_command_handler` (0x200327dc,
+command ID 0x11) is really the **A/B** handler, and `quick_key_command_handler` (0x20032900,
+command ID 0x13) is really the **SPLIT** handler (it toggles bit 1 of 0x203deaac).
+`ui_queue_screen_open_request` (0x2002fd44) turns out to be a **long-press arm**, not a
+screen-open call. Full key-code table and the SCIF3 field layout:
+[notes/front-panel-report.md](front-panel-report.md). The chain mechanics below (poll → resolver
+→ command table → per-command handler) are still correct; only the MENU/QUICK identification is
+wrong.
+
 Picked this up specifically to answer "how does a real key/touch event reach the menu system at all."
 Traced the complete chain from a physical button press through to a queued screen-open request, for two
 concrete buttons (`MENU` and `QUICK`, both confirmed against the FRONT CHECK MODE numbering above):

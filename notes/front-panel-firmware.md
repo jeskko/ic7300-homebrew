@@ -137,6 +137,16 @@ now-corrected address typo (`0x200301f2` should read `0x203901f2`) flagged there
 
 ## Open questions
 
+**Correction, 2026-09-24 — "bit 16 = MENU, bit 23 = QUICK" below was wrong, don't reuse it.**
+Those two lookup-table entries were checked against FRONT CHECK MODE's *list positions* (9 and
+12), not real `SCIF3` key codes, so the identification was off. `g_scif3_bit_to_keycode_table`
+bit-index 16 (bitfield byte `0x0f` bit 0) is actually **A/B** (code `0x09`), and bit-index 23
+(byte `0x0f` bit 7) is actually **SPLIT** (code `0x0c`). The real `MENU`/`QUICK` bits are byte
+`0x0d` bit 3 (code `0x0f`, `MENU`) and byte `0x0d` bit 6 (code `0x11`, `QUICK`). The mechanism
+described below — `scif3_key_bitfield_scan_and_resolve` diffing the buffer and resolving through
+this table — is still correct; only the two example bit→key identifications were wrong. Full
+`SCIF3` field layout and key-code table: [notes/front-panel-report.md](front-panel-report.md).
+
 - **Where real `IC501` firmware actually lives, if the update container carries it at all.** Checked one
   specific angle 2026-09-07 (see above): the update file's "Front CPU" version field
   (`ui_version_screen_draw_and_compare`'s `+0xa4`, in the update-candidate struct

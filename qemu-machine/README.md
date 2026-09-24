@@ -14,7 +14,7 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Next thread (2026-09-24): band scope works (fake FPGA, see Status below); DSP code analysis handoff: [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
+## Next thread (2026-09-24): front panel is drivable (keys, dials, touch — see Status below); band scope works (fake FPGA); DSP code analysis handoff: [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
 
 **Speed (2026-09-24): boot to main screen 97 s → 32 s (`-icount shift=1`), or 8 s with
 `-icount shift=1,sleep=off`** (emulated clock may then run ahead of real time while idle, which
@@ -27,6 +27,33 @@ QEMU 11.1's WFE already halts properly, so the old "WFE spin" theory was wrong: 
 loops were the firmware's own delay loops polling a counter. Profiling methods that worked here
 (`perf` isn't installed and ptrace is child-only): gdb as the parent with SIGINT-driven stack
 sampling, `strace -f -c`, and gdb Python breakpoints counting timer callbacks.
+
+## Status, 2026-09-24, latest+2 — front panel: keys, dials, touch; the system tick was 8× slow
+
+Spec: [notes/front-panel-report.md](../notes/front-panel-report.md). `src/scif.c` models the
+RL78 front-panel MCU's `SCIF3` report as a 32-byte mirror, delivered a byte at a time through a
+paced queue (1 ms apart) by precomputing the RX state machine's end state and sending only the
+trailing `0xFD`. The first outbound frame carries the full power-on report (version, AF/RF-SQL
+pots, no-touch); later frames echo a single changed byte. A control chardev on `SCIF3`
+(`-chardev socket,id=fpctl,path=P,server=on,wait=off`) takes `get` / `w OFF HEX` /
+`bit OFF BIT 0/1` / `add8 OFF N` / `add16 OFF N` / `touch X Y` / `release`; `tools/fp.py` wraps
+it (`fp.py press MENU`, `fp.py dial +20`, `fp.py touch 240 136`, `fp.py state`, `fp.py keys`).
+The GTK window's left mouse button doubles as a touch press (`RZA1H_FP_NO_MOUSE=1` disables it).
+`tools/run_gui.py` opens its control socket at `/tmp/qemu_run_gui_fp.sock`.
+
+Live results: MENU opens the on-screen menu and EXIT closes it; the main dial reads 10 Hz per
+count at the default tuning step; touching (146, 90) on the MENU screen opens the audio scope; a
+synthetic 1 kHz tone on the fake DSP link shows as one clean line on the audio scope. Also
+confirmed live: RF/SQL ≥ 0x66 with no signal closes squelch and blanks the audio scope (the
+emulator's default, 0x60, keeps it open).
+
+Found chasing the key-scan tick rate — the **500 µs tick was actually firing 8.2× too rarely**.
+`mtu2.c` modelled TGI3A as one compare match per 16-bit `TCNT_3` wrap (2.048 ms), but the real
+tick ISR re-arms it every time with `TGRA_3 += 8000` (250 µs). `TCNT_3` is now a live counter,
+and each `TGRA_3` write schedules the next match `(TGRA − TCNT) mod 65536` counts out, matching
+the firmware's own re-arm pattern. Effects: the main loop, the 500 µs tick (`FUN_200b7910`) and
+the SSIF audio pumps were all running 8.2× too infrequently (audio DMA overruns dropped from 63%
+to ~0). `bench_boot` is now pixel-exact at 3.6 s emulated / 12 s wall (was 22 s / 38 s).
 
 ## Status, 2026-09-24, latest+1 — the DSP audio link streams (SSIF0/1)
 
