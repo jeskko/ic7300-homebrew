@@ -35,8 +35,10 @@
 #include "hw/core/sysbus.h"
 #include "hw/intc/arm_gic.h"
 #include "hw/misc/unimp.h"
+#include "hw/sd/sd.h"
 #include "hw/arm/machines-qom.h"
 #include "system/address-spaces.h"
+#include "system/blockdev.h"
 #include "system/memory.h"
 #include "system/reset.h"
 #include "system/system.h"
@@ -56,6 +58,13 @@ struct RzA1hIoRegion {
 };
 
 static const struct RzA1hIoRegion rza1h_io_regions[] = {
+    /* CS0-CS5 external bus (2026-09-24): nothing is fitted there on the IC-7300, and an
+     * access to an empty CS area completes on the real bus instead of aborting (believed,
+     * not measured). body.bin relies on that: with an SD card inserted a voice-recorder
+     * stop routine (FUN_2006b3c0) runs with no operation started and writes through a
+     * NULL descriptor pointer, strb [0x68]. Left unmapped, that was a fatal external
+     * abort; -d unimp still logs such accesses. */
+    { "external-cs0-cs5",         0x00000000, 0x18000000 },
     { "spi-status-and-neighbors", 0x3FEFA000, 0x00002000 },
     { "boot-gpio-pokes",          0x3FFFC000, 0x00004000 },
     { "io-e8000000",              0xE8000000, 0x00020000 },
@@ -408,6 +417,31 @@ static void rza1h_init(MachineState *machine)
         sysbus_connect_irq(SYS_BUS_DEVICE(dmac), dch,
                            qdev_get_gpio_in(gic, RZA1H_DMAC_CH0_IRQ + dch -
                                                  RZA1H_GIC_NUM_INTERNAL));
+    }
+
+    /* sdhi.c -- the SD slot body.bin actually drives (not MMCIF, see sdhi.c).
+     * The card is upstream's sd-card, backed by `-drive if=sd`; without one
+     * the slot is empty. Overlap-mapped inside "io-e8030000". */
+    {
+        DeviceState *sdhi = qdev_new(TYPE_RZA1H_SDHI);
+        DriveInfo *di = drive_get(IF_SD, 0, 0);
+        DeviceState *card;
+
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(sdhi), &error_fatal);
+        sysbus_mmio_map_overlap(SYS_BUS_DEVICE(sdhi), 0, RZA1H_SDHI0_BASE, 0);
+        sysbus_connect_irq(SYS_BUS_DEVICE(sdhi), 0, qdev_get_gpio_in(gic,
+                           RZA1H_SDHI0_CD_IRQ - RZA1H_GIC_NUM_INTERNAL));
+        sysbus_connect_irq(SYS_BUS_DEVICE(sdhi), 1, qdev_get_gpio_in(gic,
+                           RZA1H_SDHI0_ACCESS_IRQ - RZA1H_GIC_NUM_INTERNAL));
+        sysbus_connect_irq(SYS_BUS_DEVICE(sdhi), 2, qdev_get_gpio_in(gic,
+                           RZA1H_SDHI0_SDIO_IRQ - RZA1H_GIC_NUM_INTERNAL));
+        qdev_connect_gpio_out_named(sdhi, "dma-req", 0,
+                                    qdev_get_gpio_in_named(dmac, "sdhi-dreq", 0));
+        if (di) {
+            card = qdev_new(TYPE_SD_CARD);
+            qdev_prop_set_drive_err(card, "drive", blk_by_legacy_dinfo(di), &error_fatal);
+            qdev_realize_and_unref(card, qdev_get_child_bus(sdhi, "sd-bus"), &error_fatal);
+        }
     }
 
     /* rspi2.c -- added 2026-09-09 once mtu2.c's own scif5_cmd_transmit_now

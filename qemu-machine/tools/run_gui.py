@@ -68,6 +68,8 @@ def main():
     ap.add_argument("--icount",
                      help="pass -icount SPEC verbatim (e.g. shift=2, shift=auto); "
                           "'off' = no -icount at all. Mutually exclusive with --fast.")
+    ap.add_argument("--sd", help="SD card image for the slot (raw, power-of-two size; "
+                    "tools/build_sdcard.py makes one); without it the slot is empty")
     ap.add_argument("--no-pwrk", action="store_true",
                      help="boot straight up: use riic2_eeprom.img and skip the QMP PWRK "
                           "press/wait (default is the realistic PWRK-hold power-on)")
@@ -144,6 +146,8 @@ def main():
     ]
     if icount:
         qemu_args += ["-icount", icount]
+    if args.sd:
+        qemu_args += ["-drive", f"if=sd,format=raw,file={args.sd}"]
     if args.civ:
         Path(args.civ).unlink(missing_ok=True)
         qemu_args += ["-chardev", f"socket,id=civ,path={args.civ},server=on,wait=off",

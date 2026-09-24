@@ -41,6 +41,7 @@
 #define RZA1H_DEBUG_H
 
 #include "qemu/osdep.h"
+#include "qemu/timer.h"
 
 static inline bool rza1h_debug_enabled(const char *dev_name)
 {
@@ -81,7 +82,10 @@ static inline void rza1h_debug(const char *dev_name, const char *fmt, ...)
     if (!rza1h_debug_enabled(dev_name)) {
         return;
     }
-    fprintf(stderr, "[rza1h:%s t=%.3f] ", dev_name, g_get_monotonic_time() / 1e6);
+    /* t = host wall seconds, vt = emulated (QEMU_CLOCK_VIRTUAL) seconds -- they diverge a lot
+     * under -icount sleep=off, so timing questions need vt. */
+    fprintf(stderr, "[rza1h:%s t=%.3f vt=%.6f] ", dev_name, g_get_monotonic_time() / 1e6,
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9);
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);

@@ -83,9 +83,12 @@ unmodified firmware to a fully-drawn, interactively-drivable main screen.
   FPGA model), the CPU↔DSP link (command + audio) is behaviourally modelled, and a modified `body.bin`
   repacks and boots end-to-end in the emulator (commit 774acce) — the first real test that a
   `tools/icom_fw`-repacked custom image is accepted and runs. See `qemu-machine/README.md`.
+- **The emulated SD card works** (2026-09-25): the firmware's SD driver is on SDHI0, not MMCIF;
+  with `qemu-machine/src/sdhi.c` it mounts a FAT32 card image, creates its folders and saves
+  settings files. Heavy mounts stall under `-icount` (use `--icount off` for SD work).
 
-**Open / next**: a live SD-card firmware-update test on real hardware (`sdk/roadmap.md`'s Phase 0
-payoff — `body.bin`'s own MMCIF driver has never been reached by a traced boot path yet), or a
+**Open / next**: run the firmware's own SD updater on a repacked `.dat` in the emulator, then a
+live SD-card firmware-update test on real hardware (`sdk/roadmap.md`'s Phase 0 payoff), or a
 custom-code hook. Also open: 6 diode-matrix positions, the IC-9700 compression scheme, and where real
 front-panel firmware would live if it exists at all.
 

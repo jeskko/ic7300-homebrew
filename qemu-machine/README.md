@@ -36,6 +36,23 @@ Measured with `tools/bench_boot.py`.
   state, class-tagged replies, identity replies, realistic 2-frame latency) and audio over
   SSIF0/1 (`src/ssif.c` — 96 kHz I2S; a synthetic tone reaches the firmware's own RX-audio ring
   at the right frequency and level). Spec: `notes/dsp-protocol.md`.
+- **The SD card slot works** (`src/sdhi.c`, 2026-09-25): `body.bin` drives the card through
+  **SDHI0** (`0xE804E000`, Renesas' SD driver library), not MMCIF — that's why the old `mmc.c`
+  was never touched. The card is upstream QEMU's `sd-card` on the SDHI's SD bus
+  (`-drive if=sd,format=raw,file=IMG`, power-of-two size; `run_gui.py`/`screenshot.py --sd IMG`,
+  `tools/build_sdcard.py` builds MBR+FAT32 images). Sector transfers use DMAC ch7, paced by an
+  SDHI DMA-request line. Verified live: full card bring-up, mount (SD icon shown), the firmware
+  creating its `IC-7300/{Decode/Rtty,Voice,Setting,Capture,VoiceTx}` folder tree, SET > SD Card >
+  SD Card Info showing the correct capacity/free space, and Save Setting writing
+  `IC-7300/Setting/Set20000001_01.dat` (8224 bytes, `fsck.fat` clean). Two side fixes: the
+  CS0-CS5 external bus (`0x00000000`-`0x17FFFFFF`) is now mapped as ignore-writes/read-zero (a
+  voice-recorder stop routine writes through a NULL pointer on card insert, which used to be a
+  fatal abort), and SD_INFO1.INFO7 = 1 means *writable* to this firmware.
+  **Known issue:** under `-icount` (either pacing) a heavy mount — one that scans the whole FAT,
+  e.g. a card that already has the folder tree — stalls at a random point: the guest idles in
+  WFE (a real halt in QEMU 11) waiting for an SD event, and QEMU's icount idle warp stops
+  delivering the device's timer expiry promptly. Without `-icount` the same card mounts and
+  works fully. So use `--icount off` for SD work until this is fixed.
 - **A modified `body.bin` repacks and boots end-to-end** in the emulator (commit 774acce) — the
   first real test that a `tools/icom_fw`-repacked custom image is accepted and runs.
 - **The emulated system tick was fixed, and boot got much faster as a result**: the 500 µs tick
@@ -47,8 +64,9 @@ Measured with `tools/bench_boot.py`.
   and the CI-V/frequency/band-switch-latch path are all working — see the peripheral table below
   for what backs each one.
 
-**Open / next**: a live SD-card firmware update on real hardware (`sdk/roadmap.md`'s Phase 0
-payoff — `body.bin`'s own MMCIF driver has never been reached by a traced boot path yet), or a
+**Open / next**: the SD-card update flow in the emulator (put a repacked `.dat` in
+`IC-7300/` and run the firmware's own updater from the SD menu), the `-icount` SD stall above,
+then a live SD-card firmware update on real hardware (`sdk/roadmap.md`'s Phase 0 payoff) or a
 custom-code hook. DSP-side static code analysis is done (`notes/dsp-protocol.md`,
 `notes/civ-dsp-fpga-catalogue.md`); the CI-V `27 00` scope-waveform output and fixed-mode
 (VFO-offset) scope behaviour are not yet checked. TX audio playback (DR_AF) and the DX_FMT
@@ -74,7 +92,8 @@ Older status entries and the full session-by-session narrative: [README-history.
 | FPGA behind RSPI2 | `fake_fpga.c` | Behavioural model of the band-scope sweep protocol: 7-byte register file, 475-sample sweep reply, sweep-rate knobs (`RZA1H_FPGA_SWEEP_HZ`/`_FLOOR`/`_SIGNALS`). `RZA1H_DEBUG=fpga` |
 | SSIF0/1 (DSP audio, I2S) | `ssif.c` | Real register model (SSISR.IIRQ, FIFO data regs); RX content is the fake DSP's synthetic tone/noise, TX (DR_AF) logged as peak levels. `RZA1H_DEBUG=ssif` |
 | RX-8803LC RTC | `rx8803.c` | Real RIIC1 I2C slave; backs `body.bin`'s live idle-state RTC traffic |
-| MMCIF (SD/MMC host) | `mmc.c` | Real command/response/data protocol + virtual SD card, validated standalone — `body.bin`'s own driver not yet reached by any traced boot path |
+| SDHI0 (SD host) | `sdhi.c` | The IC-7300's SD slot: manual chapter 50 register model, upstream `sd-card` on its SD bus, card detect/WP, PIO and DMA (ch7) data, GIC 302-304 |
+| MMCIF (SD/MMC host) | `mmc.c` | Standalone protocol model with its own virtual card; `body.bin` doesn't use MMCIF (its SD card is on SDHI0) |
 | DMAC (DMA controller) | `dmac.c` | Real channels 0-7: honours `CHCFG.SAD/DAD` (fixed vs incrementing address), `ptimer`-based completion, streaming mode backs the SSIF audio pumps and the band-switch shift-register writes |
 | RSPI2 (Serial Peripheral I/F ch.2) | `rspi2.c` | Real TX + RX: SPDR2 writes clock a byte into an RX queue, SPRI2 (GIC 277) is level-triggered; clocks the FPGA sweep protocol |
 | VDC50 (LCD/display controller) + LVDS | `vdc5.c` | Register storage plus a real 60 Hz frame-timing interrupt source (output vsync/VLINE status, GIC 75-97); a QEMU graphic console scans out the active GR plane (`tools/run_gui.py`) |
@@ -165,9 +184,9 @@ branches; OpenVG rendering (the main screen fully draws); the fake FPGA (band sc
 system-tick fix that took boot from 97 s to 8 s wall.
 
 **Open:**
-1. **SD-card/VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — `body.bin`'s own MMCIF driver
-   has still never been reached by any traced boot path; reaching it (e.g. via the SD-update
-   flow) remains the actual Phase-0 payoff.
+1. **SD-card update flow and VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — the card works
+   (`sdhi.c`); next is running the firmware's own SD updater on a repacked `.dat`, and fixing
+   the `-icount` stall on heavy mounts (see Status).
 2. The CI-V `27 00` scope-waveform output and fixed-mode (VFO-offset) scope behaviour are not yet
    checked against the fake FPGA.
 3. TX audio playback (DR_AF) and the DX_FMT decoders are unexercised — needs recorder or

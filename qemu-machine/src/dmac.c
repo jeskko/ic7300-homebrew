@@ -139,7 +139,14 @@
  * polls CHSTAT from its 250 us tick, takes the finished buffer and clears END with CHCTRL CLREND.
  * CHSTAT EN (bit 0) reads 1 while streaming; the pumps redo the whole SSIF bring-up if it
  * doesn't. DMAINTn is not pulsed when CHCFG DEM (bit 24) masks it (the firmware sets DEM). One
- * ptimer serves every stream, so it's one expiry per 750 us, not one per word. */
+ * ptimer serves every stream, so it's one expiry per 750 us, not one per word.
+ *
+ * SDHI channels (2026-09-24, SD card, sdhi.c): a ch1-7 SETEN with SDHI0 on one side waits
+ * for sdhi.c's DMA request ("sdhi-dreq", up while a block is buffered or the buffer is
+ * free), moves one 512-byte block through SD_BUF0 per request, and at N0TB sets CHSTAT END
+ * and pulses DMAINTn (unless DEM). The move is immediate (sdhi.c already delays the block),
+ * with no timer of its own: under -icount every extra timer hop while the guest idles in
+ * WFE costs a main-loop wake-up, and chained hops stalled SD mounts. */
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
@@ -172,6 +179,10 @@ struct RZA1HDmacState {
     uint32_t chstat[RZA1H_DMAC_CHANNELS];      /* ch1-7 CHSTAT (EN, END, SR) */
     uint64_t stream_blocks[RZA1H_DMAC_CHANNELS];
     uint64_t stream_overruns[RZA1H_DMAC_CHANNELS]; /* END still set at the next block */
+    uint8_t sdhi_armed;         /* SETEN'd channels with SDHI0 on one side */
+    bool sdhi_req;              /* sdhi.c's DMA request line */
+    bool in_sdhi_tick;          /* inside rza1h_dmac_sdhi_move (re-entry guard) */
+    uint32_t sdhi_done[RZA1H_DMAC_CHANNELS];   /* bytes moved so far */
 
     uint8_t regs[RZA1H_DMAC_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case */
@@ -217,6 +228,8 @@ struct RZA1HDmacState {
  * kept at 100us as the smaller value that still tested clean). */
 #define DMAC_COMPLETE_DELAY_NS 100000
 #define DMAC_TIMER_FREQ_HZ 1000000000
+/* SDHI channels move one SD block per request. */
+#define DMAC_SDHI_BLOCK 512
 
 static uint64_t rza1h_dmac_read(void *opaque, hwaddr offset, unsigned size)
 {
@@ -361,6 +374,80 @@ static void rza1h_dmac_periph_complete(void *opaque)
     }
 }
 
+static bool dmac_is_sdhi(uint32_t a)
+{
+    return a >= RZA1H_SDHI0_BASE && a < RZA1H_SDHI0_BASE + 0x100;
+}
+
+/* One SD block between SD_BUF0 and memory per sdhi.c request (2026-09-24, the
+ * SD driver's ch7 reads: N0SA = 0xE804E000, the SDHI base the manual names for
+ * 64-byte-unit DMA). Every word goes through SD_BUF0 whatever the channel's
+ * address mode says, so the SDHI side needs no address decoding. */
+static void rza1h_dmac_sdhi_move(RZA1HDmacState *s)
+{
+    AddressSpace *as = &address_space_memory;
+    const hwaddr buf0 = RZA1H_SDHI0_BASE + 0x30;
+
+    if (s->in_sdhi_tick) {
+        return;     /* re-entered via the SD_BUF0 accesses below */
+    }
+    s->in_sdhi_tick = true;
+    for (int ch = 1; ch < RZA1H_DMAC_CHANNELS && s->sdhi_req; ch++) {
+        hwaddr base = ch * DMAC_CH_STRIDE;
+        uint32_t src = dmac_reg32(s, base + DMAC_N0SA_0);
+        uint32_t dst = dmac_reg32(s, base + DMAC_N0DA_0);
+        uint32_t count = dmac_reg32(s, base + DMAC_N0TB_0);
+        uint32_t cfg = dmac_reg32(s, base + DMAC_CHCFG_0);
+        bool from_sdhi = dmac_is_sdhi(src);
+        uint32_t n;
+        uint8_t w[4];
+
+        if (!(s->sdhi_armed & (1u << ch))) {
+            continue;
+        }
+        n = MIN(DMAC_SDHI_BLOCK, count - s->sdhi_done[ch]);
+        for (uint32_t i = 0; i < n; i += 4) {
+            uint32_t off = s->sdhi_done[ch] + i;
+
+            if (from_sdhi) {
+                address_space_read(as, buf0, MEMTXATTRS_UNSPECIFIED, w, 4);
+                address_space_write(as, dst + ((cfg & DMAC_CHCFG_DAD) ? 0 : off),
+                                    MEMTXATTRS_UNSPECIFIED, w, 4);
+            } else {
+                address_space_read(as, src + ((cfg & DMAC_CHCFG_SAD) ? 0 : off),
+                                   MEMTXATTRS_UNSPECIFIED, w, 4);
+                address_space_write(as, buf0, MEMTXATTRS_UNSPECIFIED, w, 4);
+            }
+        }
+        s->sdhi_done[ch] += n;
+        if (s->sdhi_done[ch] >= count) {
+            rza1h_debug("dmac", "ch%d SDHI transfer done: %u bytes %s %#x", ch, count,
+                       from_sdhi ? "to" : "from", from_sdhi ? dst : src);
+            s->sdhi_armed &= ~(1u << ch);
+            s->chstat[ch] = DMAC_CHSTAT_END;
+            if (!(cfg & DMAC_CHCFG_DEM)) {
+                qemu_irq_pulse(s->irq[ch]);
+            }
+        }
+        break;      /* one block per request */
+    }
+    s->in_sdhi_tick = false;
+}
+
+static void rza1h_dmac_sdhi_dreq(void *opaque, int n, int level)
+{
+    RZA1HDmacState *s = RZA1H_DMAC(opaque);
+    bool rising = level && !s->sdhi_req;
+
+    if (level != s->sdhi_req) {
+        rza1h_debug("dmacsdhi", "SDHI dreq %d (armed %02x)", level, s->sdhi_armed);
+    }
+    s->sdhi_req = level;
+    if (rising) {
+        rza1h_dmac_sdhi_move(s);
+    }
+}
+
 static void rza1h_dmac_seten(RZA1HDmacState *s, int ch)
 {
     hwaddr base = ch * DMAC_CH_STRIDE;
@@ -378,6 +465,15 @@ static void rza1h_dmac_seten(RZA1HDmacState *s, int ch)
         s->stream_set[ch] = 0;
         s->chstat[ch] = DMAC_CHSTAT_EN;
         rza1h_dmac_stream_update(s);
+        return;
+    }
+    if (dmac_is_sdhi(src) || dmac_is_sdhi(dst)) {
+        rza1h_debug("dmac", "ch%d SDHI transfer armed: src=%#x dst=%#x count=%u", ch, src,
+                   dst, count);
+        s->sdhi_armed |= 1u << ch;
+        s->sdhi_done[ch] = 0;
+        s->chstat[ch] = DMAC_CHSTAT_EN;
+        rza1h_dmac_sdhi_move(s);
         return;
     }
     if (src != RZA1H_RSPI2_SPDR && dst != RZA1H_RSPI2_SPDR) {
@@ -456,6 +552,7 @@ static void rza1h_dmac_reset(DeviceState *dev)
     ptimer_transaction_begin(s->periph_timer);
     ptimer_stop(s->periph_timer);
     ptimer_transaction_commit(s->periph_timer);
+    s->sdhi_armed = 0;
 }
 
 static void rza1h_dmac_init(Object *obj)
@@ -470,6 +567,7 @@ static void rza1h_dmac_init(Object *obj)
     for (int ch = 1; ch < RZA1H_DMAC_CHANNELS; ch++) {
         sysbus_init_irq(sbd, &s->irq[ch]);   /* sysbus IRQ index ch */
     }
+    qdev_init_gpio_in_named(DEVICE(obj), rza1h_dmac_sdhi_dreq, "sdhi-dreq", 1);
 }
 
 static void rza1h_dmac_realize(DeviceState *dev, Error **errp)

@@ -33,8 +33,9 @@
  * the next multiple of 32; raised again to 256 (2026-09-08 third pass)
  * once scif.c wired real TXI interrupts, the highest of which (TXI7, ID
  * 252, see below) needs at least 253; raised to 288 (2026-09-24) for RSPI2's
- * SPRI2 (ID 277, see rspi2.c). The real RZ/A1H has 587. */
-#define RZA1H_GIC_NUM_IRQ  288
+ * SPRI2 (ID 277, see rspi2.c); raised to 320 (2026-09-24) for SDHI0's
+ * card-detect/access/SDIO lines (IDs 302-304, see sdhi.c). The real RZ/A1H has 587. */
+#define RZA1H_GIC_NUM_IRQ  320
 
 /* Number of GIC-internal interrupt IDs (SGIs 0-15 + PPIs 16-31) that
  * precede the first SPI -- arm_gic's own gic_set_irq() offsets every
@@ -193,6 +194,15 @@
 #define RZA1H_MMC_BASE 0xE804C800
 #define RZA1H_MMC_SIZE 0x00000080
 #define TYPE_RZA1H_MMC "rza1h-mmc"
+
+/* sdhi.c -- SD host interface channel 0, the IC-7300's SD slot (manual
+ * chapter 50). GIC IDs from the manual's interrupt table: SDHI0_3 = card
+ * detect, SDHI0_0 = card access, SDHI0_1 = SDIO. */
+#define RZA1H_SDHI0_BASE 0xE804E000
+#define RZA1H_SDHI0_CD_IRQ     302
+#define RZA1H_SDHI0_ACCESS_IRQ 303
+#define RZA1H_SDHI0_SDIO_IRQ   304
+#define TYPE_RZA1H_SDHI "rza1h-sdhi"
 
 /* dmac.c -- matches ~/Downloads/rza1.svd's DMAC peripheral base. Real
  * device for channel 0 only, added 2026-09-09 once body.bin's own

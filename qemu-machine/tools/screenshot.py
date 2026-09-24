@@ -11,7 +11,7 @@ anything is drawn), this lets the boot run for `seconds`, pauses the VM, then:
     0x20974860,-1920,960,552,565).
 Uses QMP pmemsave (fast, GDB-free).
 
-Usage: screenshot.py [seconds] [--surface ...]... [--out DIR] [--no-pwrk] [--stderr FILE]
+Usage: screenshot.py [seconds] [--surface ...]... [--out DIR] [--no-pwrk] [--stderr FILE] [--sd IMG]
 """
 
 from __future__ import annotations
@@ -103,6 +103,7 @@ def main():
     ap.add_argument("--after", type=float, default=20.0)
     ap.add_argument("--stderr", help="write QEMU's stderr (RZA1H_DEBUG logs) to this file")
     ap.add_argument("--image", help="EEPROM image to use instead of the default one")
+    ap.add_argument("--sd", help="SD card image for the slot (raw, power-of-two size)")
     ap.add_argument("--icount", default=DEFAULT_ICOUNT,
                     help="-icount value (e.g. shift=1,sleep=off for faster-than-real-time)")
     args = ap.parse_args()
@@ -118,7 +119,8 @@ def main():
         [str(QEMU), "-M", "rz-a1h", "-nographic", "-kernel", str(FLASH),
          "-serial", "none", "-monitor", "none", "-global", f"rza1h-riic.image={image}",
          "-icount", args.icount, "-qmp", f"unix:{sock},server,nowait"]
-        + (["-gdb", "tcp::1234"] if args.poke else []),
+        + (["-gdb", "tcp::1234"] if args.poke else [])
+        + (["-drive", f"if=sd,format=raw,file={args.sd}"] if args.sd else []),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
         stderr=open(args.stderr, "w") if args.stderr else subprocess.DEVNULL)
     try:
