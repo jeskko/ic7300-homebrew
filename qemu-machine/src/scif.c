@@ -287,6 +287,10 @@ struct RZA1HScifState {
     /* Behavioural IF-DSP model behind the link (channel 5 only, 2026-09-24): fed every
      * complete command word, asked for the DSP's word at each reply -- see fake_dsp.h. */
     FakeDsp  dsp;
+
+    /* CI-V bus echo (channel 0 only, 2026-09-24): the last transmitted byte, fed back into RX
+     * when its byte time ends -- see rza1h_scif_tx_complete. */
+    int      echo_byte;   /* -1 = none */
 };
 
 #define REG_SMR  0x00
@@ -309,6 +313,7 @@ struct RZA1HScifState {
 
 /* SCR bit positions (same SVD). */
 #define SCR_RE  (1 << 4)
+#define SCR_RIE (1 << 6)
 #define SCR_TIE (1 << 7)
 
 /* Fixed literal-pool addresses (not the buffers themselves -- each holds
@@ -445,6 +450,8 @@ static uint64_t rza1h_scif_read(void *opaque, hwaddr offset, unsigned size)
          * comment) -- lowering here, tied to the real "no more data"
          * condition, is the correct place, not there. */
         qemu_irq_lower(s->irq_rx);
+        /* let a chardev backend deliver its next byte (no-op without one) */
+        qemu_chr_fe_accept_input(&s->chr);
         return val;
     }
     case REG_FCR:
@@ -876,6 +883,9 @@ static void rza1h_scif_write(void *opaque, hwaddr offset, uint64_t value,
          * convention (matching FDR always reporting empty). */
         qemu_irq_lower(s->irq_tx);
         s->tx_busy = true;
+        if (s->channel == 0) {
+            s->echo_byte = byte;
+        }
         ptimer_transaction_begin(s->tx_timer);
         ptimer_set_count(s->tx_timer, scif_byte_time_ns(s));
         ptimer_run(s->tx_timer, 1); /* oneshot */
@@ -1003,6 +1013,13 @@ static void rza1h_scif_receive(void *opaque, const uint8_t *buf, int size)
     }
     s->frdr = buf[0];
     s->rx_pending = true;
+    /* 2026-09-24: raise RXI for chardev bytes too (level: RIE & RDF), so a host-side
+     * CI-V client on SCIF0 reaches the firmware's real RX ISR. Before this only the
+     * built-in channel-3/5 responders ever raised irq_rx. */
+    if (s->scr & SCR_RIE) {
+        qemu_irq_lower(s->irq_rx);
+        qemu_irq_raise(s->irq_rx);
+    }
 }
 
 /* ptimer callback for the real baud-rate pacing above -- fires once a real byte time has
@@ -1014,6 +1031,20 @@ static void rza1h_scif_tx_complete(void *opaque)
     RZA1HScifState *s = RZA1H_SCIF(opaque);
 
     s->tx_busy = false;
+    /* CI-V is a single-wire bus: on the real [REMOTE] jack every byte the radio sends comes
+     * straight back into its own receiver, and the firmware's CI-V transmitter waits for
+     * that echo (collision detection, cf. the 0xFC jam handling in
+     * civ_frame_rx_statemachine) before sending the next byte. Without it a reply stalls
+     * after its first 0xFE. A byte the host is sending at the same moment wins; the echo
+     * is then lost, as in a real collision. */
+    if (s->channel == 0 && s->echo_byte >= 0) {
+        uint8_t b = s->echo_byte;
+
+        s->echo_byte = -1;
+        if (!s->rx_pending && (s->scr & SCR_RE)) {
+            rza1h_scif_receive(s, &b, 1);
+        }
+    }
     if (s->scr & SCR_TIE) {
         qemu_irq_raise(s->irq_tx);
     }
@@ -1036,6 +1067,7 @@ static void rza1h_scif_reset(DeviceState *dev)
     s->tx_frame_type = 0;
     s->bus_tx_len = -1;
     s->tx_busy = false;
+    s->echo_byte = -1;
     s->scif5_cmd_pos = 0;
     fake_dsp_reset(&s->dsp);
     ptimer_transaction_begin(s->tx_timer);

@@ -279,3 +279,40 @@ CPU side (body.bin), one driver cluster at 0x2005f880–0x200607xx:
   looks like the QSO recorder's pre-record capture and is very likely the missing audio source of
   `voice_recording_file_task` ([[kernel-rtos]]). That last link isn't proven.
 - Open: which of DX_REC / DX_FMT fills the ring, the sample rate, and what DX_FMT carries.
+
+## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
+
+`qemu-machine/tools/civ_dsp_sweep.py` boots the emulator with SCIF0 (CI-V) on a socket, sends one
+CI-V command per step (`tools/civ.py`), and collects the device debug lines logged during that step.
+To make CI-V work, `scif.c` gained RXI for chardev bytes and the **single-wire bus echo**: the
+firmware's CI-V transmitter waits for each byte to come back before sending the next. The synthetic
+EEPROM leaves the CI-V address at **0x00** (real default 0x94). Replies were correct: 03 →
+14.100.000, 04 → USB FIL2, 19 00 → 0x94, 27 10 → scope OFF (the default).
+
+**Scope settings never reach the DSP.** They go to the **FPGA over RSPI2** (the SCP* pins) as
+short frames `[type][payload][seq<<4][0x90]`, where the sequence nibble increments per frame:
+
+| CI-V change | RSPI2 frame |
+|---|---|
+| scope ON (27 10 01) | `00 06 00 05 dc 00 32 10 90` (2nd byte 06, 16 on later ONs) |
+| center mode (27 14 00 00) | `01 00 05 dc 00 32 .. 90` |
+| fixed mode (27 14 00 01) | `01 28 d9 e0 00 00 .. 90` |
+| scroll-C / scroll-F | like center / fixed |
+| span ±5/10/25/50/100/500 kHz | `04 hh ll .. 90`, hhll = half-span / 50 Hz (0x64…0x2710); `00 32` above = the ±2.5 kHz default |
+| speed, hold, edge | nothing on any link (the CPU handles them) |
+
+So the band scope is fed by the FPGA, and emulating it means modelling FPGA replies on RSPI2 MISO
+(SCPR). The DSP's SSIF audio stream feeds the separate *audio* FFT (see above).
+
+**Mode changes drive the DSP** (opcode 0x22 byte1 = mode code, confirmed):
+
+| Mode | 0x22 | Other words that changed |
+|---|---|---|
+| USB | `22000000` | 21 `096001` |
+| LSB | `22010100` | 21 `096201` |
+| CW | `22020200` | 00 `600406`, 01 bit 3 set (`89`), 21 `000201`, 40 `5555` |
+| RTTY | `22040400` | 10 f+1275 Hz (mark offset), 00 `400c06`, 21 `088201`, 23 cleared |
+| AM | `220a0a00` | 00 `400406`, 20 `027804`, 23 `00ff00` |
+| FM | `220c0c00` | 00 `400506`, 21 `000027` |
+
+Frequency changes send the two 0x10 words (high half first): 7.100 MHz → `1000006c`, `1080e300`.
