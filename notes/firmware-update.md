@@ -637,3 +637,42 @@ production units, it isn't done by this SoC's own debug-enable register from sof
 OTP/fuse setting, a board-level strap, or some other security mechanism not covered by this specific
 register (the manual also mentions `ICDISRn` "security status bits" and other debug-security registers not
 yet checked). Not chased further, but a clean, real negative result worth having on record.
+
+## 2026-09-24 — end-to-end repack-and-boot test PASSES in the emulator
+
+First actual round-trip of the whole unpack→edit→repack→boot chain against a real container, not just
+the `verify_pack.py` self-consistency check. Confirms the repack tooling produces a container the
+base-loader boots and decompresses correctly.
+
+Procedure (all reproducible; system `python3` needs PIL for the screenshot step):
+
+    W=/tmp/fwtest; mkdir -p $W
+    # 1. unpack a real release
+    python3 -m tools.icom_fw.cli unpack /data/misc/icom/7300/7300_142.dat $W/orig
+    # 2. same-length, non-executable string edit in the DECOMPRESSED body:
+    #    "IC-7300 Ver\x001.42" -> "IC-7300 Ver\x009.99" (offset 0x64674, the version display literal)
+    # 3. repack: recompresses body (our LZSS), re-inserts, recomputes the update MD5
+    python3 -m tools.icom_fw.cli pack /data/misc/icom/7300/7300_142.dat $W/body_mod.bin $W/7300_142_mod.dat
+    # 4. build the flat flash image and boot it
+    python3 qemu-machine/tools/build_flash.py $W/7300_142_mod.dat $W/flash_mod.bin
+    cp $W/flash_mod.bin qemu-machine/flash.bin   # (back up the original first)
+    python3 qemu-machine/tools/screenshot.py 20 --icount shift=1,sleep=off --out /tmp/fwshot_mod
+
+Results:
+- `pack` reports body 3738392 decompressed both ways; compressed 1676645 (Icom's) -> **1464387** (ours),
+  so our re-encode is *smaller* than the original and comfortably fits the fixed body slot. Container
+  stays the exact same 3954089 bytes; re-parse is warning-free and the MD5 field is freshly valid.
+- The modified image **boots to the main screen**, and that screen is **byte-for-byte identical**
+  (same PNG SHA256, `ImageChops.difference` bbox = None) to the unmodified-142 build captured with the
+  same settings — i.e. a repacked container changes nothing on-screen, exactly as a hidden-string edit
+  should.
+- The edit is **live in guest RAM**: reading 0x20069674 (body RAM base 0x20005000 + body offset 0x64674)
+  in the running modified guest returns `IC-7300 Ver\x009.99`, proving the recompressed LZSS stream
+  decompressed correctly during boot.
+
+What this does and doesn't prove: it exercises LZSS round-trip + MD5 fixup + base-loader body
+decompression against a genuine repacked container end to end. It does NOT exercise the SD-card *update
+flow's* own acceptance path (that reads the .dat off a FAT card, checks the MD5, and writes flash) — that
+check runs only on real hardware and is the remaining part of `sdk/roadmap.md` Phase 0. `flash_image.py`
+drops the container's body slot straight into flash, which is what the loader boots from, so the update
+flow's write step is bypassed in the emulator.

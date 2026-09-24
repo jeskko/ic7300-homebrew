@@ -91,6 +91,19 @@ or surfaces a check none of the static analysis found — genuinely worth knowin
 **Needs**: real hardware access (already available — this isn't gated on JTAG). **The tooling side of this
 phase is done**; only the live hardware test itself remains.
 
+**2026-09-24 — the emulator half of this test now passes end to end.** Took a real `7300_142.dat`,
+`cli.py unpack`ed it, changed the version display literal `IC-7300 Ver\x001.42` → `...\x009.99` (a same-
+length, non-executable string edit) in the decompressed `body.bin`, `cli.py pack`ed it back into a valid
+container (body recompressed with our own LZSS encoder — 1676645→1464387 compressed bytes, so it fits the
+fixed slot with room to spare — and the update mechanism's MD5 freshly recomputed), then built a flash
+image (`build_flash.py`) and booted it in `qemu-machine`. Result: it boots through the whole chain and
+renders a main screen **byte-for-byte identical** (same SHA256, zero pixel diff) to the unmodified 142
+build, and the edited string reads back live in guest RAM at 0x20069674 (`IC-7300 Ver\x009.99`), proving
+the recompressed body decompressed correctly at boot. This exercises the entire unpack→edit→repack→boot
+path (LZSS round-trip + MD5 fixup + base-loader body decompression) against a genuine repacked container;
+what it can't cover is the SD-card *update flow's* own acceptance check on real hardware — that, and only
+that, is what the live test above still adds. Repro artifacts + procedure: `notes/firmware-update.md`.
+
 ### Phase 1 — remaining tooling
 - ~~`tools/icom_fw`: add `lzss.compress()`/`container.pack()`~~ — done, see above.
 - A minimal ARM/Thumb assembler or cross-compiler setup targeting this exact environment (no OS, no libc,
