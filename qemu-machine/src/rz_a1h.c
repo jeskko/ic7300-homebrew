@@ -397,16 +397,25 @@ static void rza1h_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(dmac), 0,
                        qdev_get_gpio_in(gic,
                            RZA1H_DMAC_CH0_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    /* ch1..7 -> DMAINT1..7 (2026-09-24, RSPI2 sweep reads, see dmac.c) */
+    for (int dch = 1; dch < RZA1H_DMAC_CHANNELS; dch++) {
+        sysbus_connect_irq(SYS_BUS_DEVICE(dmac), dch,
+                           qdev_get_gpio_in(gic, RZA1H_DMAC_CH0_IRQ + dch -
+                                                 RZA1H_GIC_NUM_INTERNAL));
+    }
 
     /* rspi2.c -- added 2026-09-09 once mtu2.c's own scif5_cmd_transmit_now
      * rate-limiter fix unblocked the shared DSP-comms ring far enough to
      * reach a real job-type-3 (RSPI2 transmit) entry (see rspi2.c's own
      * comment). Overlap-mapped: sits inside the broader "io-e8000000"
-     * unimplemented-device catch-all above. No IRQ wired -- purely
-     * polled, see rspi2.c's own comment. */
+     * unimplemented-device catch-all above. SPRI2 wired 2026-09-24 for the
+     * fake FPGA's sweep reads, see rspi2.c's own comment. */
     rspi2 = qdev_new(TYPE_RZA1H_RSPI2);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(rspi2), &error_fatal);
     sysbus_mmio_map_overlap(SYS_BUS_DEVICE(rspi2), 0, RZA1H_RSPI2_BASE, 0);
+    sysbus_connect_irq(SYS_BUS_DEVICE(rspi2), 0,
+                       qdev_get_gpio_in(gic, RZA1H_RSPI2_SPRI_IRQ -
+                                             RZA1H_GIC_NUM_INTERNAL));
 
     /* openvg.c -- added 2026-09-21 (icom-main-idle-loop-not-reached thread).
      * The OpenVG graphics processor's completion interrupt (GIC ID 130,

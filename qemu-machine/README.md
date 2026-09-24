@@ -14,7 +14,7 @@ See [README-history.md](README-history.md) for the full session-by-session narra
 evidence trail behind everything below — this file carries only the current state and the
 active resume point.
 
-## Next thread (2026-09-24): DSP code analysis — see [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
+## Next thread (2026-09-24): band scope works (fake FPGA, see Status below); DSP code analysis handoff: [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
 
 **Speed (2026-09-24): boot to main screen 97 s → 32 s (`-icount shift=1`), or 8 s with
 `-icount shift=1,sleep=off`** (emulated clock may then run ahead of real time while idle, which
@@ -27,6 +27,32 @@ QEMU 11.1's WFE already halts properly, so the old "WFE spin" theory was wrong: 
 loops were the firmware's own delay loops polling a counter. Profiling methods that worked here
 (`perf` isn't installed and ptrace is child-only): gdb as the parent with SIGINT-driven stack
 sampling, `strace -f -c`, and gdb Python breakpoints counting timer callbacks.
+
+## Status, 2026-09-24, latest — the band scope draws (fake FPGA)
+
+![band scope](screenshots/2026-09-24-band-scope-fake-fpga.png)
+
+After `27 10 01` over CI-V, the spectrum and waterfall run with synthetic carriers at −12k,
++1.5k and +5k. Protocol spec: [`notes/fpga-link.md`](../notes/fpga-link.md).
+- `src/fake_fpga.c` (new, pure C like `fake_dsp.c`) holds a 7-byte register file fed by
+  `[reg][data…]` frames. A `90` read returns a header `(reg6 & 0xf0) | counter` and then 475
+  samples. The counter advances once per sweep of emulated time, and that alone sets the scope
+  rate: the CPU polls every main-loop pass. Knobs: `RZA1H_FPGA_SWEEP_HZ` (default 30),
+  `RZA1H_FPGA_FLOOR` (raw, default 60), `RZA1H_FPGA_SIGNALS="off_hz:raw,…"` (or `none`).
+  Log with `RZA1H_DEBUG=fpga`.
+- `rspi2.c` gained a receive side. Each SPDR2 write clocks one MISO byte into an RX queue.
+  SPRI2 (GIC 277) is level-triggered: SPRIE and data present, one byte time (4 µs, ptimer) after
+  the clocking write. +0x20 is SPBFCR, not SPCMD2 (RXRST clears the queue). Sweep-read bytes
+  aren't logged as frames any more; the `90` retries run at a few hundred per second.
+- `dmac.c` channels 1-7 start on CHCTRL.SETEN, but only when one side is SPDR2. Other
+  channels are logged and ignored, as before. CHCTRL isn't stored for them, because the ISRs'
+  `|= 0x62` read-modify-write would restart the transfer. Fixed-destination channels run
+  first, so ch2's 475 dummy writes clock the samples in before ch1 reads them. Then DMAINTn
+  (GIC 41+n) pulses. The GIC is raised to 288 IDs.
+- `bench_boot.py` is still pixel-exact at 32 s (the scope is off by default). With the scope
+  on, 64 sweeps took 1.9 s wall under `sleep=off`, so there's no timer storm.
+- Open: the carriers are placed relative to the scope centre, and reg1-3 (the VFO offset) is
+  ignored, so fixed mode is unmodelled. The CI-V 27 00 waveform output is not checked yet.
 
 ## Status, 2026-09-24, later — full main screen: 14.100.00 USB FIL2
 

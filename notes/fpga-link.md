@@ -75,7 +75,7 @@ is the whole handshake.** The high nibble echoes the config seq the sweep was ta
 sweeps from an older configuration get rejected. The low nibble is a free-running sweep counter
 that must change between accepted sweeps. There is no checksum or length field.
 
-**Today's emulator:** after scope on, `busy=1 req=1 state=1`, stuck. `rspi2.c` never raises
+**Emulator before the model (§7):** after scope on, `busy=1 req=1 state=1`, stuck. `rspi2.c` never raises
 SPRI2, so the state machine never leaves 1. Because frames only go out in state 0 or 4, no
 further config frames follow either. That's why the catalogue shows exactly one lone `90` per
 change: each is issued after an abort resets the state.
@@ -128,3 +128,12 @@ change: each is issued after an abort resets the state.
 6. **Content:** at ref 0 dB, noise floor ≈ raw 50–60 and a signal peak ≈ 150–190. The centre
    sample index 237 is the VFO frequency plus the reg1-3 offset; the span is ±(reg4-5 × 50) Hz
    over 475 points.
+
+## 7. The model (built 2026-09-24) ✅
+
+`qemu-machine/src/fake_fpga.c` plus the receive side of `rspi2.c` and channels 1-7 of `dmac.c`
+implement §6. After `27 10 01` the scope and waterfall draw
+(`qemu-machine/screenshots/2026-09-24-band-scope-fake-fpga.png`). Live checks: DMA ch1
+completes about 40 times a second, the header nibble advances, the watchdog stays reloaded at 30,
+and the waveform at 0x203defb1 shows the floor at raw 60 − 40 = 20 ± 5, as §4 predicts.
+Simplifications and knobs are in `qemu-machine/README.md` (Status, 2026-09-24, latest).

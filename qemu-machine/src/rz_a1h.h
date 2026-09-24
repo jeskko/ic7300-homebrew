@@ -32,8 +32,9 @@
  * (INTIICNAKI2, ID 210, see riic.c) needs at least 211 -- rounded up to
  * the next multiple of 32; raised again to 256 (2026-09-08 third pass)
  * once scif.c wired real TXI interrupts, the highest of which (TXI7, ID
- * 252, see below) needs at least 253. */
-#define RZA1H_GIC_NUM_IRQ  256
+ * 252, see below) needs at least 253; raised to 288 (2026-09-24) for RSPI2's
+ * SPRI2 (ID 277, see rspi2.c). The real RZ/A1H has 587. */
+#define RZA1H_GIC_NUM_IRQ  288
 
 /* Number of GIC-internal interrupt IDs (SGIs 0-15 + PPIs 16-31) that
  * precede the first SPI -- arm_gic's own gic_set_irq() offsets every
@@ -203,14 +204,18 @@
  * (see mtu2.c's own RZA1H_MTU2_SIZE). */
 #define RZA1H_DMAC_BASE 0xE8200000
 #define RZA1H_DMAC_SIZE 0x00000400
-#define RZA1H_DMAC_CH0_IRQ 41 /* DMAINT0 */
+#define RZA1H_DMAC_CH0_IRQ 41 /* DMAINT0; channel n is 41 + n */
+#define RZA1H_DMAC_CHANNELS 8  /* channels modelled (0..7, one register window) */
 #define TYPE_RZA1H_DMAC "rza1h-dmac"
 
 /* RSPI (Renesas Serial Peripheral Interface) channel 2 -- see rspi2.c's own
- * file comment. SPCR2=base+0, SPSR2=base+3, SPDR2=base+4, SPCMD2=base+0x20
- * (all confirmed 2026-08-29 against real body.bin disassembly). */
+ * file comment. SPCR2=base+0, SPSR2=base+3, SPDR2=base+4, SPBFCR2=base+0x20
+ * (all confirmed 2026-08-29 against real body.bin disassembly; +0x20 was
+ * first called SPCMD2, it's the buffer control register). */
 #define RZA1H_RSPI2_BASE 0xE800D800
 #define RZA1H_RSPI2_SIZE 0x00000024
+#define RZA1H_RSPI2_SPDR 0xE800D804
+#define RZA1H_RSPI2_SPRI_IRQ 277 /* RSPISPRI2, the FPGA sweep-read handler */
 #define TYPE_RZA1H_RSPI2 "rza1h-rspi2"
 
 /* "Renesas Graphics Processor for OpenVG(TM)" -- see openvg.c's own file

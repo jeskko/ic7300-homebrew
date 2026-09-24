@@ -42,9 +42,24 @@
  * no real chardev/backend wired, nothing traced needs the transmitted
  * bytes to go anywhere. SPCR2/SPCMD2 are plain stored/read-back state,
  * inert otherwise.
+  *
+ * 2026-09-24 -- receive path + the fake FPGA (notes/fpga-link.md). The band
+ * scope's sweep read needs a real MISO side: every SPDR2 write (CPU or DMAC)
+ * clocks one byte through fake_fpga_xfer() into an RX queue that SPDR2 reads
+ * drain. SPRI2 (GIC 277) is a level interrupt, SPCR.SPRIE && RX queue
+ * non-empty, raised one byte time (RSPI2_BYTE_NS) after the write that
+ * clocked it, via ptimer (dmac.c's file comment explains why not a raw
+ * QEMUTimer under icount). The queue is deeper than the real 8-byte buffer
+ * on purpose: dmac.c runs the TX-dummy channel's 475 writes before the RX
+ * channel's 475 reads, all in one callback. +0x20 is SPBFCR, not SPCMD2:
+ * bit7 TXRST, bit6 RXRST (clears the queue). A transfer boundary for the
+ * FPGA is a TXRST pulse (rspi2_transmit) or SPE going 0->1 in SPCR (the
+ * sweep-read start, fpga_sweep_read_start).
  */
 
 #include "qemu/osdep.h"
+#include "hw/core/irq.h"
+#include "hw/core/ptimer.h"
 #include "hw/core/sysbus.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -52,6 +67,7 @@
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
+#include "fake_fpga.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HRspi2State, RZA1H_RSPI2)
 
@@ -67,16 +83,64 @@ struct RZA1HRspi2State {
     int frame_len;
     uint64_t frames;
     QEMUTimer *flush_timer;
+
+    /* Receive side (2026-09-24), see file comment. */
+    FakeFpga fpga;
+    uint8_t rxq[1024];
+    unsigned rx_head, rx_count;
+    bool rx_visible;            /* the newest byte's clock period has elapsed */
+    qemu_irq spri;
+    ptimer_state *byte_timer;
 };
 
 #define RSPI2_FRAME_GAP_NS 20000
+/* One byte at the firmware's SPBR=1/BRDV=3 setting, ~2 Mbit/s. */
+#define RSPI2_BYTE_NS 4000
+#define RSPI2_TIMER_FREQ_HZ 1000000000
 
 #define RSPI2_SPCR2  0x00
 #define RSPI2_SPSR2  0x03
 #define RSPI2_SPDR2  0x04
-#define RSPI2_SPCMD2 0x20
+#define RSPI2_SPBFCR 0x20
 
-#define RSPI2_SPSR2_TX_READY (1 << 6)
+#define RSPI2_SPCR_SPRIE (1 << 7)
+#define RSPI2_SPCR_SPE   (1 << 6)
+#define RSPI2_SPSR2_SPRF     (1 << 7)
+#define RSPI2_SPSR2_TX_READY (1 << 6)   /* TEND */
+#define RSPI2_SPSR2_SPTEF    (1 << 5)
+#define RSPI2_SPBFCR_TXRST (1 << 7)
+#define RSPI2_SPBFCR_RXRST (1 << 6)
+
+static void rza1h_rspi2_update_irq(RZA1HRspi2State *s)
+{
+    qemu_set_irq(s->spri, (s->regs[RSPI2_SPCR2] & RSPI2_SPCR_SPRIE) &&
+                          s->rx_count && s->rx_visible);
+}
+
+static void rza1h_rspi2_byte_done(void *opaque)
+{
+    RZA1HRspi2State *s = RZA1H_RSPI2(opaque);
+
+    s->rx_visible = true;
+    rza1h_rspi2_update_irq(s);
+}
+
+/* Clock one byte: MOSI to the FPGA, its MISO into the RX queue. */
+static void rza1h_rspi2_clock_byte(RZA1HRspi2State *s, uint8_t mosi)
+{
+    uint8_t miso = fake_fpga_xfer(&s->fpga, mosi,
+                                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+
+    if (s->rx_count < sizeof(s->rxq)) {
+        s->rxq[(s->rx_head + s->rx_count++) % sizeof(s->rxq)] = miso;
+    }
+    s->rx_visible = false;
+    rza1h_rspi2_update_irq(s);
+    ptimer_transaction_begin(s->byte_timer);
+    ptimer_set_count(s->byte_timer, RSPI2_BYTE_NS);
+    ptimer_run(s->byte_timer, 1);
+    ptimer_transaction_commit(s->byte_timer);
+}
 
 static void rza1h_rspi2_flush(RZA1HRspi2State *s)
 {
@@ -105,8 +169,19 @@ static uint64_t rza1h_rspi2_read(void *opaque, hwaddr offset, unsigned size)
     uint64_t val = 0;
 
     if (offset == RSPI2_SPSR2) {
-        /* Always ready -- see file comment. */
-        return RSPI2_SPSR2_TX_READY;
+        /* TX always ready -- see file comment. */
+        return RSPI2_SPSR2_TX_READY | RSPI2_SPSR2_SPTEF |
+               (s->rx_count ? RSPI2_SPSR2_SPRF : 0);
+    }
+    if (offset == RSPI2_SPDR2) {
+        uint8_t b = s->rxq[s->rx_head];   /* empty: the last byte again */
+
+        if (s->rx_count) {
+            s->rx_head = (s->rx_head + 1) % sizeof(s->rxq);
+            s->rx_count--;
+            rza1h_rspi2_update_irq(s);
+        }
+        return b;
     }
 
     memcpy(&val, &s->regs[offset], size);
@@ -119,6 +194,15 @@ static void rza1h_rspi2_write(void *opaque, hwaddr offset, uint64_t value,
     RZA1HRspi2State *s = RZA1H_RSPI2(opaque);
 
     if (offset == RSPI2_SPDR2) {
+        bool reading = s->fpga.state == FAKE_FPGA_READ_HDR ||
+                       s->fpga.state == FAKE_FPGA_READ_DATA ||
+                       (s->fpga.state == FAKE_FPGA_IDLE &&
+                        (uint8_t)value == FAKE_FPGA_READ_CMD);
+
+        rza1h_rspi2_clock_byte(s, value);
+        if (reading) {
+            return;     /* sweep reads (2 kHz retries): not logged, see fpga stats */
+        }
         rza1h_debug("rspi2byte", "TX %02x ('%c')",
                    (uint8_t)value,
                    ((uint8_t)value >= 0x20 && (uint8_t)value < 0x7f)
@@ -130,11 +214,25 @@ static void rza1h_rspi2_write(void *opaque, hwaddr offset, uint64_t value,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + RSPI2_FRAME_GAP_NS);
         return;
     }
-    if (offset == RSPI2_SPCMD2 && (value & 0x80) && s->frame_len) {
-        rza1h_rspi2_flush(s);     /* a new transfer starts: close the previous frame */
+    if (offset == RSPI2_SPBFCR && (value & RSPI2_SPBFCR_TXRST)) {
+        if (s->frame_len) {
+            rza1h_rspi2_flush(s); /* a new transfer starts: close the previous frame */
+        }
+        fake_fpga_begin(&s->fpga);
+    }
+    if (offset == RSPI2_SPBFCR && (value & RSPI2_SPBFCR_RXRST)) {
+        s->rx_count = 0;
+    }
+    if (offset == RSPI2_SPCR2 && (value & RSPI2_SPCR_SPE) &&
+        !(s->regs[RSPI2_SPCR2] & RSPI2_SPCR_SPE)) {
+        if (s->frame_len) {
+            rza1h_rspi2_flush(s);
+        }
+        fake_fpga_begin(&s->fpga);
     }
 
     memcpy(&s->regs[offset], &value, size);
+    rza1h_rspi2_update_irq(s);
 }
 
 static const MemoryRegionOps rza1h_rspi2_ops = {
@@ -151,6 +249,13 @@ static void rza1h_rspi2_reset(DeviceState *dev)
 
     memset(s->regs, 0, sizeof(s->regs));
     s->frame_len = 0;
+    s->rx_head = s->rx_count = 0;
+    s->rx_visible = false;
+    fake_fpga_reset(&s->fpga);
+    ptimer_transaction_begin(s->byte_timer);
+    ptimer_stop(s->byte_timer);
+    ptimer_transaction_commit(s->byte_timer);
+    qemu_set_irq(s->spri, 0);
 }
 
 static void rza1h_rspi2_init(Object *obj)
@@ -161,7 +266,14 @@ static void rza1h_rspi2_init(Object *obj)
     memory_region_init_io(&s->iomem, obj, &rza1h_rspi2_ops, s,
                           TYPE_RZA1H_RSPI2, RZA1H_RSPI2_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
+    sysbus_init_irq(sbd, &s->spri);
     s->flush_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rza1h_rspi2_flush_cb, s);
+    s->byte_timer = ptimer_init(rza1h_rspi2_byte_done, s,
+                                PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->byte_timer);
+    ptimer_set_freq(s->byte_timer, RSPI2_TIMER_FREQ_HZ);
+    ptimer_transaction_commit(s->byte_timer);
 }
 
 static void rza1h_rspi2_class_init(ObjectClass *oc, const void *data)

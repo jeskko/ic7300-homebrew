@@ -117,7 +117,19 @@
  * 2/2 fresh trials, ~20-45s in) -- see qemu-machine/README.md's Status
  * section for why that trap's own prior "confirmed clean under -icount"
  * finding needs a fresh look given it was never actually tested together
- * with a genuinely working DMAC channel 0 before now. */
+ * with a genuinely working DMAC channel 0 before now.
+ *
+ * Channels 1-7 (2026-09-24, fake FPGA, notes/fpga-link.md): the band scope's
+ * sweep read uses ch1 (RSPI2 SPDR -> RAM, 475 bytes) and ch2 (a fixed 0x00 ->
+ * SPDR, the clocks) together. Unlike ch0 these start on CHCTRL_n.SETEN (bit 0),
+ * after N0SA/N0DA/N0TB are set. CHCTRL_n is write-only command bits here
+ * (reads 0): the DMA-end ISRs do CHCTRL |= 0x62 by read-modify-write, and a
+ * stored SETEN would restart the transfer. Only channels with SPDR2 on one
+ * side are performed; any other SETEN on ch1-7 is logged and ignored, which
+ * keeps whatever those channels did before (nothing). Transfers run from one
+ * ptimer, RSPI2_BYTE_NS per byte after the SETEN, peripheral-bound (fixed
+ * destination) channels first, so ch2's writes clock the FPGA's bytes into
+ * rspi2.c's RX queue before ch1 reads them. Then DMAINTn (GIC 41+n) pulses. */
 
 #include "qemu/osdep.h"
 #include "hw/core/irq.h"
@@ -140,6 +152,9 @@ struct RZA1HDmacState {
     MemoryRegion iomem;
     qemu_irq irq0;              /* channel 0's DMAINT0, GIC ID 41 */
     ptimer_state *complete_timer;
+    qemu_irq irq[RZA1H_DMAC_CHANNELS];  /* ch1..7 -> DMAINT1..7; [0] unused */
+    ptimer_state *periph_timer;
+    uint8_t periph_pending;     /* channels armed by SETEN, bit n = channel n */
 
     uint8_t regs[RZA1H_DMAC_SIZE]; /* plain backing store for every offset
                                      * this device doesn't special-case */
@@ -151,6 +166,12 @@ struct RZA1HDmacState {
 #define DMAC_CHCFG_0 0x2c
 #define DMAC_CHCFG_SAD (1u << 20)  /* source address fixed */
 #define DMAC_CHCFG_DAD (1u << 21)  /* destination address fixed */
+#define DMAC_CH_STRIDE 0x40
+#define DMAC_CHCTRL    0x28
+#define DMAC_CHCTRL_SETEN 1u
+/* ch1+ transfers are paced by their peripheral; the only one modelled is RSPI2 at
+ * ~2 Mbit/s (see rspi2.c). */
+#define DMAC_PERIPH_BYTE_NS 4000
 
 /* Real DMA is asynchronous -- an arbitrary short delay, same rationale as
  * ostm.c/mtu2.c's own frequency constants: not real-clock-accurate, just
@@ -175,22 +196,26 @@ static uint64_t rza1h_dmac_read(void *opaque, hwaddr offset, unsigned size)
     return val;
 }
 
-static void rza1h_dmac_ch0_complete(void *opaque)
+static uint32_t dmac_reg32(RZA1HDmacState *s, hwaddr off)
 {
-    RZA1HDmacState *s = RZA1H_DMAC(opaque);
+    uint32_t v;
+
+    memcpy(&v, &s->regs[off], 4);
+    return v;
+}
+
+/* Move channel ch's N0TB bytes from N0SA to N0DA as its CHCFG says. */
+static void rza1h_dmac_transfer(RZA1HDmacState *s, int ch)
+{
     AddressSpace *as = &address_space_memory;
-    uint32_t src, dst, count;
+    hwaddr base = ch * DMAC_CH_STRIDE;
+    uint32_t src = dmac_reg32(s, base + DMAC_N0SA_0);
+    uint32_t dst = dmac_reg32(s, base + DMAC_N0DA_0);
+    uint32_t count = dmac_reg32(s, base + DMAC_N0TB_0);
+    uint32_t cfg = dmac_reg32(s, base + DMAC_CHCFG_0);
 
-    memcpy(&src, &s->regs[DMAC_N0SA_0], 4);
-    memcpy(&dst, &s->regs[DMAC_N0DA_0], 4);
-    memcpy(&count, &s->regs[DMAC_N0TB_0], 4);
-
-    rza1h_debug("dmac", "ch0 complete: src=%#x dst=%#x count=%u cfg=%08x, "
-               "pulsing DMAINT0", src, dst, count,
-               *(uint32_t *)&s->regs[DMAC_CHCFG_0]);
-
-    uint32_t cfg;
-    memcpy(&cfg, &s->regs[DMAC_CHCFG_0], 4);
+    rza1h_debug("dmac", "ch%d complete: src=%#x dst=%#x count=%u cfg=%08x, "
+               "pulsing DMAINT%d", ch, src, dst, count, cfg, ch);
 
     if (count > 0 && (cfg & (DMAC_CHCFG_SAD | DMAC_CHCFG_DAD))) {
         /* A fixed peripheral address on either side (2026-09-23): the
@@ -216,16 +241,69 @@ static void rza1h_dmac_ch0_complete(void *opaque)
             address_space_write(as, dst, MEMTXATTRS_UNSPECIFIED, buf, count);
         }
     }
+}
 
+static void rza1h_dmac_ch0_complete(void *opaque)
+{
+    RZA1HDmacState *s = RZA1H_DMAC(opaque);
+
+    rza1h_dmac_transfer(s, 0);
     /* Edge, not level -- see file comment. */
     qemu_irq_pulse(s->irq0);
+}
+
+static void rza1h_dmac_periph_complete(void *opaque)
+{
+    RZA1HDmacState *s = RZA1H_DMAC(opaque);
+    uint8_t pending = s->periph_pending;
+
+    s->periph_pending = 0;
+    /* Writes to a peripheral first (they produce what the reads collect). */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int ch = 1; ch < RZA1H_DMAC_CHANNELS; ch++) {
+            bool to_periph = dmac_reg32(s, ch * DMAC_CH_STRIDE + DMAC_CHCFG_0) &
+                             DMAC_CHCFG_DAD;
+
+            if ((pending & (1u << ch)) && to_periph == (pass == 0)) {
+                rza1h_dmac_transfer(s, ch);
+                qemu_irq_pulse(s->irq[ch]);
+            }
+        }
+    }
+}
+
+static void rza1h_dmac_seten(RZA1HDmacState *s, int ch)
+{
+    hwaddr base = ch * DMAC_CH_STRIDE;
+    uint32_t src = dmac_reg32(s, base + DMAC_N0SA_0);
+    uint32_t dst = dmac_reg32(s, base + DMAC_N0DA_0);
+    uint32_t count = dmac_reg32(s, base + DMAC_N0TB_0);
+
+    if (src != RZA1H_RSPI2_SPDR && dst != RZA1H_RSPI2_SPDR) {
+        rza1h_debug("dmac", "ch%d SETEN ignored (src=%#x dst=%#x count=%u): "
+                   "not an RSPI2 transfer", ch, src, dst, count);
+        return;
+    }
+    s->periph_pending |= 1u << ch;
+    ptimer_transaction_begin(s->periph_timer);
+    ptimer_set_count(s->periph_timer, MAX(count, 1u) * DMAC_PERIPH_BYTE_NS);
+    ptimer_run(s->periph_timer, 1);
+    ptimer_transaction_commit(s->periph_timer);
 }
 
 static void rza1h_dmac_write(void *opaque, hwaddr offset, uint64_t value,
                              unsigned size)
 {
     RZA1HDmacState *s = RZA1H_DMAC(opaque);
+    int ch = offset / DMAC_CH_STRIDE;
 
+    if (ch >= 1 && ch < RZA1H_DMAC_CHANNELS &&
+        offset % DMAC_CH_STRIDE == DMAC_CHCTRL) {
+        if (value & DMAC_CHCTRL_SETEN) {
+            rza1h_dmac_seten(s, ch);
+        }
+        return;     /* command bits, not stored -- see file comment */
+    }
     memcpy(&s->regs[offset], &value, size);
     if (offset == DMAC_N0TB_0) {
         rza1h_debug("dmac", "ch0 armed: N0TB_0 write count=%u -- ptimer set for %d ns",
@@ -253,6 +331,10 @@ static void rza1h_dmac_reset(DeviceState *dev)
     ptimer_transaction_begin(s->complete_timer);
     ptimer_stop(s->complete_timer);
     ptimer_transaction_commit(s->complete_timer);
+    s->periph_pending = 0;
+    ptimer_transaction_begin(s->periph_timer);
+    ptimer_stop(s->periph_timer);
+    ptimer_transaction_commit(s->periph_timer);
 }
 
 static void rza1h_dmac_init(Object *obj)
@@ -264,6 +346,9 @@ static void rza1h_dmac_init(Object *obj)
                           TYPE_RZA1H_DMAC, RZA1H_DMAC_SIZE);
     sysbus_init_mmio(sbd, &s->iomem);
     sysbus_init_irq(sbd, &s->irq0);
+    for (int ch = 1; ch < RZA1H_DMAC_CHANNELS; ch++) {
+        sysbus_init_irq(sbd, &s->irq[ch]);   /* sysbus IRQ index ch */
+    }
 }
 
 static void rza1h_dmac_realize(DeviceState *dev, Error **errp)
@@ -276,6 +361,13 @@ static void rza1h_dmac_realize(DeviceState *dev, Error **errp)
     ptimer_transaction_begin(s->complete_timer);
     ptimer_set_freq(s->complete_timer, DMAC_TIMER_FREQ_HZ);
     ptimer_transaction_commit(s->complete_timer);
+
+    s->periph_timer = ptimer_init(rza1h_dmac_periph_complete, s,
+                                  PTIMER_POLICY_NO_IMMEDIATE_TRIGGER |
+                                  PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
+    ptimer_transaction_begin(s->periph_timer);
+    ptimer_set_freq(s->periph_timer, DMAC_TIMER_FREQ_HZ);
+    ptimer_transaction_commit(s->periph_timer);
 }
 
 static void rza1h_dmac_class_init(ObjectClass *oc, const void *data)
