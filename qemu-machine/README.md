@@ -16,8 +16,17 @@ active resume point.
 
 ## Next thread (2026-09-24): DSP code analysis — see [`notes/HANDOFF-dsp-analysis.md`](../notes/HANDOFF-dsp-analysis.md)
 
-Deferred idea, not started: near-real-time speed (make WFE sleep instead of spin, faster rasterizer;
-~90% of guest instructions are currently the idle WFE spin).
+**Speed (2026-09-24): boot to main screen 97 s → 32 s (`-icount shift=1`), or 8 s with
+`-icount shift=1,sleep=off`** (emulated clock may then run ahead of real time while idle, which
+suits scripted runs; the GUI's on-screen clock would run fast). Measured with
+`tools/bench_boot.py`, which reports wall time until the LCD framebuffer is pixel-identical to
+the reference screenshot. The cost was never guest execution. It was vCPU↔main-loop handoffs
+under icount, one per expiring timer: MTU2 TGI4A/4B/4D re-firing every 16 µs, and OSTM1's
+free-running mode (CMP=0) modelled as a 32 MHz timer. Both are fixed in `mtu2.c` and `ostm.c`.
+QEMU 11.1's WFE already halts properly, so the old "WFE spin" theory was wrong: the hot spin
+loops were the firmware's own delay loops polling a counter. Profiling methods that worked here
+(`perf` isn't installed and ptrace is child-only): gdb as the parent with SIGINT-driven stack
+sampling, `strace -f -c`, and gdb Python breakpoints counting timer callbacks.
 
 ## Status, 2026-09-24, later — full main screen: 14.100.00 USB FIL2
 
@@ -608,7 +617,7 @@ emu/.venv/bin/python3 qemu-machine/tools/build_riic_eeprom_image.py  # produces 
 qemu-machine/qemu-src/build/qemu-system-arm -M rz-a1h -nographic \
     -kernel qemu-machine/flash.bin -serial none -monitor none \
     -global rza1h-riic.image=qemu-machine/riic2_eeprom.img \
-    -icount shift=1 \
+    -icount shift=1 \   # or shift=1,sleep=off: same determinism, ~4x faster boot
     -qmp unix:/tmp/qemu.sock,server,nowait   # or -s -S for GDB
 ```
 
