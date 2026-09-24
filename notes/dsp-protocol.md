@@ -278,7 +278,78 @@ CPU side (body.bin), one driver cluster at 0x2005f880–0x200607xx:
   **circular buffer of 0x77A records**: 1914 × 108 samples, about 26 s at an assumed 8 kHz. This
   looks like the QSO recorder's pre-record capture and is very likely the missing audio source of
   `voice_recording_file_task` ([[kernel-rtos]]). That last link isn't proven.
-- Open: which of DX_REC / DX_FMT fills the ring, the sample rate, and what DX_FMT carries.
+- Resolved in the next section: the ring is DX_REC L, and the rates are pinned.
+
+## The CPU ↔ DSP audio link, both directions (2026-09-24, later)
+
+Two independent reads agree: the CPU side from body.bin (Ghidra, names now in the DB) and the DSP
+side from the DSP Program (tic6x disassembly, by a subagent, with key constants spot-checked).
+Confidence: ✅ code on both sides agrees, 🟢 one side plus inference, 🟡 guess.
+
+**Framing ✅.** I2S, 2 × 32-bit slots per frame, **96 kHz frame rate**, clocked externally (the
+FPGA, probably). Both ends are clock slaves. Data is 24-bit left-justified: the DSP masks words
+with 0xFFFFFF00 at 0x118123a0, and the CPU uses the top 16 bits (SSICR 0x3c2b0033: DWL 24,
+SWL 32). The rate comes from both sides at once. The CPU's recorder WAV header
+(`wav_write_fmt_8k_mono16` 0x20069008) is 8000 Hz mono 16-bit, built from 1 in 12 frames. The
+DSP's tone and ADPCM generators run at F/12 with pitch/8000 phase steps, and its filter cutoffs
+only make sense at 96/48 kHz. The effective sample rates are:
+
+| Rate | What runs at it |
+|---|---|
+| 96 kHz | frames |
+| 48 kHz | CPU-facing payloads (every 2nd frame) |
+| 12 kHz | DSP demod block rate (8 frames per EDMA event pair) |
+| 8 kHz | recorder, voice memory, CPU → DSP playback |
+
+**Transport.**
+- CPU: DMAC ch3 (SSIF0 RX), ch4 (SSIF0 TX) and ch5 (SSIF1 RX), set up by `ssif_dmac_ch345_setup`
+  0x2005ff1c. Each has two register sets over 0x240-byte buffers (72 frames = 0.75 ms), CHCFG
+  REN|RSW, so they ping-pong. DMARS: 0xe2 = SSIF0 RX, 0xe1 = SSIF0 TX, 0xe6 = SSIF1 RX.
+  - Buffers: RX0 0x203faf40 / 0x203fb180; TX0 0x203fb3c0 / 0x203fb600; RX1 0x203fb840 / 0x203fba80.
+  - No DMA interrupts: the 250 µs TGI3A tick ISR (0x20005bd4) polls CHSTAT END/SR and runs the
+    three pumps, gated by 0x2039038c.
+- DSP: EDMA3 PaRAM sets 0/35 (RX, AREVT0) and 1/33 (TX, AXEVT0), ping-pong. One event = one slot,
+  moving one word per active serializer. A block is 8 frames. The main loop 0x11812668
+  deinterleaves the block into a struct at 0x11818bd0 (0x11812324), then processes it at
+  0x118104c0.
+
+**Channels:**
+
+| Net | Dir | Slot | Content | CPU side | DSP side |
+|---|---|---|---|---|---|
+| DX_REC (AXR0[4] → SSIF0 RX) | DSP→CPU | L | **RX audio**, taken before AF gain and low-passed. During TX it's the CW sidetone instead ✅ | `ssif0_rx_pump_dx_rec` 0x20060614 → 48 kHz ring 0x203fbdc0 (8×36) → `qso_recorder_rx_audio_block` 0x20067254: audio FFT (48 k and 8 k) + QSO recorder (36→6 ⇒ 8 kHz) | struct+0x180, 0x11811224 |
+| DX_REC | DSP→CPU | R | **mic/TX modulation audio** 🟢 (the DSP's per-block scalar struct+0x274, ×4 interpolated) | ring 0x203fc002 (2 readers): `voice_tx_record_from_mic_block` (TX voice memory, 8 kHz), `voice_tx_record_mic_peak_level` (level meter on the record screen) | struct+0x1a0, 0x11810b34 |
+| DX_FMT (AXR0[6] → SSIF1 RX) | DSP→CPU | L | per-mode demod output ×7.5, 0 in TX. An FIR variant is used for modes 0x0b–0x0d 🟡 | `ssif1_rx_pump_dx_fmt` → ring 0x203fc246 (2 readers): FUN_20020e18 (÷8 → 1024-sample float buffer → FFT kick, a decoder?) and FUN_200635ec (fractional resampler → 8-bit → FUN_20063f08, a decoder) 🟡 | struct+0x1c0, 0x118117f4 |
+| DX_FMT | DSP→CPU | R | never written (0) | not read | struct+0x1e0 |
+| DR_AF (SSIF0 TX → AXR0[5]) | CPU→DSP | L | **playback to the speaker** (recorder playback) ✅ | `ssif0_tx_pump_dr_af` 0x20060778 pops `txL` ring 0x203fbcc0 (13×6) | even samples → LPF 3.6 kHz → speaker mix ×0.703 (AXR0[2] R) and →0x1180fdd8 |
+| DR_AF | CPU→DSP | R | **audio to the transmitter** (TX voice memory) ✅ | pops `txR` ring 0x203fbd5e | even samples → LPF → ×P[0x4b] byte1/255 (MOD level) → struct+0x298 → TX mode code |
+| DR_RSV (SSIF1 TX → AXR0[7]) | CPU→DSP | L/R | **unused** ✅ | no SSIFTDR_1 reference; SSIFCR_1 is RX-only | deinterleaved, never read |
+
+Which slot carries the playback: `voice_play_to_dsp_tick` (0x20067458) pops 36-sample records
+(0x4c bytes, 2000-record ring) and pushes them to txL, or to txR when `FUN_2004b5d0` (byte
+DAT_2004bc58+2) is set, i.e. transmitting. The CPU sends 8 kHz as a 96 kHz stream: each sample
+is written to 2 frames, then 10 zero frames follow. The DSP reads only the even frames, so it
+sees 48 kHz zero-stuffed ×6 and interpolates with its 3.6 kHz LPF (its ×0.138 gain is close to
+1/6). When nothing plays, the pops return zeros, i.e. silence.
+
+**Other DSP-side facts:**
+- In-band control from the FPGA, on AXR0[3] L's low byte: `idx<<4 | val` goes into a 16-byte
+  table at 0x1181ec68. It carries the FPGA version the 0xE0 identity reply reports, and idx 15
+  bit 0 becomes C1 bit 31.
+- The speaker path (AXR0[2] R) mixes RX audio, DR_AF L and an **IMA-ADPCM decoder**
+  (0x11810d88) fed by opcode 0x48 bytes, most likely the voice synthesizer.
+- AXR0[0] R is a ramped AGC control word (DFX_AGC 🟢).
+
+**Emulator today ✅ (QMP):** DMAC ch3/4/5 are programmed exactly as above, but SSIF0/1 are
+unmodelled (they read 0). Bring-up waits for 10 edges on each word-select pin, PPR2 bit 9
+(P2_9 SSIWS0) and PPR3 bit 5 (P3_5), under a 1 ms MTU2 ch0 timeout (FUN_20063448(32000) /
+flag 0x203903ac). The pins never move, so bring-up times out and the pump gate 0x2039038c stays
+0. To bring audio up, a model needs:
+- toggling word-select levels (derive them from the virtual clock at 96 kHz, no timer);
+- SSIF registers;
+- DMAC ch3/4/5 register-set ping-pong with CHSTAT END/SR, at one buffer per 0.75 ms (one ptimer
+  per buffer, not per frame);
+- a fake-DSP producer for DX_REC/DX_FMT.
 
 ## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
 
