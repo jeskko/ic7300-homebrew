@@ -28,6 +28,34 @@ loops were the firmware's own delay loops polling a counter. Profiling methods t
 (`perf` isn't installed and ptrace is child-only): gdb as the parent with SIGINT-driven stack
 sampling, `strace -f -c`, and gdb Python breakpoints counting timer callbacks.
 
+## Status, 2026-09-24, latest+3 — the desktop window drives the front panel; run_gui.py options
+
+`tools/run_gui.py` (GTK window). Click the window first to give it keyboard focus.
+- **Mouse:** click or drag = touch screen.
+- **Wheel:** MAIN DIAL, 5 steps per notch. With Shift it's MULTI, with Ctrl TWIN PBT inner, with
+  Ctrl+Shift TWIN PBT outer.
+- **Keys:** letters for the front-panel keys (M MENU, Esc EXIT, Q QUICK, F FUNCTION, …),
+  ←/→ = dial ∓1, +/− = AF, ]/[ = RF/SQL. Keys are held while held, so holding one is a long
+  press. The full map prints at start and lives in `fp_keymap` in `src/scif.c`.
+
+Verified through QMP `input-send-event` (the same QEMU input path GTK uses): M opens the menu,
+Esc closes it, and 4 wheel notches take 14.100.00 to 14.100.20.
+
+New flags:
+
+| Flag | Effect |
+|---|---|
+| `--fast` | `sleep=off` |
+| `--icount SPEC` / `--icount off` | set or drop `-icount` |
+| `--no-pwrk` | boot straight up, no power-key dance |
+| `--civ PATH` | CI-V on a unix socket |
+| `--no-audio` | audio link never starts |
+| `--tone HZ:LEVEL`, `--noise L` | fake RX audio |
+| `--af N`, `--rfsql N` | power-on pot positions |
+| `--fpga-sweep-hz`, `--fpga-signals` | band-scope test signal |
+| `--no-mouse`, `--no-keys` | disable window input |
+| `--debug DEVS` + `--log PATH` | device logging |
+
 ## Status, 2026-09-24, latest+2 — front panel: keys, dials, touch; the system tick was 8× slow
 
 Spec: [notes/front-panel-report.md](../notes/front-panel-report.md). `src/scif.c` models the

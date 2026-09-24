@@ -203,6 +203,7 @@
 #include "qom/object.h"
 #include "system/address-spaces.h"
 #include "ui/input.h"
+#include "standard-headers/linux/input-event-codes.h"
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
@@ -281,6 +282,7 @@ struct RZA1HScifState {
     QemuInputHandlerState *fp_input;
     int      fp_mouse_x, fp_mouse_y;
     bool     fp_mouse_down, fp_mouse_dirty;
+    bool     fp_shift, fp_ctrl;   /* modifier state, for the wheel */
 
     /* Bus logger (2026-09-20) -- generic per-channel TX frame assembly for
      * observability, deliberately independent of the channel-3/5 virtual-
@@ -743,8 +745,55 @@ static void rza1h_scif3_fpctl_receive(void *opaque, const uint8_t *buf, int size
     }
 }
 
-/* Mouse as touchscreen (GTK/SDL window): left button down/drag/up -> touch/move/release in
- * LCD pixels. Coordinates are the console's absolute 0..0x7fff scaled to 480x272. */
+/* Window input -> front panel (2026-09-24). Mouse: left button down/drag/up = touch/move/
+ * release in LCD pixels (console absolute 0..0x7fff scaled to 480x272). Wheel: MAIN DIAL
+ * (FP_WHEEL_DIAL counts per notch); with shift MULTI, with ctrl TWIN PBT inner, with
+ * ctrl+shift PBT outer. Keyboard: the table below; keys are held while held (so holding =
+ * long press), knob keys step once per press. tools/run_gui.py prints the same map -- keep
+ * them in sync. RZA1H_FP_NO_MOUSE / RZA1H_FP_NO_KEYS drop the mouse or keyboard part. */
+#define FP_WHEEL_DIAL 5
+
+typedef struct FpKey {
+    unsigned code;       /* Linux KEY_* */
+    int8_t   off, bit;   /* report byte/bit for a push key; bit < 0 = knob step below */
+    int16_t  step;       /* knob: signed step (add16 for off 0x18, add8/absolute otherwise) */
+} FpKey;
+
+static const FpKey fp_keymap[] = {
+    { KEY_T, 0x0d, 0 }, { KEY_U, 0x0d, 1 }, { KEY_V, 0x0d, 2 }, { KEY_M, 0x0d, 3 },
+    { KEY_F, 0x0d, 4 }, { KEY_S, 0x0d, 5 }, { KEY_Q, 0x0d, 6 }, { KEY_X, 0x0d, 7 },
+    { KEY_P, 0x0e, 0 }, { KEY_N, 0x0e, 1 }, { KEY_B, 0x0e, 2 }, { KEY_R, 0x0e, 3 },
+    { KEY_ESC, 0x0e, 4 }, { KEY_O, 0x0e, 5 }, { KEY_K, 0x0e, 6 }, { KEY_D, 0x0e, 7 },
+    { KEY_W, 0x0f, 0 }, { KEY_E, 0x0f, 1 }, { KEY_PAGEUP, 0x0f, 2 }, { KEY_PAGEDOWN, 0x0f, 3 },
+    { KEY_I, 0x0f, 4 }, { KEY_J, 0x0f, 5 }, { KEY_C, 0x0f, 6 }, { KEY_L, 0x0f, 7 },
+    { KEY_ENTER, 0x10, 2 }, { KEY_Z, 0x10, 3 },
+    { KEY_F1, 0x11, 5 }, { KEY_F2, 0x11, 4 }, { KEY_F3, 0x11, 3 }, { KEY_F4, 0x11, 2 },
+    { KEY_UP, 0x11, 7 }, { KEY_DOWN, 0x11, 6 },
+    /* knobs: left/right = main dial -1/+1, +/- = AF, ]/[ = RF/SQL */
+    { KEY_LEFT, 0x18, -1, -1 }, { KEY_RIGHT, 0x18, -1, 1 },
+    { KEY_EQUAL, 0x1e, -1, 8 }, { KEY_KPPLUS, 0x1e, -1, 8 },
+    { KEY_MINUS, 0x1e, -1, -8 }, { KEY_KPMINUS, 0x1e, -1, -8 },
+    { KEY_RIGHTBRACE, 0x1f, -1, 8 }, { KEY_LEFTBRACE, 0x1f, -1, -8 },
+};
+
+/* Step a knob: 0x18 is the BE16 main-dial counter; 0x1b-0x1d wrapping u8 counters; 0x1e/0x1f
+ * absolute pots (clamped 0..255). */
+static void rza1h_scif3_fp_knob(RZA1HScifState *s, int off, int n)
+{
+    if (off == 0x18) {
+        uint16_t v = (s->fp[0x18] << 8 | s->fp[0x19]) + n;
+        s->fp[0x18] = v >> 8;
+        s->fp[0x19] = v;
+        rza1h_scif3_fp_queue(s, 0x18, 2);
+    } else if (off >= 0x1e) {
+        s->fp[off] = MIN(MAX(s->fp[off] + n, 0), 255);
+        rza1h_scif3_fp_queue(s, off, 1);
+    } else {
+        s->fp[off] += n;
+        rza1h_scif3_fp_queue(s, off, 1);
+    }
+}
+
 static void rza1h_scif3_fp_input_event(DeviceState *dev, QemuConsole *src, QemuInputEvent *evt)
 {
     RZA1HScifState *s = RZA1H_SCIF(dev);
@@ -754,9 +803,53 @@ static void rza1h_scif3_fp_input_event(DeviceState *dev, QemuConsole *src, QemuI
         *v = qemu_input_scale_axis(evt->abs.value, INPUT_EVENT_ABS_MIN, INPUT_EVENT_ABS_MAX,
                                    0, evt->abs.axis == INPUT_AXIS_X ? 479 : 271);
         s->fp_mouse_dirty |= s->fp_mouse_down;
-    } else if (evt->type == INPUT_EVENT_KIND_BTN && evt->btn.button == INPUT_BUTTON_LEFT) {
-        s->fp_mouse_down = evt->btn.down;
-        s->fp_mouse_dirty = true;
+    } else if (evt->type == INPUT_EVENT_KIND_BTN) {
+        InputButton b = evt->btn.button;
+
+        if (b == INPUT_BUTTON_LEFT && !getenv("RZA1H_FP_NO_MOUSE")) {
+            s->fp_mouse_down = evt->btn.down;
+            s->fp_mouse_dirty = true;
+        } else if ((b == INPUT_BUTTON_WHEEL_UP || b == INPUT_BUTTON_WHEEL_DOWN) &&
+                   evt->btn.down) {
+            int dir = b == INPUT_BUTTON_WHEEL_UP ? 1 : -1;
+            if (s->fp_ctrl) {
+                rza1h_scif3_fp_knob(s, s->fp_shift ? 0x1c : 0x1b, dir);
+            } else if (s->fp_shift) {
+                rza1h_scif3_fp_knob(s, 0x1d, dir);
+            } else {
+                rza1h_scif3_fp_knob(s, 0x18, dir * FP_WHEEL_DIAL);
+            }
+        }
+    } else if (evt->type == INPUT_EVENT_KIND_KEY && !getenv("RZA1H_FP_NO_KEYS")) {
+        unsigned code = evt->key.key;
+        bool down = evt->key.down;
+
+        if (code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT) {
+            s->fp_shift = down;
+            return;
+        }
+        if (code == KEY_LEFTCTRL || code == KEY_RIGHTCTRL) {
+            s->fp_ctrl = down;
+            return;
+        }
+        for (size_t i = 0; i < ARRAY_SIZE(fp_keymap); i++) {
+            const FpKey *k = &fp_keymap[i];
+            if (k->code != code) {
+                continue;
+            }
+            if (k->bit >= 0) {
+                bool on = s->fp[k->off] & (1 << k->bit);
+                if (on != down) {   /* ignore autorepeat */
+                    s->fp[k->off] ^= 1 << k->bit;
+                    rza1h_scif3_fp_queue(s, k->off, 1);
+                    rza1h_debug("scif3fp", "key %u %s -> %#x.%d", code, down ? "down" : "up",
+                                k->off, k->bit);
+                }
+            } else if (down) {
+                rza1h_scif3_fp_knob(s, k->off, k->step);
+            }
+            return;
+        }
     }
 }
 
@@ -780,8 +873,8 @@ static void rza1h_scif3_fp_input_sync(DeviceState *dev)
 }
 
 static const QemuInputHandler rza1h_scif3_fp_input_handler = {
-    .name  = "IC-7300 touch panel",
-    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS,
+    .name  = "IC-7300 front panel",
+    .mask  = INPUT_EVENT_MASK_BTN | INPUT_EVENT_MASK_ABS | INPUT_EVENT_MASK_KEY,
     .event = rza1h_scif3_fp_input_event,
     .sync  = rza1h_scif3_fp_input_sync,
 };
@@ -1348,10 +1441,8 @@ static void rza1h_scif_realize(DeviceState *dev, Error **errp)
     if (s->channel == 3) {
         qemu_chr_fe_set_handlers(&s->fpctl, rza1h_scif3_fpctl_can_receive,
                                  rza1h_scif3_fpctl_receive, NULL, NULL, s, NULL, true);
-        if (!getenv("RZA1H_FP_NO_MOUSE")) {
-            s->fp_input = qemu_input_handler_register(dev, &rza1h_scif3_fp_input_handler);
-            qemu_input_handler_activate(s->fp_input);
-        }
+        s->fp_input = qemu_input_handler_register(dev, &rza1h_scif3_fp_input_handler);
+        qemu_input_handler_activate(s->fp_input);
     }
 }
 
