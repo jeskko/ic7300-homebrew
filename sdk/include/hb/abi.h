@@ -13,13 +13,20 @@
  * shadow in sync, so nothing the app sees reaches the screen underneath. The dials are not
  * grabbed.
  *
+ * An app that wants the receiver's audio sets api->audio_hook (v4): the loader calls it with
+ * every 36-sample block of DX_REC L -- the demodulated RX audio at 48 kHz, before AF gain
+ * (notes/dsp-protocol.md) -- right after the firmware has queued the same block for its own
+ * reader. It is called from the 250 us system-tick ISR (ssif0_rx_pump_dx_rec), 1333 times a
+ * second: copy the samples and return; no firmware calls, no floating point, no waiting. The
+ * loader clears it once the app is gone. hb/audio.h wraps it.
+ *
  * Apps don't normally touch any of this directly -- sdk/runtime/ builds the header and drives
  * idle_hook for them (see hb/app.h).
  */
 #ifndef HB_ABI_H
 #define HB_ABI_H
 
-#define HB_ABI_VERSION      3u      /* v3: 1 MB region, framebuffers moved, app heap */
+#define HB_ABI_VERSION      4u      /* v4: audio_hook; v3: 1 MB region, framebuffers moved, heap */
 #define HB_APP_MAGIC        0x31304248u     /* "HB01" */
 
 /* The homebrew RAM map (v3). 0x20600000-0x207fffff is ordinary cached, executable RAM that
@@ -59,6 +66,8 @@ struct hb_loader_api {
     uint32_t fw_build;                  /* HB_FW_142 */
     void (*volatile idle_hook)(void);   /* app-owned: called every main_idle_loop pass if set */
     volatile uint32_t input_grab;       /* app-owned: nonzero = firmware ignores touch/keys */
+    /* app-owned (v4): called from the tick ISR with each 36-sample 48 kHz RX-audio block */
+    void (*volatile audio_hook)(const int16_t *samples, uint32_t n);
 };
 
 typedef void (*hb_app_entry_fn)(struct hb_loader_api *api);

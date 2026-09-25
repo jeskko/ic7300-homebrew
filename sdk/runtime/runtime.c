@@ -30,6 +30,7 @@ struct hb_loader_api *hb__runtime_api(void)
 static void app_trampoline(void)
 {
     main();
+    g_api->audio_hook = 0;              /* before anything else goes away (it runs in an ISR) */
     if (hb__cleanup)
         hb__cleanup();
     g_app_done = true;

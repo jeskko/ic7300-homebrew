@@ -33,7 +33,8 @@ CFLAGS = [
     "-ffunction-sections", "-fdata-sections",
     f"-I{INCLUDE}",
 ]
-RUNTIME_SOURCES = ["crt0.S", "runtime.c", "ui_dialog.c", "gfx.c", "font.c", "heap.c", "input.c", "math.c", "libc.c"]
+RUNTIME_SOURCES = ["crt0.S", "runtime.c", "ui_dialog.c", "gfx.c", "font.c", "heap.c", "input.c", "math.c", "libc.c",
+                   "audio.c"]
 
 
 def build(sources: list[Path], out: Path, keep_dir: Path | None = None) -> bytes:

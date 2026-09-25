@@ -59,6 +59,9 @@ struct fw_dirent {                      /* 0x34 bytes */
 #define FW_FP_KEYS_LAST         0x11
 /* Touch, keys, auto-repeat and long-press ticking, called once per main_idle_loop pass. */
 #define fw_ui_input_poll_tick   FW_FN(0x2002fca8, void, (void))
+/* Queue one 36-sample DX_REC L block (48 kHz int16) for qso_recorder_rx_audio_block; called by
+ * ssif0_rx_pump_dx_rec (0x20060614) from the tick ISR. notes/dsp-protocol.md. */
+#define fw_ssif_rx0L_ring_push36 FW_FN(0x2005fb28, void, (const int16_t *block))
 
 /* ---- Time ------------------------------------------------------------------------------ */
 /* +1 per RTOS tick in rtos_tick_handler (0x20188084); measured 1 kHz. */

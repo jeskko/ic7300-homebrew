@@ -34,6 +34,10 @@ adds what a real app needs:
    8 → 9 items, and a new catalog record's action is `hb_menu_action`. The list, label and
    record live in the image's confirmed-unused padding gap. The 14 catalog slots right after
    the record (`0x882`–`0x88f`) are left zero for the picker's rows.
+4. **RX audio** (ABI v4): `ssif0_rx_pump_dx_rec`'s `bl ssif_rx0L_ring_push36` (`0x200606d8`)
+   becomes `bl hb_audio_hook`. It runs from the 250 µs tick ISR. The hook queues the
+   36-sample 48 kHz block for the firmware's own reader as before, then passes it to the
+   app's `api->audio_hook`, if set. The runtime wraps this as `hb/audio.h` (12 kHz, gap-filled).
 
 ## The app picker
 
@@ -61,7 +65,7 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
 (`*(u16*)0x20390222`, absolute across pages; tested on pages 2 and 3), then loads and runs
 `C:\homebrew\<name>` with the checks below.
 
-## ABI v3 (`sdk/include/hb/abi.h`)
+## ABI v4 (`sdk/include/hb/abi.h`)
 
 - **Memory map.** Everything is inside `0x20600000`–`0x207fffff`, cached and executable RAM
   the firmware never uses (`notes/memory-map.md`: marker sweep, static trace, MMU map):
@@ -82,11 +86,13 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
   refuses the file unless the magic and version match, `entry` is word-aligned inside the bytes
   actually read, and `image_end` lies within the region.
 - After cache maintenance, the loader calls `entry(&api)` from the menu tap, on the UI thread.
-  `api` is `{abi_version, fw_build = 0x0142, idle_hook, input_grab}`. While the app leaves
+  `api` is `{abi_version, fw_build = 0x0142, idle_hook, input_grab, audio_hook}`. While the app leaves
   `idle_hook` set, the loader calls it once per `main_idle_loop` pass and won't load another
   app. While `input_grab` is set, the firmware's touch/key handling is skipped (below).
 - v1 → v2 (2026-09-25) added `input_grab`. v2 → v3 (same day) grew the region from 128 KB to
-  1 MB, moved the framebuffers from `0x20640000`/`0x20680000` and added the heap. The loader
+  1 MB, moved the framebuffers from `0x20640000`/`0x20680000` and added the heap. v3 → v4
+  (same day) added `audio_hook` (the RX-audio tap, patch 4); the loader clears it along
+  with `input_grab` once the app is gone. The loader
   accepts only its own version, and an app's runtime refuses an older loader, so apps need a
   rebuild each time. That costs nothing while no loader has been installed on real hardware.
 

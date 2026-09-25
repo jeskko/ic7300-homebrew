@@ -1,6 +1,8 @@
 # SSTV receiver app (App 4): research and design (2026-09-25)
 
-This is the research pass for App 4 in `app-requirements.md`, and nothing is built yet. It covers
+This is the research pass for App 4 in `app-requirements.md`. **Update, same day:** the
+first version is built and runs in the emulator (`examples/sstv-rx/`, loader ABI v4). Its
+README has the status and the lost-block finding. It covers
 where the app gets its audio, what to reuse from slowrx / slowrx-cli, what to change to make it
 run in real time on the radio, and a build plan. The algorithm was checked on the host with
 `examples/sstv-rx/prototype/sstv_proto.py` against `scratch/samples/SSTV.test.au`.

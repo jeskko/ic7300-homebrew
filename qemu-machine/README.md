@@ -69,6 +69,12 @@ Measured with `tools/bench_boot.py`.
     - the FM TSQL CTCSS detector flags 88.5 Hz and rejects 85.4/91.5/100 Hz.
 
     Paths: `notes/dsp-protocol.md`, "DX_FMT consumers and the RTTY receive path".
+  - **Known issue: the firmware's audio pump misses DMA blocks** (found 2026-09-25 by the SSTV
+    app). Even under `-icount shift=1` the emulated firmware leaves about 0.1–0.4% of the
+    0.75 ms SSIF blocks untaken before the next one lands (`RZA1H_DEBUG=dmac` counts them as
+    overruns), from boot on, with or without an app. Without `-icount` it's about 19%.
+    Whether real hardware drops any is unknown. The SDK's audio runtime detects and fills the
+    lost blocks (`sdk/runtime/audio.c`); anything else reading the rings sees the gaps.
 - **The SD card slot works** (`src/sdhi.c`, 2026-09-25): `body.bin` drives the card through
   **SDHI0** (`0xE804E000`, Renesas' SD driver library), not MMCIF — that's why the old `mmc.c`
   was never touched. The card is upstream QEMU's `sd-card` on the SDHI's SD bus

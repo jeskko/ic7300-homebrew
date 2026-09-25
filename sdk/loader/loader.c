@@ -10,6 +10,9 @@
  *                     resident app's idle_hook, if it set one (see hb/abi.h).
  *   hb_input_hook  -- replaces main_idle_loop's `bl ui_input_poll_tick`: runs it as before
  *                     unless the resident app has grabbed input (api->input_grab).
+ *   hb_audio_hook  -- replaces ssif0_rx_pump_dx_rec's `bl ssif_rx0L_ring_push36` (tick ISR):
+ *                     queues the RX-audio block as before, then hands it to the app's
+ *                     audio_hook, if set.
  *
  * The picker. The firmware has no free list screen, so we borrow PLAYER SET (screen 0x63,
  * category 0x40, one stock row, deep in the voice-recorder menus): while the picker is up, its
@@ -35,6 +38,7 @@ static struct hb_loader_api g_api = {
     .fw_build = HB_FW_142,
     .idle_hook = 0,
     .input_grab = 0,
+    .audio_hook = 0,
 };
 
 static uint32_t g_scratch[9];           /* the open RPCs' 36-byte scratch argument */
@@ -291,8 +295,20 @@ void hb_idle_hook(void)
     void (*hook)(void) = g_api.idle_hook;
     if (hook)
         hook();
-    else
+    else {
         g_api.input_grab = 0;           /* no app, no grab -- whatever the app left behind */
+        g_api.audio_hook = 0;
+    }
+}
+
+/* Runs in the tick ISR (see hb/abi.h). The stock push first, so the firmware's own reader
+ * sees exactly what it always did. */
+void hb_audio_hook(const int16_t *block)
+{
+    fw_ssif_rx0L_ring_push36(block);
+    void (*hook)(const int16_t *, uint32_t) = g_api.audio_hook;
+    if (hook)
+        hook(block, 36);
 }
 
 void hb_input_hook(void)
