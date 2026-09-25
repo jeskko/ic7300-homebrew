@@ -411,6 +411,37 @@ explain it), and the true upper bound of the affected region (confirmed unsafe u
 `0x20500000` and `0x20600000`, confirmed safe at `0x20600000`-`0x209f0000` in spot checks after one
 specific boot sequence — not proven safe under heavier/longer-running activity).
 
+## SD-card file I/O: 4 real open/read/seek/close wrapper functions, byte-verified (2026-09-25)
+
+Found and confirmed live (`sdk/examples/sd-card-app/`) by reading `firmware_update_main`'s own real,
+working file-read code — it opens the SD-card update container this exact way — rather than guessing at
+`file_rpc_post_command`'s raw ring-buffer message layout cold. These are 4 of the 26 tiny per-command
+wrapper functions `sdcard_file_rpc_dispatch_task`'s own retraction comment already flagged as existing
+(`0x200bc0fc`-`0x200bca08`) but hadn't individually documented:
+
+| Function | Address | Command ID | Signature | Role |
+|---|---|---|---|---|
+| — | `0x200bc5f4` | `0xf` | `(path, flags, &handle_out, scratch36)` | open |
+| — | `0x200bc6a4` | `0x11` | `(handle, dest_buf, len, &actual_out)` | read |
+| — | `0x200bc754` | `0x13` | `(handle, offset, 0, &actual_out)` | seek |
+| — | `0x200bc64c` | `0x10` | `(handle, 0)` | close |
+
+Each is a plain C function (`0x24`-byte block assembled on the caller's stack, `memmove`d, then a tail call
+into `file_rpc_post_command` — confirmed by listing, not just decompile: the wrapper's own return value is
+exactly `file_rpc_post_command`'s r0, still live in r0 at the wrapper's own `ldmia sp!,{...,pc}` return).
+**Call it, then wait on the result**: `FUN_200214b0(return_value, 0x46)` — a generic "wait for this RPC to
+complete" helper, `0x46` a fixed tick-count timeout used identically by all four calls in
+`firmware_update_main` — returns `0` on success. `path` is a plain null-terminated ASCII string
+(`"C:\IC-7300\..."`, confirmed against a real literal at `0x20016fec`). Live-verified end to end: opening a
+real file, reading its bytes into RAM, and closing it, all via these four calls from freshly-written code
+(not from existing firmware call sites), works correctly — and a missing file fails the open call cleanly
+(nonzero return, no hang) rather than crashing.
+
+**Corrects `sdk/api/filesystem.md`'s earlier guess** (`6`/`9`/`0x13`/`0x17` for open/write/read/list) — only
+`0x13` checks out, as seek rather than read. The other IDs in that older guess aren't re-verified; the
+dispatch table has 26 entries total (`0`-`0x1a`, per `sdcard_file_rpc_dispatch_task`'s own decompile), so
+they may still be valid for other operations (write, directory listing) just not confirmed here.
+
 ## Living reference: `cold_boot_hw_init`'s own call-by-call sweep (2026-09-20)
 
 `cold_boot_hw_init` (the task-catalog table above already covers the one task it activates,

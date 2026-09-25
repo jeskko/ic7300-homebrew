@@ -125,9 +125,19 @@ correction worth flagging for any future work in this area: the "confirmed empty
 region right after `body.bin`'s own image turned out to be live runtime-allocator territory, silently
 overwriting anything placed there within seconds of boot — `app-loader-design.md`'s own "Where appended
 code actually has to live" section has the full story and the empirically-confirmed-safe address that
-replaced it. Phase 2 is no longer just design — the injection mechanism itself is proven. What's left:
-SD-card app loading (the payload here is baked in, not SD-loaded yet) and a real menu-button trigger,
-both tracked as open items in `app-loader-design.md`.
+replaced it. Phase 2 is no longer just design — the injection mechanism itself is proven.
+
+**Same day, SD-card app loading also built and live-tested** — see `sdk/examples/sd-card-app/`. The
+firmware hook now opens a file from the SD card (`C:\IC-7300\APP.BIN`), reads it into RAM, and runs it,
+using 4 real wrapper functions found by reading `firmware_update_main`'s own working file-read code rather
+than guessing (`sdk/api/filesystem.md` has the confirmed command IDs). Live-verified end to end: a real,
+separate `APP.BIN` file loaded from the card emits its own distinct CI-V frame (proving it genuinely ran),
+the radio resumes normally, and a missing file fails closed with no crash or hang. This is Phase 3's own
+"trivial do-nothing/blink-something-obvious app loaded from SD card" milestone, reached the same day as
+Phase 2's own hook — see that phase's text below, now satisfied rather than still pending. What's left:
+a real "Homebrew Apps" menu button (both examples still trigger via a hidden front-panel key combo, not a
+real menu item) and a real app SDK beyond "load and call one fixed file" — tracked as open items in
+`app-loader-design.md`.
 
 Concrete open design questions, needing a firm answer before writing the loader itself:
 - **Where does the loader hook in?** Candidates already surfaced by this project's own RTOS work: a
@@ -160,13 +170,17 @@ Concrete open design questions, needing a firm answer before writing the loader 
   is a real design requirement, not an afterthought, given the radio is presumably still used as a radio.
 
 ### Phase 3 — build and ship the first real app
-Once Phase 2's hook exists and boots correctly with a trivial "do nothing" or "blink something obvious"
-app loaded from SD card, iterate toward something genuinely useful, informed by what this project already
+
+**2026-09-25 — the "trivial app loaded from SD card" milestone this phase describes is done**, see
+`sdk/examples/sd-card-app/`: a real, separate `APP.BIN` file, loaded fresh from the SD card at runtime and
+executed, with no baked-in payload. Not yet "genuinely useful" — it emits one CI-V frame and returns — but
+the mechanism this phase was gated on (Phase 2's hook, working, SD-card file I/O, working) is proven.
+Iterating toward something genuinely useful is what's left, informed by what this project already
 understands well (CI-V, the UI icon/graphics system, SD-card file I/O, the band-scope/spectrum data). See
 `sdk/app-requirements.md` for a concrete per-app breakdown (serial hello-world, display
 hello-world, a simple game, an SSTV receiver) of what's already known vs. what still needs research,
-deliberately excluding the launching-mechanism/memory-placement question above (expected to get much
-easier once a live-device memory dump is available).
+deliberately excluding the launching-mechanism/memory-placement question above (now answered, not just
+"expected to get easier" — see `sdk/app-loader-design.md`).
 
 ### JTAG as an accelerant across every phase, not a separate path
 Hardware ordered, pins confirmed on both the IC-7300 and IC-9700 (see

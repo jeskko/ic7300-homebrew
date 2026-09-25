@@ -10,8 +10,19 @@ proof of concept — the radio boots a one-time-modified `body.bin`, something t
 emits something over the CI-V bus, and the radio resumes completely normal operation with no crash, no
 hang, no visible side effect other than the one CI-V message. **Achieved and live-tested, same day** — see
 `sdk/examples/civ-hello-world/`. Nothing about a real app SDK, a real "Homebrew Apps" UI, SD-card app
-loading, or safety hardening needed solving to get here — those come next, the same way the firmware-update
+loading, or safety hardening needed solving to get here — those came next, the same way the firmware-update
 reframing was proven in the emulator before anything else was built on top of it.
+
+**2026-09-25, fifth pass — SD-card app loading also WORKING, LIVE-TESTED.** `sdk/examples/sd-card-app/`
+builds directly on `civ-hello-world`: the firmware hook now opens `C:\IC-7300\APP.BIN`, reads it into RAM,
+and calls it, using 4 real wrapper functions found by reading `firmware_update_main`'s own working file-read
+code (`0xf`=open/`0x11`=read/`0x13`=seek/`0x10`=close, full detail in `sdk/api/filesystem.md`). Live-verified:
+a real, separate `APP.BIN` file loaded from the SD card at runtime emits its own distinct CI-V frame (proving
+it genuinely ran, not the firmware hook itself), the radio resumes normally afterward, and — tested
+separately — a missing `APP.BIN` fails closed with no frame, no hang, no crash. This is the actual "install
+an app = drop a file on the SD card, no reflash" mechanism this whole design has been aiming at. What's left
+of the original goal: a real "Homebrew Apps" menu button (still a hidden key combo today) and everything a
+real app SDK needs beyond "load and call one file" (multiple apps, a real memory/size budget, versioning).
 
 **2026-09-25, second pass**: an Opus fresh-eyes investigation (dispatched from this design's first draft)
 resolved both blocking open questions from the first pass — the CI-V staging cookbook, and the real
@@ -179,26 +190,27 @@ options, either wired into the same hook location chosen above:
 Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
 other design pieces above.
 
-## Open items (as of 2026-09-25, fourth pass)
+## Open items (as of 2026-09-25, fifth pass)
 
-- **The `-icount` hang.** The `civ-hello-world` image reliably hangs under this machine's usual `-icount`
-  timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not root-caused —
-  worth a real look before trusting any future hook-based test under `-icount`, and before assuming this
-  class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be unaffected, but
-  that's an assumption, not a confirmed fact).
-- **The SD-card app-loading increment** — `civ-hello-world`'s payload is baked in; wiring up
-  `file_rpc_post_command` to load a blob from SD into the now-corrected `0x20600000`+ region and jump into
-  it is the next real piece of work, not yet started.
+- **The `-icount` hang.** Both `civ-hello-world` and `sd-card-app` reliably hang under this machine's usual
+  `-icount` timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not
+  root-caused — worth a real look before trusting any future hook-based test under `-icount`, and before
+  assuming this class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be
+  unaffected, but that's an assumption, not a confirmed fact).
 - **The full extent of the "unsafe past static image end" region** — confirmed unsafe at `0x20395b18` and
   `0x20500000` (progressively, not instantly), confirmed safe at `0x20600000` and several points above it
   after a full boot. The exact boundary between unsafe and safe, and whether "safe so far in these tests"
   could still be consumed by heavier runtime activity (e.g. BMP capture, voice recording, other large
   buffer allocations this project already knows exist) over a longer running session, is not established.
+- **A real app SDK beyond "load and call one fixed file"** — `sd-card-app`'s loader has a fixed path, a
+  fixed 32 KB size cap, and no versioning/multi-app story. Real next-layer design work, not yet started.
 - **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button
-  (separate from, and not blocking, this design's CI-V proof of concept).
-- **`file_rpc_post_command`'s close command ID.**
+  (separate from, and not blocking, either proof of concept so far — both still trigger via a hidden
+  front-panel key combo, not a real menu item).
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.
 - Closed, checked negative: the `0x2019b70c` SD-UI state table has no dead/unused entry — don't re-sweep it.
 - Closed, superseded: the `ram_placeholder` execute-permission question — moot, see above.
+- Closed, confirmed: `file_rpc_post_command`'s open/read/seek/close command IDs (`0xf`/`0x11`/`0x13`/`0x10`)
+  — see `sdk/api/filesystem.md` and `sdk/examples/sd-card-app/`.

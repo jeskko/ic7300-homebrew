@@ -37,8 +37,13 @@ for why this whole effort exists.
 - **`examples/civ-hello-world/`** — the first real, running code from this whole effort (2026-09-25,
   live-tested in `qemu-machine`): a front-panel key combo makes the radio emit one CI-V frame and resume
   normal operation. Real ARM assembly (`app.s`), a reproducible build script, and a README with the full
-  test log. Proves the injection mechanism `app-loader-design.md` designed actually works; SD-card app
-  loading and a real menu-button trigger are the next increments, not yet built.
+  test log. Proves the injection mechanism `app-loader-design.md` designed actually works.
+- **`examples/sd-card-app/`** — same day, built directly on top: the payload is no longer baked in, it's a
+  real, separate `APP.BIN` file loaded fresh from the SD card at runtime and executed, using file-I/O
+  wrapper functions found and confirmed via `firmware_update_main`'s own real code (`sdk/api/filesystem.md`
+  has the confirmed command IDs). This is the actual "install an app = drop a file on the SD card, no
+  reflash" mechanism the project's whole reframing was built around — proven, not just designed. A real
+  menu-button trigger (both examples still use a hidden key combo) is the next increment, not yet built.
 
 ## Expected growth
 
