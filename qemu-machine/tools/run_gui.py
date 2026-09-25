@@ -43,6 +43,10 @@ from screenshot import qmp_cmd, pc  # noqa: E402
 from vdc5_framebuffer_peek import GPIO_PATH, qmp_open  # noqa: E402
 from qemu_launch import QEMU, FLASH, HERE, DEFAULT_ICOUNT  # noqa: E402
 
+FLASH_IMAGE_SIZE = 0x04000000  # 64 MiB -- emu/flash_image.py's FLASH_SIZE, per notes/memory-map.md.
+                                # A raw firmware container (.dat, ~4 MB) is a completely different
+                                # thing -- see build_flash.py's own module docstring.
+
 # Kept in sync with scif.c's rza1h_scif3_fp_input_event() comment (fp_keymap[] there is the
 # source of truth for the codes; this is just the human-readable map).
 FRONT_PANEL_HELP = """\
@@ -113,6 +117,13 @@ def main():
     flash = args.flash.resolve() if args.flash else FLASH
     if not flash.exists():
         ap.error(f"--flash {flash}: file not found")
+    flash_size = flash.stat().st_size
+    if flash_size != FLASH_IMAGE_SIZE:
+        ap.error(f"--flash {flash} is {flash_size} bytes, not a {FLASH_IMAGE_SIZE}-byte "
+                 f"({FLASH_IMAGE_SIZE // 1024 // 1024} MiB) flash image -- this looks like a raw "
+                 "firmware container (.dat), not something QEMU can boot directly. Build a flash "
+                 "image from it first: qemu-machine/tools/build_flash.py <container.dat> <out.bin>, "
+                 "then pass that output here.")
 
     if args.fast:
         icount = "shift=1,sleep=off"
@@ -179,9 +190,17 @@ def main():
             t0 = time.time()
             while time.time() - t0 < 15 and pc(s) != 0x20029B18:
                 time.sleep(0.1)
+            reached_checkpoint = pc(s) == 0x20029B18
             qmp_cmd(s, "qom-set", path=GPIO_PATH, property="pwrk-pressed", value=True)
-            print("PWRK pressed and held -- the main screen comes up after roughly 4s of "
-                  "emulated time (~12s wall with the default pacing; less with --fast).")
+            if reached_checkpoint:
+                print("PWRK pressed and held -- the main screen comes up after roughly 4s of "
+                      "emulated time (~12s wall with the default pacing; less with --fast).")
+            else:
+                print("WARNING: gave up waiting for the pre-PWRK checkpoint (pc == 0x20029b18) "
+                      "after 15s and pressed PWRK anyway -- the guest never reached the normal "
+                      "boot-ROM/base-loader wait point, so this boot is probably stuck (bad/foreign "
+                      "-kernel image, or a genuine hang). PWRK being 'pressed' here is not a sign "
+                      "boot is progressing normally.")
         else:
             print("--no-pwrk: booting straight up (no power-key dance).")
         if args.debug:
