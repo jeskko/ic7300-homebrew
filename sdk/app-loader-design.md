@@ -317,7 +317,9 @@ borrowed dialog); the list below still applies to it unless marked.
   **Update 2026-09-25:** a whole-range marker sweep in the emulator found `0x20601000`–`0x2080afff`
   (2088 KB) never written, across boot, the scope, TX, the QSO recorder recording and playing back,
   the RTTY decoder, and SD save/load (`notes/memory-map.md`, "RAM above the homebrew loader"). Screen
-  capture and voice-TX recording weren't covered, and it hasn't run on hardware. The app region could
+  capture and voice-TX recording weren't covered live, but were traced statically: all of their
+  buffers are fixed or bounded and below `0x205dcf60` (same file, "Screen capture and voice
+  recording"). It hasn't run on hardware. The app region could
   grow into this range on that evidence; it hasn't been changed yet.
 - **`RPC_WAIT`'s unbounded wait.** Not a timeout despite the `0x46` argument's name in earlier notes
   (corrected in `notes/kernel-rtos.md`) — a full RPC ring makes it spin forever. Because every

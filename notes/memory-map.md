@@ -209,9 +209,10 @@ scenario step and diffs it against the previous dump. Any write, zeroing include
 - **Positive control:** the SDK apps (CUBE, MINES) are launched in the same run. Their writes
   show up exactly where expected, in the app region and both framebuffers
   (`0x20640000`–`0x206bfbff`), so the harness does catch writes.
-- **Not covered:**
+- **Not covered live:**
   - Screen capture: a POWER tap doesn't trigger it in the emulator.
   - Voice TX memory recording: the scenario's taps didn't start it.
+  - Both were traced statically instead: every buffer is below `0x205dcf60` (next section).
   - Firmware update.
   - Real audio in TX: the emulator doesn't show TX on screen, and TX is only partly modelled.
   - Long sessions.
@@ -219,6 +220,41 @@ scenario step and diffs it against the previous dump. Any write, zeroing include
 - **Above the range** the firmware does use RAM: non-zero pages start at `0x2080b000`, and GR2's
   UI framebuffer sits at `0x20974fe0`. A zero-page scan underestimates use there: GR2 read only
   88 KB non-zero of its 255 KB, because black pixels read as zero.
+
+## Screen capture and voice recording: every buffer, traced statically (2026-09-25) ✅
+
+These are the two features the marker sweep couldn't exercise. Every buffer they touch is a fixed
+static address or a bounded arena, and all of them sit below the firmware's stacks
+(`0x205dcf60`). The map runs contiguously:
+
+| Range | Size | What | Evidence |
+|---|---|---|---|
+| `0x2042da00`–`0x2042de3f` | 1 KB | PNG row-pointer table (272 × 4) | `DAT_200f2c4c`, `FUN_200f289c` |
+| `0x2042de40`–`0x20478e3f` | 300 KB | libpng/zlib **bump arena** for capture encode and Screen Capture View decode. The PNG writer sets it up via `png_create_write_struct_2(…, malloc_fn=0x200f238c, free_fn=0x200f23cc)`. The malloc is hand-decoded ARM: align 4, fail if `ptr+size > 0x20478e40`. The free is a bare `bx lr` | limit literal `0x200f2570` |
+| `0x2047943c`–`0x2049e5ff` | 148 KB | voice frame ring, 2000 × `0x4c` (TX voice-memory playback toward the DSP) | `DAT_2004b0c8`, `FUN_2004a5cc` |
+| `0x2049e600`–`0x204a05ff` | 8 KB | voice-memory file-read buffer (≤ `0x2000` per request) | `DAT_2004b0d0` |
+| `0x204a0600`–`0x205072d7` | 411 KB | **recorder frame ring**, 1914 (`0x77a`) × `0xdc`, index at `0x205072d8` | `DAT_2004a208`, `FUN_200493f0` |
+| `0x205072e0`–`0x205082df` | 4 KB | **recorder write staging**: ≤ `0x1000`/`0xfd4` bytes of frames per block, passed to `FUN_2006a354(buf,len)`, which feeds the audio-stream writer `FUN_2006b6d8` (the control struct `0x20390444` `+0x50/+0x54`) | `DAT_2004a20c` |
+| `0x205082e0`–`0x20587b5f` | 511 KB | **capture buffer**, also a 480×272 RGB565 drawing canvas. `vgReadPixels`-shaped `FUN_200fffea(0x20508360, 0x780, …, 480, 272)` grabs 480×272×4 into it, which is then converted in place to BMP24 (header `0x20508320`, pixels `+0x36`). The PNG is encoded back into it through a bounds-checked write callback (`0x200f23d0`, capacity `0x7f836`) | getters `0x200a9bb4`–`0x200a9bdc`, `FUN_20080274` |
+| `0x20587b64`–`0x205dcb5f` | 340 KB | **C `malloc` heap** (`0x20186230`): fixed arena, first-fit free list (`0x20186bc8`), returns NULL when full, never grows. This is libpng's default allocator when no callback is set | literals `0x20186274`/`0x2018627c` |
+| `0x205dcb60`–`0x205dcf5f` | 1 KB | CPU mode stacks (reset handler) | `0x20005064` |
+
+How the paths were reached:
+- **Voice TX recording** uses the same recorder pipeline as the QSO recorder. `FUN_200473ec`
+  builds the job with destination byte `0` = `Voice\` or `1` = `VoiceTxoicetxN.wav`, and the
+  header, stream and finalise writers branch on the control struct's `+0xc` mode. The finaliser
+  patches the RIFF sizes through `_DAT_2006b398` (`0x203fcd8e`). All six callers of the file-RPC
+  write wrapper (`0x200bc6fc`, RPC `0x12`) were traced to one of these buffers, a stack buffer, or
+  the capture buffer.
+- **Screen capture** runs POWER key → `FUN_20035c04` (setting byte `+0x43`, busy flags) →
+  `bmp_capture_task` → `bmp_capture_write_file` → `FUN_20027518(ptr,len)` → the file writer
+  `FUN_20024104` (32 KB chunks). The pointer is always `0x205082e0` (PNG) or `0x20508320` (BMP).
+- **Screen Capture View** accepts a PNG only if it is exactly 480×272, 8-bit, RGB or RGBA,
+  checked before decoding into the same buffer.
+
+Not followed: the OpenVG driver's internals behind `FUN_200fffea` (`native_resource_dispatch`).
+Any scratch memory it uses would come from the GPU pool, and the MMU map puts that in uncached
+`0x2080d000`+.
 
 ## RAM layout from static analysis + the live MMU tables (2026-09-25) ✅
 
