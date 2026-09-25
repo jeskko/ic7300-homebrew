@@ -119,3 +119,15 @@ a fixed *edge* of RAM — this is a large, ordinary heap/static-data structure t
 sit past where the plain `body.bin` image ends. Worth treating memory-map extension as a
 standing, low-cost technique for this project: anything the running firmware allocates beyond its
 own static image size was, until now, structurally invisible to every tool used here.
+
+**Correction/caveat, 2026-09-25**: this file's own "confirmed empty of static cross-references"
+language (here and in the history file's broad-sweep sections) was later cited by `sdk/
+app-loader-design.md` as evidence that RAM past `body.bin`'s static image was safe to place
+appended custom code in — and that placement was live-tested and found **wrong**: the region gets
+progressively overwritten by a runtime memory pool as boot proceeds (see `notes/kernel-rtos.md`'s
+"`kernel_start`'s bring-up initializes a runtime memory pool" section). The "empty of xrefs"
+finding itself isn't retracted — it's still true that no compile-time literal references this
+range — but a zero-xref result over this class of region only rules out *statically-addressed*
+content, never genuine runtime allocator content, which is invisible to `references_to` by
+construction. Don't read "confirmed empty" in this file (or its history) as "confirmed safe to
+write persistent data/code into" without a live marker-write-then-reboot check.

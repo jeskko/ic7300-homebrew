@@ -30,16 +30,24 @@ for why this whole effort exists.
   not "how does it start" (still `roadmap.md` Phase 2's open question). Addresses cited in these files were
   verified against the live Ghidra project as of the date each file was written — re-verify before trusting
   one blindly if picking this up much later, since renames happen across sessions.
-- **`app-loader-design.md`** — started 2026-09-25, the first concrete answer to `roadmap.md`'s Phase 2
-  (injection point/loading mechanism): hook point, where the loader code and the app blob each live in
-  memory, and the fail-closed contract. Kept current as the design firms up; open items tracked at its end.
+- **`app-loader-design.md`** — started 2026-09-25, the concrete answer to `roadmap.md`'s Phase 2 (injection
+  point/loading mechanism): hook point, where appended code actually has to live in memory (a real, live-
+  tested correction lives here — read before placing anything past `body.bin`'s own static image), and the
+  fail-closed contract. Kept current as the design firms up; open items tracked at its end.
+- **`examples/civ-hello-world/`** — the first real, running code from this whole effort (2026-09-25,
+  live-tested in `qemu-machine`): a front-panel key combo makes the radio emit one CI-V frame and resume
+  normal operation. Real ARM assembly (`app.s`), a reproducible build script, and a README with the full
+  test log. Proves the injection mechanism `app-loader-design.md` designed actually works; SD-card app
+  loading and a real menu-button trigger are the next increments, not yet built.
 
 ## Expected growth
 
 No fixed structure imposed up front — following this project's own established pattern in `notes/`
 (files start flat, split into a lean "current state" file plus a `-history.md` narrative companion only
-once they actually get long). `api/` (above) is the first structured addition. Further plausible growth:
-- `examples/` — eventually real source for the four apps in `app-requirements.md`, not just design notes.
+once they actually get long). `api/` and `examples/` (above) are the first structured additions. Further
+plausible growth:
+- More `examples/` — the remaining three apps in `app-requirements.md`, and a real SD-card-loaded app once
+  that increment is built.
 - A toolchain/build doc once the cross-compiler and linker setup is worked out.
 - Splitting an `api/*.md` file into a `-history.md` companion if/when one of them grows past the point of
   being a quick reference, same pattern as `notes/`.

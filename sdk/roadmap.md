@@ -116,15 +116,18 @@ that, is what the live test above still adds. Repro artifacts + procedure: `note
 
 ### Phase 2 — design the injection point and app-loading mechanism
 
-**2026-09-25 — first concrete design landed**, see `app-loader-design.md`: `sd_menu_dispatch_task`'s
-42-case command dispatch (`notes/kernel-rtos.md`) turns out to have 12 real, currently-unreachable dead
-case IDs in its inline ARM jump table — repurposing one is a single 4-byte instruction patch, runs as a
-plain function call inside that task's own already-privileged context (no new-task/ASID question), and
-the loader code itself can be appended to `body.bin` using the packer's already-verified
-"length-changing append" support. Two things that design still needs before it's buildable: a real
-CI-V-reply staging cookbook (mimicking a genuine handler instead of calling the stateful TX pump out of
-context) and a trigger mechanism (a real menu-tap hookup, or a simpler stand-in for the first proof of
-concept). See `app-loader-design.md` for the full detail and current open items.
+**2026-09-25 — design landed, then built and live-tested**, see `app-loader-design.md` and
+`sdk/examples/civ-hello-world/`: a `main_idle_loop` call-site retarget (one 4-byte instruction) plus code
+appended to `body.bin` via the packer's already-verified "length-changing append" support now really boots
+and runs in `qemu-machine` — holding a front-panel key combo makes the radio emit one real CI-V frame and
+resume completely normal operation, verified repeatedly across fresh boots. Getting there surfaced a real
+correction worth flagging for any future work in this area: the "confirmed empty of static cross-references"
+region right after `body.bin`'s own image turned out to be live runtime-allocator territory, silently
+overwriting anything placed there within seconds of boot — `app-loader-design.md`'s own "Where appended
+code actually has to live" section has the full story and the empirically-confirmed-safe address that
+replaced it. Phase 2 is no longer just design — the injection mechanism itself is proven. What's left:
+SD-card app loading (the payload here is baked in, not SD-loaded yet) and a real menu-button trigger,
+both tracked as open items in `app-loader-design.md`.
 
 Concrete open design questions, needing a firm answer before writing the loader itself:
 - **Where does the loader hook in?** Candidates already surfaced by this project's own RTOS work: a

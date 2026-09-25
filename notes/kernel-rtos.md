@@ -371,6 +371,46 @@ record. Spot-checked against `civ_rx_frame_stage_and_dispatch`'s own decompile (
   drv |= 0x40   (last)
   ```
 
+## `kernel_start`'s bring-up initializes a runtime memory pool right after the static image (2026-09-25)
+
+Found while getting [[icom-custom-code-goal]]'s first real proof-of-concept custom code
+(`sdk/examples/civ-hello-world/`) to actually run — code appended to `body.bin` right after its own static
+image end (`0x20395b18`) decompressed into RAM correctly but was silently zeroed before `main_idle_loop`
+ever ran, breaking the whole approach. Traced far enough to explain it, not exhaustively:
+
+- `kernel_start` (`0x20005290`) → `run_ctors_and_start_kernel` (walks the C++ static-ctor table, already
+  known) → `FUN_20186d2c` (a `get_cpsr_mode`-gated trampoline, same "SWI(0) if User, call direct if
+  privileged" shape as `itron_act_tsk` and siblings) → **`FUN_20188574`**, whose own existing plate comment
+  already correctly identified it as matching `R_OS_InitMemManager`'s "lazy init, if not yet initialised"
+  shape — confirmed here, not just re-cited.
+- `FUN_20188574` calls **`FUN_201876f0(heap_base, heap_size)`** — a genuine heap/pool initializer:
+  places a single free-block header at `heap_base + heap_size - 4` and zeros two words there. Live literal
+  values: `heap_base = 0x20416198` (`DAT_201885e0`), `heap_size = 0x9f88` (~40 KB, read from
+  `*(u32*)0x20336054`). This specific pool is too small on its own to explain code being wiped as far out
+  as `0x20500000`+ (see below), so it's evidence the region is genuine heap/kernel-object territory, not
+  the complete mechanism — the rest of the picture needs either deeper tracing or live JTAG, not attempted
+  further this session.
+- **Empirically confirmed, live in `qemu-machine` (more conclusive than the static trace above)**: a
+  marker byte pattern written at `0x20500000` survived a ~5 second window post-boot but was gone —
+  overwritten with plausible code-shaped bytes, not just zeroed — by ~20 seconds into boot. A wider sweep
+  (markers at `0x20500000`/`0x20600000`/`0x20700000`/`0x20800000`/`0x20900000`/`0x209d0000`/`0x209f0000`,
+  checked only after confirming full boot via live CI-V replies) found `0x20600000` and every point checked
+  above it undisturbed. **This region keeps being written into as boot progresses, not just once at a
+  fixed early point** — a genuine runtime allocator's behavior, not a one-shot BSS-style clear.
+- **Reusable methodological point**: this project has, more than once, treated "zero `references_to` hits
+  across a broad static sweep" as evidence a RAM region is safe/unused (see `notes/band-scope-state-history.md`'s
+  own sweep, and `sdk/app-loader-design.md`'s first three passes, which cited exactly that sweep and got
+  the placement wrong as a direct result). That inference has a real hole its own author already flagged
+  and this session failed to apply: literal-pool-based `references_to` can only ever find *compile-time*
+  addresses; genuine heap/allocator content is invisible to it by construction, regardless of how much of
+  it is actually live. **Treat this whole class of "unreferenced RAM" claim as unverified until confirmed
+  by a live marker-write-then-reboot-and-check test, not by static sweep alone.**
+
+Open: the exact allocator responsible for the `0x20500000`-ish writes (this ~40 KB pool alone doesn't
+explain it), and the true upper bound of the affected region (confirmed unsafe up to somewhere between
+`0x20500000` and `0x20600000`, confirmed safe at `0x20600000`-`0x209f0000` in spot checks after one
+specific boot sequence — not proven safe under heavier/longer-running activity).
+
 ## Living reference: `cold_boot_hw_init`'s own call-by-call sweep (2026-09-20)
 
 `cold_boot_hw_init` (the task-catalog table above already covers the one task it activates,

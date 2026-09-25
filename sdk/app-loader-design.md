@@ -7,11 +7,11 @@ genuine design decisions, and is expected to keep changing.
 
 **Goal for the first cut, per the user's own scoping (2026-09-25)**: the simplest possible real
 proof of concept — the radio boots a one-time-modified `body.bin`, something triggers the hook, the hook
-loads a tiny app from the SD card, the app emits something over the CI-V bus, and the radio resumes
-completely normal operation with no crash, no hang, no visible side effect other than the one CI-V
-message. Nothing about a real app SDK, a real "Homebrew Apps" UI, or safety hardening needs solving yet —
-those come after this one round-trip is proven, the same way the firmware-update reframing was proven in
-the emulator before anything else was built on top of it.
+emits something over the CI-V bus, and the radio resumes completely normal operation with no crash, no
+hang, no visible side effect other than the one CI-V message. **Achieved and live-tested, same day** — see
+`sdk/examples/civ-hello-world/`. Nothing about a real app SDK, a real "Homebrew Apps" UI, SD-card app
+loading, or safety hardening needed solving to get here — those come next, the same way the firmware-update
+reframing was proven in the emulator before anything else was built on top of it.
 
 **2026-09-25, second pass**: an Opus fresh-eyes investigation (dispatched from this design's first draft)
 resolved both blocking open questions from the first pass — the CI-V staging cookbook, and the real
@@ -19,6 +19,17 @@ SD-card-menu tap-to-post chain (see `notes/kernel-rtos.md`'s "CI-V reply staging
 command dispatch" sections for the full verified detail; spot-checked against real listings/decompiles
 before being recorded, per this project's own verification discipline). That work also surfaced a cleaner
 hook point than the one this file originally proposed — see below.
+
+**2026-09-25, fourth pass — WORKING, LIVE-TESTED in `qemu-machine`.** `sdk/examples/civ-hello-world/`
+holds the actual running code: hold a front-panel key combo, the radio emits one real CI-V frame, then
+resumes completely normal CI-V operation (verified by reading frequency/mode back immediately after,
+repeatedly, across a fresh boot). This is the injection+CI-V+clean-resume proof of concept the user asked
+for, descoped exactly as they scoped it — the app payload is baked into the hook rather than loaded from
+SD card at runtime (the SD-loading design below is unchanged and still the intended next increment, just
+not needed to prove the hook mechanism itself works). Getting there surfaced one major correction to this
+design (the appended-code placement address was wrong — see "Where appended code actually has to live"
+below) and one real unexplained gotcha (`-icount` hangs the patched image; plain unthrottled execution
+doesn't). See `sdk/examples/civ-hello-world/README.md` for the full test log and exact repro steps.
 
 ## Hook point: revised twice — landed on a `main_idle_loop` call-site retarget
 
@@ -69,34 +80,66 @@ implementation (any two-key combo not already tested together elsewhere is fine 
 combos, e.g. MENU+FUNCTION, are all single-purpose and already gated well before this new code would run,
 so no collision risk either way).
 
-## Loader code lives appended to `body.bin`; the app blob loads fresh from SD into free RAM
+## Where appended code actually has to live — corrected, live-tested (2026-09-25, fourth pass)
 
-Unchanged from the first pass:
+**This section's earlier claim was wrong, and the error is worth recording plainly.** The first three
+passes assumed the region right after `body.bin`'s own static image (`0x20395b18`+, inside Ghidra's
+`ram_placeholder` block) was safe free space to append a loader into, on the strength of a *static*
+argument: zero `references_to` hits across a broad sweep (`notes/band-scope-state-history.md`). That
+argument has a real hole its own author already flagged and this design failed to apply: a genuine runtime
+allocator's contents are invisible to static xref analysis *by construction* — only compile-time
+literal-pool addresses show up as hits, never something a heap manager hands out at runtime. That's exactly
+what this region turned out to be.
+
+**Live-tested, root cause found**: code appended at `0x20395b18` decompresses into RAM correctly (confirmed
+present, byte-for-byte, at `body.bin`'s very entry point and still at `kernel_start`'s entry) but is
+**zeroed out by the time `cold_boot_hw_init` starts** — i.e., wiped during kernel/RTOS bring-up, well before
+`main_idle_loop` ever runs. Traced (not fully, but far enough to be useful) to `kernel_start` →
+`FUN_20186d2c` → `FUN_20188574`, a lazy memory-manager init routine whose own plate comment already
+correctly identified it as matching `R_OS_InitMemManager`'s shape; it initializes a heap starting at
+`DAT_201885e0` = `0x20416198` with a `size` field read from `0x20336054` = `0x9f88` (~40 KB) — too small on
+its own to explain reaching `0x20395b18` or beyond, so this specific pool isn't the full story, but it
+confirms the region is heap-adjacent kernel-object territory, not dead space. **A second, empirical finding
+matters more than fully chasing the exact allocator**: markers written at `0x20500000` survived a ~5 second
+window but were gone (overwritten with plausible code-shaped bytes, not just zero) by ~20 seconds into
+boot — i.e., **something keeps writing further into this region as boot progresses, not just once**. A
+sweep of markers across the rest of the 10 MB RAM space, checked after confirming full boot (live CI-V
+replies), found `0x20600000` and several addresses above it undisturbed. **`0x20600000` is the address
+`sdk/examples/civ-hello-world/` actually uses**, confirmed to survive a complete boot to steady state,
+repeatedly, across multiple fresh tests.
+
+**Practical rule going forward**: anything appended past `body.bin`'s own static image end needs a padded
+gap out to a address empirically confirmed safe (marker-write-then-reboot-and-check, the method used here)
+before being trusted — a clean `references_to` sweep alone is not sufficient evidence for this class of
+region, and should not be cited as such again in this project. `0x20600000`+ is confirmed only as far up
+as spot-checked (`0x20700000`, `0x20800000`, `0x209d0000`, `0x209f0000` all survived too in the same
+sweep) — not the same as "confirmed safe all the way to `0x209fffff`."
+
+## Loader code lives appended to `body.bin`; the app blob loads fresh from SD into free RAM
 
 - The **loader** (the small fixed function that runs at the repurposed hook, reads the app file, copies it
   into RAM, and calls it) has to be baked into the flashed image — `tools/icom_fw`'s packer already
   round-trip-verifies a length-changing append at the end of a real decompressed body
-  (`tools/verify_pack.py`, `roadmap.md` Phase 1), so the loader's machine code is simply appended after the
-  static image's current end (`0x20395b18`) and the one hook slot (whichever table is chosen above) is
-  repointed at it. No new packer work needed.
-- The **app blob itself is not part of the flashed image** — the loader reads it fresh from the SD card
-  every time the hook fires (first cut: a fixed path, e.g. `C:\IC-7300\APP.BIN`, fixed max size well under
-  budget — 64 KB placeholder) into a confirmed-empty RAM region, **`0x20500000`+** (inside Ghidra's
-  `ram_placeholder` block, `0x20395b18`-`0x209ffffe`; zero `references_to` hits at `0x20500000` itself,
-  consistent with the broader confirmed-empty `0x20408000`-`0x209c8000` sweep in
-  `notes/band-scope-state-history.md`; ~6.7 MB of headroom above it). This is the actual "install an app =
-  drop a file on the SD card, no reflash" ergonomics `roadmap.md`'s reframing promised.
+  (`tools/verify_pack.py`, `roadmap.md` Phase 1), confirmed live-working too (`sdk/examples/civ-hello-world/`
+  pads the body out to `0x20600000` with ~2.5 MB of zeros, which LZSS compresses cheaply enough to still
+  fit the fixed compressed-slot budget with room to spare) — the loader's machine code is appended there and
+  the one hook slot is repointed at it. No new packer work needed.
+- The **app blob itself should still not be part of the flashed image** — loading it fresh from the SD card
+  each time the hook fires is still the design (first cut: a fixed path, e.g. `C:\IC-7300\APP.BIN`, fixed
+  max size well under budget — 64 KB placeholder) into RAM **at or above the newly-confirmed-safe
+  `0x20600000`+ region** (not `0x20500000` — see the correction above). This is the actual "install an app =
+  drop a file on the SD card, no reflash" ergonomics `roadmap.md`'s reframing promised. **Not yet built** —
+  `civ-hello-world`'s payload is baked in, not SD-loaded; this is the next real increment.
 - Loaded via `file_rpc_post_command` (`0x200bc048`) commands `6` (open) / `0x13` (read-at-offset) — this
   primitive is a cross-task RPC (consumed by the separate `sdcard_file_rpc_dispatch_task`), so it's safe
   to call from either candidate hook context, not just from inside `sd_menu_dispatch_task`.
 - **Still open**: `file_rpc_post_command`'s command catalogue (`sdk/api/filesystem.md`) doesn't yet
   document a "close" ID (`6`/`9`/`0x13`/`0x17` known) — needed before this leaks a handle on every run; a
   single manually-triggered test can tolerate the leak, a real feature can't.
-- **Still an assumption, not yet checked**: Ghidra's `ram_placeholder` block is marked `rw-` (no execute)
-  in the tool's own bookkeeping — very likely just conservative labeling from whenever the block was added
-  (a single 10 MB MMU section shouldn't plausibly carry a sub-region execute-never bit), not a real
-  hardware restriction, but worth a real check (QEMU single-step in `qemu-machine/`, or live JTAG) before
-  trusting it on real hardware.
+- **Superseded**: the earlier "`ram_placeholder` execute-permission" open item assumed the wrong region was
+  even the right place to check — moot now, since live testing already proves code executes correctly once
+  placed somewhere the region isn't being overwritten (RAM there is demonstrably executable; the failure
+  mode was always content, never permissions).
 
 ## CI-V emission: resolved — see `notes/kernel-rtos.md`
 
@@ -136,17 +179,26 @@ options, either wired into the same hook location chosen above:
 Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
 other design pieces above.
 
-## Open items (as of 2026-09-25, third pass)
+## Open items (as of 2026-09-25, fourth pass)
 
+- **The `-icount` hang.** The `civ-hello-world` image reliably hangs under this machine's usual `-icount`
+  timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not root-caused —
+  worth a real look before trusting any future hook-based test under `-icount`, and before assuming this
+  class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be unaffected, but
+  that's an assumption, not a confirmed fact).
+- **The SD-card app-loading increment** — `civ-hello-world`'s payload is baked in; wiring up
+  `file_rpc_post_command` to load a blob from SD into the now-corrected `0x20600000`+ region and jump into
+  it is the next real piece of work, not yet started.
+- **The full extent of the "unsafe past static image end" region** — confirmed unsafe at `0x20395b18` and
+  `0x20500000` (progressively, not instantly), confirmed safe at `0x20600000` and several points above it
+  after a full boot. The exact boundary between unsafe and safe, and whether "safe so far in these tests"
+  could still be consumed by heavier runtime activity (e.g. BMP capture, voice recording, other large
+  buffer allocations this project already knows exist) over a longer running session, is not established.
 - **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button
   (separate from, and not blocking, this design's CI-V proof of concept).
 - **`file_rpc_post_command`'s close command ID.**
-- **The `ram_placeholder` execute-permission assumption.**
-- **Not yet written**: the actual `homebrew_tick`/`homebrew_check_and_run`/loader/app machine code, the
-  one-instruction `main_idle_loop` retarget, and an `icom_fw`-packed test image — this design is now
-  concrete enough to build against; implementation is the next step.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.
-- Closed, checked negative: the `0x2019b70c` SD-UI state table has no dead/unused entry (see above) — don't
-  re-sweep it.
+- Closed, checked negative: the `0x2019b70c` SD-UI state table has no dead/unused entry — don't re-sweep it.
+- Closed, superseded: the `ram_placeholder` execute-permission question — moot, see above.
