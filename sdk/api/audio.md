@@ -1,108 +1,28 @@
 # Audio
 
-The hardware link is real and pin-confirmed; nothing here yet reaches a specific sample-buffer API an app
-could call. This is App 4 (SSTV)'s single biggest open question in `app-requirements.md`, and would also
-matter for any general "record/play audio" SDK primitive.
+Current state (2026-09-25). How we got here, including the dead ends: [`audio-history.md`](audio-history.md).
 
-## ✅ Hardware link: SSIF0 + SSIF1, paired — now traced into real code, 2026-09-07
+## The CPU ↔ DSP audio link ✅
 
-`BCLK_`/`FRM_`/`DX_REC`/`DR_AF` (`P2_8`-`P2_11`) and `DX_FMT`/`DR_RSV` (`P3_6`/`P3_7`) form a confirmed,
-actively-used CPU↔DSP digital audio link via the RZ/A1H's Serial Sound Interface — SSIF0 (`0xE820B000`)
-and SSIF1 (`0xE820B800`) paired, sharing SSIF0's clock/word-select (standard RZ/A1H pairing mode). A
-dedicated setup table around `0x20060700`-`0x20060770` references both SSIF register blocks plus paired
-DMAC channel addresses — a genuine DMA-driven continuous audio/IQ sample stream between the main CPU and
-the DSP, not a one-time handshake (`notes/ic7300-signal-chain.md`). DSP-side pin data independently
-confirms the same structure from the other end (McASP0's shared clock/frame-sync + 4 serializer pins).
+Fully decoded in `notes/dsp-protocol.md` ("The CPU ↔ DSP audio link, both directions"): 96 kHz I2S,
+24-bit left-justified, DMAC ch3/4/5 ping-pong, pumped from the 250 µs TGI3A tick ISR.
 
-**Traced into real driver code**: `ssif0_bring_up_and_pump`/`ssif1_bring_up_and_pump` (`0x20060778`/`0x888`)
-— codec bring-up handshake on first call, then real per-tick DMA-buffer processing on every call after.
-`ssif1`'s RX side extracts 36 samples/tick and pushes them into a genuine 8-frame ring buffer
-(`ssif_rx_ring_push_frame`, `0x203fc246`) — **confirmed continuous audio capture into main-CPU RAM, not
-just a wired-up link**. Both are ticked from `main_operating_loop` (the real main power-state/service
-loop, finally identified this session), gated behind a flag in the same struct cluster RTTY's own state
-lives in (`0x2039038c`, alongside `digital_mode_log_writer_tick`'s `0x20390368`) — real, structural
-evidence connecting "SSIF audio streaming active" to "a digital mode is active," even though the exact
-setter of that flag wasn't pinned down. See `notes/kernel-rtos-history.md`'s "Sweeping the actual audio
-hardware" section for the full trace.
+| Stream | Content | CPU buffer | Consumers |
+|---|---|---|---|
+| DX_REC L (SSIF0 RX) | **RX audio**, demodulated, before AF gain, low-passed (CW sidetone during TX) | 48 kHz ring 0x203fbdc0, 8 × 36 int16 (6 ms), pushed by `ssif_rx0L_ring_push36` 0x2005fb28 | `qso_recorder_rx_audio_block` 0x20067254 only (audio scope + QSO recorder, 8 kHz) |
+| DX_REC R | mic / TX modulation audio | ring 0x203fc002 | TX voice memory, record-level meter |
+| DX_FMT L (SSIF1 RX) | per-mode demod output | ring 0x203fc246 | RTTY decode screen FFT scope, CTCSS detector |
+| DR_AF L / R (SSIF0 TX) | speaker playback / audio to the transmitter | txL 0x203fbcc0 / txR 0x203fbd5e | the DSP |
 
-## 🔎 Open: where do live RX-demodulated audio samples actually live? (narrowed, not closed, 2026-09-07)
+RTTY text doesn't come over this link: the DSP drives the demodulated bit onto pin P8_7 (RTD).
 
-**The single biggest open question for any audio-consuming app.** The best existing lead is
-`voice_recording_file_task` (`0x2001745c`, verified) — it streams *some* audio to SD card via a 4-slot ring
-buffer using `file_rpc_post_command` (see [`filesystem.md`](filesystem.md)), but its own audio **source**
-(which SSIF channel, what sample rate/bit depth, RX-demodulated audio vs. the mic/TX path) was never traced
-back to its producer — only the file-I/O side is understood. The CI-V manual's `1A 05 01 82`-family "QSO
-recorder"/audio-source-select commands confirm a real, configurable "which audio to record" feature exists
-at the protocol level, meaning a single shared audio-sample subsystem plausibly exists — a good next place
-to look for a tappable RX-audio buffer.
+## For apps
 
-**A same-shaped gap found chasing the RTTY decoder (2026-08-30, `notes/kernel-rtos-history.md`)**: RTTY
-decode-to-SD-card logging (the closest already-working digital-mode feature) has the identical blind spot
-— traced its file-write path all the way down to a shared struct with a "pending decoded record" field,
-but who actually writes the *decoded characters* into that struct wasn't found, and confirmed that cluster
-never touches the `SCIF5` DSP-link register directly either. Doesn't resolve this question, but confirms
-it's a recurring structural boundary in this project's tracing so far (feature-level code is fully
-understood; whatever produces the real content — demodulated audio or decoded text — consistently isn't
-yet found for *any* traced feature). Worth remembering if either thread is picked back up: progress on one
-likely generalizes to the other.
-
-**Three CPU-side leads chased and closed, same session (`notes/kernel-rtos-history.md`'s "Picking the
-RTTY/SSTV thread back up" and its two same-day follow-ups)**: (1) `operating_mode_change_dispatch`'s
-per-mode table — decompiled, turned out to be trivial UI/interlock-flag bookkeeping, not demod-arming; (2)
-the real CI-V `1A 05 01 66`-`77` RTTY command range (per the user's own knowledge) — decompiled, turned out
-to be a generic settings get/set bridge onto a pre-existing 216-item menu-value table (`notes/diode-matrix.md`),
-not a decode trigger or data readback; (3) the `0x20058d78` "digital-text-mode manager" dispatcher — fully
-decompiled (104-entry per-state function-pointer table, `0x2019b70c`), turned out to be the SD-card
-decode-log **writer's own state machine** (open file → write 20-byte record → close, running continuously
-whenever a digital mode is active) — the real internals behind `rtty_decode_log_poll_task`, not a
-screen-open gate or the demodulator. **None of these three shows a discrete "start decoding" action
-anywhere on the main CPU.** Working theory, now fairly well-supported after three independent dead ends:
-the DSP demodulates continuously per its currently-synced mode/filter settings with no discrete "enable"
-call to find on the CPU side; "MENU → Decode" most likely just toggles a separate, still-unfound *on-screen
-display* consumer of the same decoded-character stream the SD-logger also reads — not something that starts
-the underlying decoding.
-
-**Fourth angle, same session — approached from the settings side instead of the trigger side, and got real
-confirmation of the theory above.** Found real RTTY menu-item name strings (`"RTTY Mark Frequency"`,
-`"RTTY Decode USOS"`, `"RTTY TX USOS"`, `"RTTY FFT"`) in the menu-label pool `notes/diode-matrix.md` had
-flagged as still-unlocated, then — pivoting to `notes/multi-cpu-images.md`'s separate DSP-comms thread —
-found the actual function (`dsp_param_table_rebuild_from_settings`, `0x200b232c`) that rebuilds the DSP's
-24-word live parameter-sync table from a big settings struct (`0x203def00`) whenever a dirty flag is set,
-including fields gated on the operating-mode index equalling `4` (a real RTTY candidate). This *is* the
-concrete mechanism connecting RTTY's own settings to the DSP over `SCIF5` — real confirmation, not just a
-plausible story, that settings get pushed live/continuously rather than through a discrete "start decode"
-call. Full derivation in `notes/kernel-rtos-history.md`'s "Coming at it from the settings side" section and
-`notes/multi-cpu-images.md`'s DSP command API section.
-
-**This CPU-side static-tracing approach has been pushed about as far as it profitably goes across four
-independent angles now; live JTAG (watch `SCIF5`/DSP-interface traffic during real RTTY reception) is the
-honest next step** for anyone wanting the actual demodulator, not further static reading.
-
-**Fifth angle, same session — swept for an FFT/tone-detector, found neither, and this tempers the CPU-side
-lean above.** Confirmed the firmware's one real FFT (`spectrum_scope_fft_and_dbscale`) is single-purpose to
-the band-scope (exactly one caller). Found a genuine SSIF RX audio-capture pipeline into main-CPU RAM (an
-8-frame ring buffer, `notes/kernel-rtos-history.md`'s "Sweeping the actual audio hardware") — but it has
-**zero found consumers**, and a direct search for RTTY's own real tone constants (2125/2295/170 Hz, in
-float/double/int encodings) and the classic Baudot code table both came up completely empty anywhere in the
-3.7 MB image. **This is now a real, converging negative result across three independent search strategies**,
-not just an unswept gap. Two readings stay open: real CPU-side decode using non-literal (bin-index or
-fixed-point) constants in a part of `body.bin` not yet examined, or — newly plausible — the SSIF ring
-buffer actually belongs to `voice_recording_file_task`'s own unresolved audio source instead, with RTTY
-decode still DSP-side via a `SCIF5` receive path this project's traffic characterization hasn't recognized
-yet. Static analysis has now tried essentially every angle available; live hardware is the honest next step,
-not more searching.
-
-## 🔎 Open: real-time budget for a main-CPU-side decode task
-
-Not yet assessed whether a task on the *main* CPU (as opposed to the DSP, which is already busy doing the
-actual demodulation) has enough spare cycles to run something like continuous SSTV decode without falling
-behind. Plausible given the RZ/A1H's clock speed and this being a fairly light DSP task by modern
-standards, but not verified — worth a real check once the audio-tap question above is settled and a task
-can actually be tested.
-
-## Not needed: the decode algorithm itself
-
-For an SSTV app specifically, the decode algorithm (sync-pulse detection, tone-to-luminance mapping, mode
-timing for Robot36/Martin/Scottie) is standard, publicly documented ham-radio DSP technique, independent of
-anything reverse-engineered here — see `app-requirements.md`'s App 4. Nothing to research on this project's
-side beyond the audio-tap question above.
+- **Reading RX audio**: the 48 kHz ring has a single read index and is only 6 ms deep, so an app
+  can't read it directly. The planned tap is a loader hook on `ssif_rx0L_ring_push36` that
+  copies into an app-owned ring (ABI v4). Design: [`../sstv-app-design.md`](../sstv-app-design.md).
+- **Playing audio** (open): DR_AF L carries recorder playback as an 8 kHz stream written into
+  96 kHz frames (`voice_play_to_dsp_tick` 0x20067458); an app could feed it the same way.
+  Untested.
+- **Emulator**: the fake DSP can play a stimulus file into any RX slot (`RZA1H_AF_FILE`, or
+  `qom-set /machine/ssif af-file` at runtime). See `qemu-machine/README.md`.

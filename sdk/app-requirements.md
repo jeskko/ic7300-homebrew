@@ -118,34 +118,21 @@ Builds on App 2's display access plus real-time input, which is the substantial 
 
 ## App 4 — An SSTV receiving app
 
-Builds on App 2's display access; the substantial new area is getting at live receive-audio samples.
+Researched 2026-09-25: [`sstv-app-design.md`](sstv-app-design.md). The requirement text from
+before that is kept in [`api/audio-history.md`](api/audio-history.md).
 
-- 🔎 **The single biggest open question: where do live, receive-path demodulated audio samples actually
-  live, and how would a new task read them?** The best existing lead is `voice_recording_file_task`
-  (`notes/kernel-rtos.md`) — it already streams *some* audio to the SD card via a 4-slot ring buffer, but
-  its own audio **source** (which SSIF channel, what sample rate/bit depth, RX-demodulated audio vs. the
-  mic/TX path) was never traced back to its producer — the task's own file-I/O side is fully understood.
-  the manual's `1A 05 01 82`-family "QSO recorder"/audio-source-select commands (`notes/kernel-rtos-history.md`'s
-  CI-V table capture) confirm Icom has a real, configurable "which audio to record" feature at the
-  protocol level, meaning a single shared audio-sample subsystem plausibly exists and is a good next
-  place to look for a tappable RX-audio buffer. This is genuinely the load-bearing question for this app
-  — everything else follows once real audio samples are reachable. **Same shape found elsewhere,
-  2026-08-30**: chasing the RTTY decoder (the closest already-working digital-mode feature) hit the
-  identical blind spot — decode-to-SD-card logging is fully traced, but who actually produces the decoded
-  characters wasn't found either, and confirmed not to touch the DSP link directly at that layer. See
-  `sdk/api/audio.md` and `notes/kernel-rtos-history.md`'s "Tracing the RTTY decoder" section — doesn't
-  answer this question, but is a useful data point that this is a recurring structural gap, not something
-  specific to voice recording.
-- ✅ **The SSTV decode algorithm itself needs no Icom-specific research** — detecting the ~1200 Hz sync
-  pulse, mapping the 1500–2300 Hz tone range to per-pixel luminance, and handling the timing for common
-  modes (Robot36, Martin, Scottie) is standard, publicly documented ham-radio DSP technique, independent
-  of anything reverse-engineered here.
-- ✅ **Displaying the decoded image**: same requirements as App 2, already covered above.
-- 🔎 **Real-time budget**: not yet assessed whether a task on the *main* CPU (as opposed to the DSP,
-  which is already busy doing the actual demodulation) has enough spare cycles to run SSTV decode
-  continuously without falling behind — plausible given the RZ/A1H's clock speed and this being a fairly
-  light DSP task by modern standards, but worth a real check once the audio-tap question is settled and
-  a task can be tested.
+- ✅ **Audio source**: DX_REC L, the demodulated RX audio, in the firmware's 48 kHz ring. It has a
+  single reader and is 6 ms deep, so the app needs a loader hook on `ssif_rx0L_ring_push36`
+  (ABI v4) that copies it into an app ring at 12 kHz.
+- ✅ **Decode algorithm**: reuse slowrx-cli's mode table, channel layout, VIS rules and colour
+  conversion (ISC-style licence). Replace its FFT-per-6-samples estimator with a quadrature
+  discriminator plus per-line sync lock. The host prototype decodes the Scottie 2 sample
+  cleanly.
+- ✅ **Real-time budget**: the discriminator costs about 1.2 MFLOP/s at 12 kHz, under 1% of the
+  CPU (estimate, not measured on hardware).
+- ✅ **Display**: GR3 overlay, as in Apps 2/3.
+- 🔎 Open: the DX_REC L low-pass and IF filter vs the 1100–2300 Hz SSTV band; the idle-loop gap
+  under load; unload safety of an ISR-context hook.
 
 ## Summary table
 
@@ -154,4 +141,4 @@ Builds on App 2's display access; the substantial new area is getting at live re
 | 1. Serial hello world | no | no | Low — CI-V path is fully ready; standalone-UART variant needs one primitive documented |
 | 2. Display hello world | yes (minimal) | no | Medium — confirm icon-blit's target buffer; VDC5 itself not required if that pans out |
 | 3. Tetris → Minesweeper | yes | yes (real-time) | ✅ Done (`examples/minesweeper/`): touch + EXIT key on the GR3 canvas; the input research gap closed via `notes/front-panel-report.md` |
-| 4. SSTV receiver | yes (reuse #2) | no | High, but concentrated — one big question (tap the RX-audio buffer); the decode algorithm itself is free |
+| 4. SSTV receiver | yes (reuse #2) | no | Researched (`sstv-app-design.md`): audio tap = loader hook on the RX-audio ring push (ABI v4); decoder = slowrx-cli tables + a quadrature discriminator |
