@@ -401,8 +401,9 @@ does the rest:
    (CR/LF handling) → `rtty_rx_char_append` 0x20014604 (attribute 2 = receive colour; TX echo
    uses 3) → decode screen text + log.
 
-The RX-enable decision (0x20414c3c byte 0) is in the same routine (Ghidra shows it merged as
-FUN_20184970). It needs byte 0x203def00+0x2df and a few flags; it then calls
+The RX-enable decision (0x20414c3c byte 0) lives in the same Ghidra function,
+`rtty_rx_enable_and_decode`: its entry is 0x20184970, and its body also covers the Baudot code at
+0x200b0bdc, which carries the label `rtty_rx_baudot_to_ascii`. It needs byte 0x203def00+0x2df and a few flags; it then calls
 `rtty_rx_timer_start(2, …)`.
 
 **In the emulator** (live, RTTY + DECODE screen): the UART is armed (0x20414c3c byte 0 = 1) and
