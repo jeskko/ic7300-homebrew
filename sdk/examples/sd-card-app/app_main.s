@@ -7,6 +7,20 @@
 @ Emits one CI-V frame with payload "SDAPP" (distinct from civ-hello-world's baked-in
 @ "HOMEBREW", so a successful test unambiguously proves the frame came from the loaded file --
 @ that string exists nowhere in the firmware image itself, only in this separate file).
+@
+@ CORRECTED 2026-09-25 (adversarial review pass, verified independently against a real listing
+@ of civ_tx_pump at 0x20011384/0x20011388): an earlier version of this file, and of
+@ civ-hello-world/app.s, avoided cpsid/cpsie here based on a wrong diagnosis -- a crash seen
+@ during this session's own debugging was blamed on "CPS faults as undefined in this context",
+@ but civ_tx_pump itself executes cpsid at 0x20011388 and cpsie at 0x200113a4 on every single
+@ main_idle_loop tick, from the exact same calling context this code runs in, and does not
+@ fault. The real cause of that crash was a separate, since-fixed bug (appended code landing in
+@ RAM that turned out to be live runtime-allocator territory -- see notes/kernel-rtos.md's
+@ "kernel_start's bring-up initializes a runtime memory pool" section). cpsid/cpsie are back
+@ here now, matching civ_tx_pump's own technique, to close a real (if narrow) race the earlier,
+@ unmasked version had: an RX-ISR update landing between this code's final drv read-modify-write
+@ could drop a bit civ_tx_pump itself needs on its next pass. See sdk/app-loader-design.md's
+@ "CI-V emission" section for the fuller writeup.
 
     .syntax unified
     .arm
@@ -23,27 +37,28 @@
 
 app_main:
     push    {r4, r5, r6, lr}
+    cpsid   i                   @ matches civ_tx_pump's own critical-section scope exactly
 
     ldr     r4, =RXBUF
     ldrb    r0, [r4]
     cmp     r0, #0
-    bne     app_done
+    bne     app_exit_masked
 
     ldr     r4, =RXBUF_READY
     ldrb    r0, [r4]
     cmp     r0, #0
-    bne     app_done
+    bne     app_exit_masked
 
     ldr     r4, =DRV
     ldrb    r0, [r4]
     and     r1, r0, #0x78
     cmp     r1, #0
-    bne     app_done
+    bne     app_exit_masked
 
     ldr     r5, =DRV_POS
     ldrb    r1, [r5]
     cmp     r1, #0
-    bne     app_done
+    bne     app_exit_masked
 
     ldr     r6, =RXBUF_REPLY
     mov     r1, #0xE0
@@ -77,7 +92,8 @@ copy_done:
     orr     r0, r0, #0x40
     strb    r0, [r4]
 
-app_done:
+app_exit_masked:
+    cpsie   i
     pop     {r4, r5, r6, lr}
     bx      lr
 

@@ -436,13 +436,23 @@ wrapper functions `sdcard_file_rpc_dispatch_task`'s own retraction comment alrea
 Each is a plain C function (`0x24`-byte block assembled on the caller's stack, `memmove`d, then a tail call
 into `file_rpc_post_command` — confirmed by listing, not just decompile: the wrapper's own return value is
 exactly `file_rpc_post_command`'s r0, still live in r0 at the wrapper's own `ldmia sp!,{...,pc}` return).
-**Call it, then wait on the result**: `FUN_200214b0(return_value, 0x46)` — a generic "wait for this RPC to
-complete" helper, `0x46` a fixed tick-count timeout used identically by all four calls in
-`firmware_update_main` — returns `0` on success. `path` is a plain null-terminated ASCII string
-(`"C:\IC-7300\..."`, confirmed against a real literal at `0x20016fec`). Live-verified end to end: opening a
-real file, reading its bytes into RAM, and closing it, all via these four calls from freshly-written code
-(not from existing firmware call sites), works correctly — and a missing file fails the open call cleanly
-(nonzero return, no hang) rather than crashing.
+**Call it, then wait on the result**: `FUN_200214b0(return_value, 0x46)` — a "wait for this RPC to complete"
+helper, used identically by all four calls in `firmware_update_main` — returns `0` on success. `path` is a
+plain null-terminated ASCII string (`"C:\IC-7300\..."`, confirmed against a real literal at `0x20016fec`).
+Live-verified end to end: opening a real file, reading its bytes into RAM, and closing it, all via these
+four calls from freshly-written code (not from existing firmware call sites), works correctly — and a
+missing file fails the open call cleanly (nonzero return, no hang) rather than crashing.
+
+**Correction, 2026-09-25 (adversarial review pass on `sdk/examples/`)**: `0x46` is **not** a tick-count
+timeout, contrary to this section's earlier wording — it's an argument to `FUN_200214b0`'s own internal
+error-code mapper (`FUN_20021338`), selecting one specific negative error value over another for one
+mapping case. The wait itself (`FUN_200b9af8`, a kernel semaphore/event wait) is genuinely unbounded — if
+the SD-menu task's own RPC ring is ever full, `file_rpc_post_command` returns `2`, a value no real request
+handle will ever match, and `FUN_200214b0` spins forever waiting for a match that can't happen. This is a
+real, pre-existing firmware behavior (not a bug this project introduced), but it means any caller of these
+four wrappers should not assume `FUN_200214b0` is bounded — see `sdk/app-loader-design.md`'s open items for
+where this matters concretely (a hook running from `main_idle_loop` would freeze the whole UI, not just
+itself, if this were ever hit).
 
 **Corrects `sdk/api/filesystem.md`'s earlier guess** (`6`/`9`/`0x13`/`0x17` for open/write/read/list) — only
 `0x13` checks out, as seek rather than read. The other IDs in that older guess aren't re-verified; the

@@ -65,16 +65,39 @@ which this unsolicited frame isn't necessarily using).
 - Immediately after, `civ 03` (read frequency), `civ 04` (read mode), and a follow-up `civ 04`
   retry all get normal replies — the radio's own CI-V dispatch is completely unaffected.
 
+## Corrections from an adversarial review pass (2026-09-25)
+
+An Opus review of all three `sdk/examples/` (see `sdk/app-loader-design.md`'s own writeup for the
+full report) found and this session fixed one real bug in this specific example:
+
+- **`app.s`'s CI-V staging used to skip IRQ masking based on a wrong diagnosis.** The original
+  version's comment claimed `cpsid`/`cpsie` "fault as undefined in this hook's execution context" —
+  that was wrong. `civ_tx_pump` itself (the real firmware function this hook calls first, every
+  tick) executes `cpsid i`/`cpsie i` from the exact same calling context, confirmed both by a real
+  Ghidra listing and by this session's own earlier live single-step trace. The crash that prompted
+  the original (wrong) diagnosis had a different, already-fixed cause — see `app.s`'s own updated
+  header comment. `cpsid`/`cpsie` are back now, matching `civ_tx_pump`'s own critical-section scope,
+  closing a real (if narrow) race the unmasked version had: an RX-ISR update landing between the
+  final `drv` read-modify-write could drop a bit `civ_tx_pump` needs on its next pass. Regression-
+  tested after the fix: combo still produces the exact same frame, still resumes cleanly.
+
+Two more findings from the same review apply to this example but weren't separately re-tested here
+(each is exercised more directly by `sd-card-app`/`homebrew-apps-menu`, which share the same file-
+I/O and RAM-placement design):
+
+- The `0x20600000` placement is confirmed safe empirically (marker-write-then-reboot testing,
+  `sdk/app-loader-design.md`), but static evidence for *why* it's safe (this region sits past
+  where the linker's own zero-init/heap/stack area ends, roughly `0x205dcf60`-`0x2080c400`) only
+  narrows the picture — it doesn't rule out DMA or other runtime-allocated buffers this session
+  never specifically exercised (BMP capture, voice recording). Longer/heavier real-world sessions
+  are the real test of that, not yet done.
+- The `-icount` hang (below) may be the same underlying issue as the RAM-placement question,
+  showing up under different boot timing — not established either way.
+
 ## Known limitations (this is a proof of concept, not a real SDK)
 
 - The app logic (the "HOMEBREW" emit) is baked directly into the hook, not loaded from an SD card
-  at runtime — `sdk/app-loader-design.md`'s SD-card loading design (`file_rpc_post_command`) is
-  still unimplemented; this proves the injection/CI-V/clean-resume mechanism first, deliberately,
-  per the user's own scoping for the first cut.
-- No IRQ masking around the CI-V staging critical section (see `app.s`'s own comment — the
-  dedicated `cpsid`/`cpsie` instructions fault as undefined in this hook's execution context, a
-  real and reusable finding for any future hook in the same context). Best-effort only; a real
-  interrupt landing mid-write drops this one attempt, never worse than that.
+  at runtime — see `sdk/examples/sd-card-app/` for that next increment (built the same day).
 - The `-icount` hang is real and unexplained. Don't test or demo this under `-icount` timing.
-- The trigger is a hidden key combo, not a real "Homebrew Apps" menu button — see `sdk/
-  app-loader-design.md`'s own open item on the undocumented menu item-record table.
+- The trigger is a hidden key combo, not a real "Homebrew Apps" menu button — see
+  `sdk/examples/homebrew-apps-menu/` for that next increment (also built the same day).

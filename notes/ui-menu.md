@@ -119,17 +119,30 @@ checked this session against decompiles, listings and byte reads of the 1.42 ima
    `operating_mode_change_dispatch` copies `+4` into `*(u16*)0x20390366`. Screens 0x13–0x67 map to
    categories 0x00–0x49 (0xff = not a list screen). **SD CARD = screen `0x2f` → category `0x18`**. Its
    enter callback `0x20057010` only calls `settings_list_builder(0)`.
-2. **`g_settings_category_registry`** `0x201993e0`: 0x4a × `{u32 count; ptr list; u32 reserved}`. List
+2. **`g_settings_category_registry`** `0x201993e0`: 0x4a × `{u32 count; ptr list; u32 flags}`. List
    entries are `{u8 type; u8 pad; u16 val}`:
    - type 1 = go to screen `val`
    - type 2 = settings value item `val` (0x40-stride table `0x20190ecc`, 326 entries, edited on screen 0x68)
    - type 3 = catalog item `val`
+
+   **Correction, 2026-09-25**: `+8` is not reserved/padding as first read — it's real flags, bit 0 wraps
+   the cursor and bit 1 wraps pages (consumed by `FUN_2003ece8`/`FUN_2003ee80`, the paging logic). SD CARD's
+   own entry leaves it `0`, which is correct (no wrap) and was left unchanged by `sdk/examples/
+   homebrew-apps-menu/`'s own patch.
 3. **`g_settings_item_catalog`** `0x2018ed48`: 39 × 20-byte records `{action, query, flags, en, jp}`. The
-   flags low byte is the "kind" used by `settings_list_item_kind_renderer` (0 = plain label). This is the
-   table earlier notes placed "around `0x2018eebc`". **The earlier `{en, jp, cb_action, cb_query, flags}`
-   framing was off by one field group**: each name goes with the action/query *before* it. Every consumer
-   uses base `0x2018ed48` (literal pools `0x2003fab0`, `0x2004196c`, `0x20086674`, `0x2008abec`). Indices
-   are u16, and nothing checks their bounds.
+   flags low byte is the "kind" used by `settings_list_item_kind_renderer` (0 = plain label); byte 1 (bits
+   for command IDs `0x14`-`0x16`, likely softkey enables) is also read by `FUN_20041448`, one confirmed real
+   consumer beyond the renderer — bytes 2-3 have no confirmed consumer. This is the table earlier notes
+   placed "around `0x2018eebc`". **The earlier `{en, jp, cb_action, cb_query, flags}` framing was off by one
+   field group**: each name goes with the action/query *before* it. Every consumer uses base `0x2018ed48`
+   (literal pools `0x2003fab0`, `0x2004196c`, `0x20086674`, `0x2008abec`).
+
+   **Correction, 2026-09-25**: indices are **not** cleanly u16 everywhere — one consumer,
+   `FUN_2003fd6c`, truncates a type-3 `val` to a **u8** before using it (`cVar8 = pcVar4[2]`, the low byte
+   only). For `sdk/examples/homebrew-apps-menu/`'s own index `0x881`, the truncated value is `0x81`,
+   confirmed to land on a genuinely blank catalog record in the 1.42 image (no collision with any other
+   slot's own low byte in the `0x81`-`0x92` neighborhood) — harmless there, but version-dependent, and worth
+   checking again before reusing an index above `0xff` against a different firmware release.
 
 **SD CARD menu (category 0x18, count 8, list `0x201990bc`)**: Load Setting (3,9) · Save Setting (3,8) ·
 Save Form (2,325) · SD Card Info (1,0x34) · Screen Capture View (3,20) · Firmware Update (3,18) · Format
@@ -200,6 +213,17 @@ glitches, and tapping it runs the action with no crash, no navigation side effec
 fully responsive to CI-V afterward. Confirms every claim in this section (the count/list-pointer
 patch, the new catalog record, the padding-gap placement, the `bx`-with-no-arguments action
 convention) against real behavior, not just static reading.
+
+**New finding, 2026-09-25 (adversarial review pass): this state is EEPROM-backed.** Region 2 of
+`g_nvram_region_table` (`notes/eeprom-catalogue.md`-adjacent finding, not yet cross-referenced
+there) covers `0x203de4cc` for `0x5e0` bytes — the SD CARD menu's own saved cursor position
+(`0x203de4cc + cat*4 + 0x288`) and a snapshot of the currently-selected row's own list-entry bytes
+(`+0x438`) both live inside that range, so both persist across a real reflash back to stock
+firmware. Confirmed benign against stock: stock clamps the cursor to the category's own real item
+count (7 for the un-patched SD CARD list), so a cursor value left pointing at the removed 9th slot
+doesn't go out of bounds — but it's a real, persistent side effect of using this menu, not just an
+in-RAM one, worth remembering if this technique is applied somewhere the "safe to clamp" property
+hasn't been separately checked.
 
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the

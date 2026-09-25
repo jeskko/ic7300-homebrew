@@ -89,12 +89,16 @@ hc_done:
 @ just return without touching anything (best-effort, never blocks).
 homebrew_emit_civ:
     push    {r4, r5, r6, lr}
-    @ NOTE: no IRQ masking here (cpsid/cpsie faulted as undefined-instruction when tried --
-    @ this hook's execution context doesn't tolerate the dedicated CPS instruction, confirmed
-    @ live via GDB/QMP: PSR showed und32 mode parked in the firmware's own "can't emulate this
-    @ undefined instruction" trap loop at 0x200b9674). Best-effort instead: a real IRQ landing
-    @ mid-write here can drop or corrupt this one attempt, never worse than that -- acceptable
-    @ for a fail-closed, best-effort unsolicited frame. See sdk/app-loader-design.md.
+    cpsid   i                   @ matches civ_tx_pump's own critical-section scope exactly.
+    @ CORRECTED 2026-09-25 (adversarial review pass, verified against a real listing of
+    @ civ_tx_pump at 0x20011384/0x20011388): this used to skip IRQ masking based on a wrong
+    @ diagnosis ("CPS faults as undefined in this context"). civ_tx_pump itself executes cpsid
+    @ at 0x20011388 and cpsie at 0x200113a4 on every main_idle_loop tick, from the exact calling
+    @ context this code runs in, and does not fault. The crash that prompted the original
+    @ diagnosis had a different, since-fixed cause (appended code landing in RAM that turned out
+    @ to be live runtime-allocator territory -- see notes/kernel-rtos.md's "kernel_start's
+    @ bring-up initializes a runtime memory pool" section). See sdk/app-loader-design.md's "CI-V
+    @ emission" section.
 
     ldr     r4, =RXBUF
     ldrb    r0, [r4]
@@ -150,6 +154,7 @@ hec_copy_done:
     strb    r0, [r4]
 
 hec_abort:
+    cpsie   i
     pop     {r4, r5, r6, lr}
     bx      lr
 

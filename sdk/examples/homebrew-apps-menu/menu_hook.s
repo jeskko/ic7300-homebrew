@@ -13,7 +13,7 @@
 @ Two DATA-only patches to the existing image (no instruction patched, unlike the other two
 @ examples' main_idle_loop retarget):
 @   - g_settings_category_registry[0x18] (SD CARD's own entry, 0x20199500): count 8->9, list
-@     pointer retargeted to sd_menu_list_v2 below (the original 8 entries plus one new one).
+@     pointer retargeted to sd_menu_list_v2 below.
 @   - one new 20-byte catalog record, in the confirmed-unused padding right after the registry
 @     table (0x20199758-0x201998cc): {action=homebrew_menu_action, query=0 (always selectable),
 @     flags=0x00010700 (copied from the real "Format" row, plain-label kind), en=jp=menu_label}.
@@ -21,6 +21,35 @@
 @ homebrew_menu_action itself is exactly sd-card-app's load_and_run_app logic (open/read/close
 @ C:\IC-7300\APP.BIN via the same confirmed wrapper functions, call it if anything was read) --
 @ sd-card-app's own app_main.s file works completely unmodified as the loaded APP.BIN here too.
+@
+@ CORRECTIONS from an adversarial review pass, 2026-09-25 (see sdk/examples/sd-card-app/
+@ loader_hook.s's own header comment for the full writeup -- the same four corrections apply
+@ here, since this file started as a copy of that one):
+@ 1. FIXED: the same failed-read-executes-garbage bug (checked try_read's RPC_WAIT result and
+@    `sd_read_actual`'s sign, not just non-zero).
+@ 2. FIXED: the same cache-maintenance gap before jumping into freshly-loaded code.
+@ 3. NOT fixed, documented: `RPC_WAIT`'s unbounded wait -- see loader_hook.s.
+@ 4. FIXED: the same `push {lr}`-only stack-alignment issue in try_open/try_read/try_close --
+@    and the same second-order mistake loader_hook.s's own header comment now documents in
+@    detail (an initial `push/pop {r0, lr}` silently destroyed the RPC result it needed to
+@    return, caught live by an emulator regression test; fixed to `{r1, lr}`).
+@
+@ One more correction specific to this file: `sd_menu_list_v2` and `menu_label` below are
+@ assembled here for convenience, but build.py copies their actual byte content into the
+@ firmware's own read-only image (the same confirmed-unused padding gap the new catalog record
+@ lives in) rather than pointing the registry/catalog at these symbols' own linked (appended-RAM)
+@ addresses. Reasoning: an adversarial review pass flagged that leaving the SD CARD menu's own
+@ item list and label in the less-certain appended-RAM region means *that entire menu* --
+@ including the real Firmware Update recovery row -- would render garbage if that RAM were ever
+@ found to be unsafe the same way earlier addresses in this region were. Baking the list/label
+@ into the image itself removes that risk for everything except this one new row's own action
+@ pointer, which still has to live in appended code.
+@
+@ Still open, not addressed by this pass (see sdk/app-loader-design.md): no SD-card-ready /
+@ voice-recorder-busy gate before running (every sibling SD-menu row checks both), no size/
+@ magic/checksum validation of APP.BIN's own content, and this row's catalog index (0x881) is
+@ read as a truncated u8 by one consumer (FUN_2003fd6c) -- harmless in the 1.42 image checked
+@ (0x81 doesn't collide with anything), but worth re-checking against any other firmware version.
 
     .syntax unified
     .arm
@@ -51,12 +80,23 @@ homebrew_menu_action:
     bne     action_done
 
     bl      try_read
+    mov     r5, r0              @ save try_read's own RPC_WAIT result across try_close
     bl      try_close
+
+    cmp     r5, #0
+    bne     action_done         @ the read RPC itself failed
 
     ldr     r1, =sd_read_actual
     ldr     r1, [r1]
     cmp     r1, #0
-    beq     action_done
+    ble     action_done         @ signed: a negative errno or a zero-byte read -- nothing to run
+    cmp     r1, #APP_MAX_SIZE
+    bgt     action_done         @ never trust a read result past our own buffer either
+
+    mov     r6, r1              @ length actually read, saved across the call below
+    ldr     r0, =APP_LOAD_ADDR
+    mov     r1, r6
+    bl      cache_flush_range   @ make instruction fetch see the bytes we just wrote
 
     ldr     r0, =APP_LOAD_ADDR
     blx     r0
@@ -67,7 +107,7 @@ action_done:
 
 @ ---------------------------------------------------------------------------
 try_open:
-    push    {lr}
+    push    {r1, lr}
     ldr     r0, =app_path
     mov     r1, #0
     ldr     r2, =sd_handle
@@ -75,11 +115,11 @@ try_open:
     bl      FILE_OPEN
     mov     r1, #RPC_TIMEOUT
     bl      RPC_WAIT
-    pop     {lr}
+    pop     {r1, lr}
     bx      lr
 
 try_read:
-    push    {lr}
+    push    {r1, lr}
     ldr     r4, =sd_read_actual
     mov     r0, #0
     str     r0, [r4]
@@ -91,18 +131,37 @@ try_read:
     bl      FILE_READ
     mov     r1, #RPC_TIMEOUT
     bl      RPC_WAIT
-    pop     {lr}
+    pop     {r1, lr}
     bx      lr
 
 try_close:
-    push    {lr}
+    push    {r1, lr}
     ldr     r0, =sd_handle
     ldr     r0, [r0]
     mov     r1, #0
     bl      FILE_CLOSE
     mov     r1, #RPC_TIMEOUT
     bl      RPC_WAIT
-    pop     {lr}
+    pop     {r1, lr}
+    bx      lr
+
+@ ---------------------------------------------------------------------------
+@ cache_flush_range(r0=start address, r1=length) -- see sd-card-app/loader_hook.s's own copy
+@ of this routine for the full explanation. Kept as a separate copy here rather than shared
+@ across the two independently-linked example binaries.
+cache_flush_range:
+    add     r1, r0, r1
+    bic     r0, r0, #0x1f
+cfr_loop:
+    mcr     p15, 0, r0, c7, c11, 1
+    mcr     p15, 0, r0, c7, c5, 1
+    add     r0, r0, #32
+    cmp     r0, r1
+    blo     cfr_loop
+    mov     r0, #0
+    mcr     p15, 0, r0, c7, c5, 6
+    dsb
+    isb
     bx      lr
 
     .ltorg
@@ -120,15 +179,14 @@ app_path:
     .asciz "C:\\IC-7300\\APP.BIN"
 
     .align 2
+@ Content only -- build.py copies these bytes into the firmware's own image (see the file
+@ header comment) rather than using their linked addresses here. Keep both exactly 36 and
+@ <=16 bytes respectively if either is ever edited, to match the ROM gap build.py reserves.
+    .global menu_label
 menu_label:
     .asciz "Homebrew Apps"
 
     .align 2
-@ The SD CARD menu's real item list, plus one new entry. Original 8 read directly from the live
-@ image at 0x201990bc (Load Setting, Save Setting, Save Form, SD Card Info, Screen Capture View,
-@ Firmware Update, Format, Unmount) -- unchanged, in the same order -- plus a 9th entry pointing
-@ at the new catalog record this build patches in (index 0x881, see build.py). Each entry is
-@ {u8 type, u8 pad, u16 val} packed as one LE word: type | (val << 16).
     .global sd_menu_list_v2
 sd_menu_list_v2:
     .word (3 | (9    << 16))   @ Load Setting

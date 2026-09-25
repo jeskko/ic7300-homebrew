@@ -212,19 +212,103 @@ options, either wired into the same hook location chosen above:
 Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
 other design pieces above.
 
-## Open items (as of 2026-09-25, sixth pass)
+## Adversarial review pass, 2026-09-25 (seventh pass) — real bugs found and fixed
 
-- **The `-icount` hang.** All three examples (`civ-hello-world`, `sd-card-app`,
-  `homebrew-apps-menu`) reliably hang under this machine's usual `-icount` timing (`--fast`
-  included); plain unthrottled execution works correctly and repeatably. Not root-caused — worth a
-  real look before trusting any future hook-based test under `-icount`, and before assuming this
-  class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be
-  unaffected, but that's an assumption, not a confirmed fact).
+Dispatched a dedicated Opus review of all three `sdk/examples/` after the sixth pass shipped —
+explicitly told to assume more mistakes were plausible (this session had already found and fixed
+one real wrong assumption, the RAM-placement bug above) and to independently re-verify load-bearing
+claims against real decompiles rather than trust the existing notes. It found several confirmed,
+real issues; all code fixes below were regression-tested afterward against the exact same live
+tests each example's own README already documents (same frames, same clean resume, same
+fail-closed behavior) before being considered done.
+
+**Fixed:**
+- **A real, serious bug: a failed SD-card read executed whatever was already at the app's load
+  address (`0x20610000`).** The read wrapper writes a *negative error code* into the caller's
+  "bytes actually read" output on failure, not just a real byte count on success — both loaders'
+  original check (`actual != 0`) treated a negative errno as "got data" and jumped into the load
+  address regardless. Fixed: check the read call's own RPC-wait result *and* require
+  `0 < actual <= max size` with a signed comparison. This directly contradicted this session's own
+  "fails closed" documentation for both `sd-card-app` and `homebrew-apps-menu` — the missing-file
+  case (the one actually live-tested before) happens to short-circuit earlier and was never
+  affected, which is why it wasn't caught until this review.
+- **A wrong diagnosis, corrected: `cpsid`/`cpsie` do not fault in this hook's execution context.**
+  An earlier pass's own live crash led to the conclusion "CPS faults as undefined here" — wrong.
+  `civ_tx_pump`, the real firmware function every one of these hooks calls first, executes `cpsid
+  i`/`cpsie i` on every single tick from the identical calling context, confirmed both by a fresh
+  Ghidra listing and by re-examining this session's own earlier live single-step trace (which had
+  already, if unnoticed at the time, walked straight through that exact instruction without
+  fault). The real cause of the original crash was the RAM-placement bug two sections up, fixed
+  separately by relocating to `0x20600000` — removing `cpsid`/`cpsie` was never the fix, just a
+  coincidentally-timed second change. Re-added, matching `civ_tx_pump`'s own critical-section
+  scope, closing a real (narrow) race the unmasked version had.
+- **Missing cache maintenance before executing freshly-loaded code.** QEMU's TCG execution doesn't
+  model I-cache/D-cache incoherency, so this was invisible to every emulator test so far. Added a
+  standard ARMv7-A clean-D-to-PoU / invalidate-I-to-PoU / BPIALL / DSB / ISB sequence over the
+  loaded bytes before jumping in. **Still unverified live** — flagged below.
+- **Stack alignment, fixed twice.** `try_open`/`try_read`/`try_close` used a single-register
+  `push {lr}`, breaking 8-byte AAPCS alignment at a call into real firmware code (harmless for this
+  specific callee chain, a real trap for reuse). The *first* fix attempt (`push/pop {r0, lr}`) was
+  itself a new bug, caught live by this session's own regression test: `pop {r0, lr}` restores the
+  *original* r0 over the RPC result the caller needs, so open/read appeared to succeed (handle set,
+  buffer touched) but the caller's success check read noise instead of the real result, and no
+  frame went out. Fixed properly with `r1` (never a return-value register for these calls) instead
+  of `r0`. Kept as a documented lesson in both `.s` files' own header comments — a "trivial"
+  alignment fix touched a return-value register without that being obvious from the diff alone.
+- **`homebrew-apps-menu`'s new list/label relocated from appended RAM into the firmware's own
+  read-only image.** Not a bug fix — a risk-reduction change the review prompted: the SD CARD menu
+  is also the Firmware Update recovery path, and leaving its item list/label in the same
+  less-certain RAM region an earlier bug already bit once would mean the *whole menu* renders
+  garbage if that RAM were ever found unsafe, not just the one new row. `build.py` now copies the
+  list/label bytes into the confirmed-unused padding gap next to the new catalog record; only the
+  new row's own `action` pointer still points into appended code.
+
+**Confirmed correct, no fix needed** (the review checked these specifically and found them safe):
+`scratch36`'s uninitialized-buffer content (genuinely dead, never read by the real open handler);
+no firmware-relied-upon register is clobbered by any of these hooks; the 32 KB read is genuinely
+capped by the underlying device read loop, can't overrun past the buffer; the registry
+count/pointer patch's consumers all read the count correctly (as a byte) and clamp the cursor, so
+no out-of-bounds access; the visibility/diode-region filters don't special-case the new row's index
+or category; the CI-V staging buffer can never be mistaken for a real reply mid-write (checked
+against both the RX ISR and `civ_rx_frame_stage_and_dispatch`'s own field layout).
+
+**Not fixed — real, documented, open risks** (see the open items list below for the short form):
+`RPC_WAIT`'s unbounded wait if the RPC ring is ever full; no SD-ready/recorder-busy gate before
+running (every sibling SD-menu row checks both); no `APP.BIN` content validation; the cache-
+maintenance fix is unverified on real hardware; `homebrew-apps-menu`'s catalog index is read as a
+truncated byte by one unrelated consumer (confirmed harmless in the 1.42 image checked, but
+version-dependent); the registry/catalog patch's cursor state persists to EEPROM (confirmed benign
+against stock firmware, but a real persistent side effect).
+
+Each example's own README has the fuller per-file writeup and its own regression-test confirmation.
+
+## Open items (as of 2026-09-25, seventh pass)
+
+- **The `-icount` hang.** All three examples reliably hang under this machine's usual `-icount`
+  timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not
+  root-caused — worth a real look before trusting any future hook-based test under `-icount`, and
+  before assuming this class of hook is safe on real hardware (which has no `-icount` equivalent,
+  so may just be unaffected, but that's an assumption, not a confirmed fact). May be related to the
+  RAM-placement question below, surfacing under different boot timing — not established either way.
 - **The full extent of the "unsafe past static image end" region** — confirmed unsafe at `0x20395b18` and
   `0x20500000` (progressively, not instantly), confirmed safe at `0x20600000` and several points above it
   after a full boot. The exact boundary between unsafe and safe, and whether "safe so far in these tests"
   could still be consumed by heavier runtime activity (e.g. BMP capture, voice recording, other large
   buffer allocations this project already knows exist) over a longer running session, is not established.
+- **`RPC_WAIT`'s unbounded wait.** Not a timeout despite the `0x46` argument's name in earlier notes
+  (corrected in `notes/kernel-rtos.md`) — a full RPC ring makes it spin forever. Because every
+  example's hook runs from `main_idle_loop` (or, for the menu button, whatever UI-tap context calls
+  it), a hang here freezes more than just the custom feature. The firmware's own equivalent callers
+  avoid this blast radius by running in `sd_menu_dispatch_task`'s own context instead — moving the
+  load there is the real fix, a genuine redesign not attempted yet.
+- **No SD-ready / recorder-busy gate.** Every sibling SD-menu row checks both before running; none
+  of these examples do. Real risk if the trigger fires during recording (`voice_audio_tick` also
+  runs from `main_idle_loop`) or with no card / after Unmount.
+- **Cache maintenance is unverified on real hardware** — QEMU can't show whether it was needed or
+  whether the sequence added is correct. Check the `0x206xxxxx` region's actual cacheability
+  (translation-table entry, not decodable statically since the descriptors are computed at runtime)
+  before trusting this on real silicon.
+- **No `APP.BIN` content validation** — no size/magic/checksum check before executing a loaded file.
 - **A real app SDK beyond "load and call one fixed file"** — every example's loader has a fixed path, a
   fixed 32 KB size cap, and no versioning/multi-app story. Real next-layer design work, not yet started.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
@@ -235,3 +319,5 @@ other design pieces above.
 - Closed, live-tested: the real "Homebrew Apps" menu button — see `sdk/examples/homebrew-apps-menu/`.
 - Closed, confirmed: `file_rpc_post_command`'s open/read/seek/close command IDs (`0xf`/`0x11`/`0x13`/`0x10`)
   — see `sdk/api/filesystem.md` and `sdk/examples/sd-card-app/`.
+- Closed, fixed and regression-tested: the read-failure bug, the cpsid misdiagnosis, missing cache
+  maintenance, and the stack-alignment bug (and its own second-order bug) — see above.

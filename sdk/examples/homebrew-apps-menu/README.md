@@ -28,11 +28,21 @@ settings-list engine" section, traced the same day):
 
 - **`g_settings_category_registry[0x18]`** (`0x20199500`, the SD CARD menu's own entry): item
   count `8 → 9`, list pointer retargeted to a new 9-entry copy (the original 8 items, unchanged,
-  plus one new one) appended alongside the hook code.
+  plus one new one).
 - **One new 20-byte record** in `g_settings_item_catalog` (`0x2018ed48 + 0x881×20 =
   0x2019975c`), inside a padding gap confirmed unused by anything else: `{action =
   homebrew_menu_action, query = NULL (always selectable), flags = 0x00010700 (copied from the
   real "Format" row), en = jp = "Homebrew Apps"}`.
+
+**Revised in an adversarial review pass**: the new 9-entry list and the "Homebrew Apps" label text
+now live in the same read-only padding gap as the catalog record itself (`build.py` copies their
+byte content out of the assembled hook and into the firmware image directly), not at their
+appended-RAM linked addresses. Reasoning: this menu is also the Firmware Update recovery path — if
+the appended-RAM region were ever found unsafe the way an earlier address in this same region was,
+a list/label living there would mean the *entire SD CARD menu* renders garbage, not just this one
+new row. Only the new row's own `action` pointer still has to point into appended code (there's no
+room in the padding gap for the actual open/read/close logic); every other row's own data, and the
+menu's own rendering, is unaffected even in that scenario now.
 
 `homebrew_menu_action` (`menu_hook.s`) is called with **no arguments** — the exact convention
 `settings_list_activate_row` uses to tail-call any type-3 row's action — and just does
@@ -72,13 +82,45 @@ at each step (not just CI-V — the actual rendered screen, confirming nothing e
   "Homebrew Apps" on page 3, tapping it produces no frame at all, and the radio remains fully
   responsive to CI-V commands afterward.
 
+## Corrections from an adversarial review pass (2026-09-25)
+
+An Opus review of all three `sdk/examples/` (full report in `sdk/app-loader-design.md`) found
+several issues that also apply here, since `menu_hook.s` started as a copy of `sd-card-app/
+loader_hook.s`. Fixed and **re-verified through the real UI afterward** (same screenshots, same
+3-page menu, same `SDAPP` frame on tap, same fail-closed with no `APP.BIN`):
+
+- The same failed-read-executes-garbage bug, and the same missing cache-maintenance-before-jump
+  gap — see `sd-card-app/README.md`'s own corrections section for the full detail, identical fix
+  here.
+- The same stack-alignment fix, including the same second bug this session's own regression
+  testing caught in the first attempt at it (padding `try_open`/`try_read`/`try_close` with
+  `push/pop {r0, lr}` silently destroys the return value in `r0`) — see `sd-card-app/README.md`.
+  **This is exactly how the ROM-relocation regression test below caught it**: after the first
+  (buggy) alignment fix, the menu still rendered fine and the open still succeeded, but no frame
+  came out — tracing live memory (`sd_handle` set, `sd_read_actual` stuck at 0) pointed straight
+  at the corrupted return value.
+- The list/label ROM relocation (see above) is itself a direct response to this review — not a
+  bug fix, but a real risk-reduction change it prompted.
+
+**Not fixed, documented as open risks** (same as `sd-card-app`, inherited unchanged since this
+example calls the identical wrapper functions): `RPC_WAIT`'s unbounded wait, no SD-ready/recorder-
+busy gate, no `APP.BIN` content validation, cache maintenance unverified on real hardware. One
+finding specific to this example: `homebrew_menu_action`'s catalog index (`0x881`) is read as a
+truncated `u8` by one consumer (`FUN_2003fd6c`) — confirmed harmless in the 1.42 image checked
+(the truncated value, `0x81`, doesn't collide with any other slot's own low byte), but worth
+re-checking against any other firmware version before reusing this technique there.
+
 ## Known limitations
 
 - Only one app row, one fixed path, same 32 KB cap as `sd-card-app` — no real app-management UI
   (an app picker, multiple installed apps) yet.
-- `-icount` note: not independently re-tested here, but see `civ-hello-world/README.md` — the
-  other two examples both hang under `-icount` and work under plain unthrottled execution; this
-  one was tested with `--icount off` from the start on the same basis.
+- `-icount`: not independently re-tested here, but see `civ-hello-world/README.md` — the other two
+  examples both hang under `-icount` and work under plain unthrottled execution; this one was
+  tested with `--icount off` from the start on the same basis.
 - The new catalog record's index (`0x881`) and its home in the post-registry padding gap were
   chosen based on static analysis of the 1.42 image specifically — re-verify both before reusing
   this technique against a different firmware version.
+- The registry/catalog state this patches lives in an NVRAM-backed region (`g_nvram_region_table`
+  region 2 covers it) — the saved menu cursor and a snapshot of the tapped row's own data persist
+  to EEPROM. Confirmed benign against stock firmware (a stock reflash clamps the cursor to 7,
+  within its own valid range), but a real, persistent side effect worth knowing about.
