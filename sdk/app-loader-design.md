@@ -314,6 +314,11 @@ borrowed dialog); the list below still applies to it unless marked.
   after a full boot. The exact boundary between unsafe and safe, and whether "safe so far in these tests"
   could still be consumed by heavier runtime activity (e.g. BMP capture, voice recording, other large
   buffer allocations this project already knows exist) over a longer running session, is not established.
+  **Update 2026-09-25:** a whole-range marker sweep in the emulator found `0x20601000`–`0x2080afff`
+  (2088 KB) never written, across boot, the scope, TX, the QSO recorder recording and playing back,
+  the RTTY decoder, and SD save/load (`notes/memory-map.md`, "RAM above the homebrew loader"). Screen
+  capture and voice-TX recording weren't covered, and it hasn't run on hardware. The app region could
+  grow into this range on that evidence; it hasn't been changed yet.
 - **`RPC_WAIT`'s unbounded wait.** Not a timeout despite the `0x46` argument's name in earlier notes
   (corrected in `notes/kernel-rtos.md`) — a full RPC ring makes it spin forever. Because every
   example's hook runs from `main_idle_loop` (or, for the menu button, whatever UI-tap context calls

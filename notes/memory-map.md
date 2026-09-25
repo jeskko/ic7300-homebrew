@@ -188,6 +188,38 @@ trustworthy: hits on `DMAC`/`INTC`/`WDT` all checked out exactly against a direc
   configures both at matching relative offsets (dual-channel audio init) — noted, not named or
   chased further.
 
+## RAM above the homebrew loader: never written by the firmware (marker sweep, 2026-09-25) ✅ emulator only
+
+`0x20601000`–`0x2080afff` (2088 KB, from the page after `sdk/loader/` up to the first page the
+firmware uses) is **never written by the firmware**, in the emulator, across a boot plus a
+scenario covering most of the radio's features. How it was measured:
+`qemu-machine/tools/ram_marker_sweep.py` writes an address-keyed pattern over the whole range at
+reset (QEMU's `loader` device, before the first instruction), then dumps the range after each
+scenario step and diffs it against the previous dump. Any write, zeroing included, counts.
+
+- **Features covered (0 bytes written in each):**
+  - Boot.
+  - Scope on, including the expanded view and SPAN/CENT/FIX.
+  - Seven modes and three bands.
+  - All eight page-1 MENU screens.
+  - CW keyer send and RTTY decode.
+  - Transmit over CI-V in USB/RTTY/CW, and a tune.
+  - QSO recorder: 15 s recorded to SD, then played back.
+  - SD Save Setting and Load Setting.
+- **Positive control:** the SDK apps (CUBE, MINES) are launched in the same run. Their writes
+  show up exactly where expected, in the app region and both framebuffers
+  (`0x20640000`–`0x206bfbff`), so the harness does catch writes.
+- **Not covered:**
+  - Screen capture: a POWER tap doesn't trigger it in the emulator.
+  - Voice TX memory recording: the scenario's taps didn't start it.
+  - Firmware update.
+  - Real audio in TX: the emulator doesn't show TX on screen, and TX is only partly modelled.
+  - Long sessions.
+  - Real hardware.
+- **Above the range** the firmware does use RAM: non-zero pages start at `0x2080b000`, and GR2's
+  UI framebuffer sits at `0x20974fe0`. A zero-page scan underestimates use there: GR2 read only
+  88 KB non-zero of its 255 KB, because black pixels read as zero.
+
 ## Open questions
 - Exact base addresses for the two "mirrors" and the FPGA config block.
 - ~~Whether `0x18000000` is where the *whole* container is mapped~~ —

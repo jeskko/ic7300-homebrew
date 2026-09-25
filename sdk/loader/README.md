@@ -181,8 +181,9 @@ still screenshots pixel-identical to the reference.
 
 - **Graphics on real hardware**: the GR3 overlay and D-cache cleaning follow the Renesas driver
   and ARM rules but are untested on silicon; tearing and frame rate aren't known either. The
-  framebuffer RAM (`0x20640000`–`0x206bffff`) is zero after boot and not seen in use, but it has
-  not had the marker-then-reboot test that `0x20600000` had. The dials still reach the radio
+  framebuffer RAM (`0x20640000`–`0x206bffff`) passed the emulator's whole-range marker sweep
+  (2026-09-25, `qemu-machine/tools/ram_marker_sweep.py`): the firmware never wrote any of
+  `0x20601000`–`0x2080afff`. It hasn't been tested on hardware. The dials still reach the radio
   while an app has input.
 - **Real hardware**: nothing here has run on the radio yet. The cache maintenance before
   jumping into an app in particular is unverified (QEMU models no cache incoherency).

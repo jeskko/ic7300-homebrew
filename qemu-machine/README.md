@@ -143,6 +143,10 @@ Older status entries and the full session-by-session narrative: [README-history.
     speed number in this file.
   - `build_sdcard.py` — builds a real FAT16 SD card image with an update container at the
     documented path.
+  - `ram_marker_sweep.py` — which RAM does the firmware ever write? Patterns a range at reset,
+    drives a feature scenario (scope, modes, menus, keyer, RTTY decode, TX, QSO recorder, SD
+    save/load, and SDK apps as a positive control), and diffs after each step. Result 2026-09-25:
+    `0x20601000`–`0x2080afff` is never written (`notes/memory-map.md`).
   - `qmp_read_mem.py` — general-purpose, fully GDB-free physical-memory reader via QMP.
   - `force_call_fup.py` / `test_mmc.py` / `test_irq.py` / `trial_irq.py` — standalone protocol
     and IRQ-delivery validation, reused as regression checks.
@@ -203,5 +207,13 @@ system-tick fix that took boot from 97 s to 8 s wall.
    image in the emulator (see Status); the `-icount` stall on heavy SD mounts is still open.
 2. The CI-V `27 00` scope-waveform output and fixed-mode (VFO-offset) scope behaviour are not yet
    checked against the fake FPGA.
-3. TX audio playback (DR_AF) and the DX_FMT decoders are unexercised — needs recorder or
+3. **SD card drops out during Save + Load Setting.** The firmware shows "SD Card was removed.".
+   Afterwards directory listing fails (the homebrew picker shows no apps), Voice TX REC reports
+   "not formatted in FAT/FAT32", and SD Card Info won't open. Save alone was fine in an
+   interactive run. Found 2026-09-25 by `ram_marker_sweep.py`, which runs save/load last because
+   of it. Not investigated.
+4. **A one-off hang after a CI-V band change** (`05` to 7.1 MHz) with `--icount off`: the
+   waterfall kept scrolling, but CI-V and the UI stopped. Not reproduced in 16 further band-change
+   rounds, with or without the sweep's RAM markers. Not investigated.
+5. TX audio playback (DR_AF) and the DX_FMT decoders are unexercised — needs recorder or
    voice-memory playback driven from the front panel.
