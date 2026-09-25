@@ -17,8 +17,8 @@ for why this whole effort exists.
 ## Current contents
 
 - **`roadmap.md`** — the overall goal, the key reframing insight (the firmware-update mechanism has no
-  signature check, so a "flash once" custom-app loader is already feasible without needing a
-  Bug), and the phased plan.
+  signature check, so a "flash once" custom-app loader is already feasible on its own), and the phased
+  plan.
 - **`app-requirements.md`** — for four representative example apps (serial hello-world, display
   hello-world, a simple game, an SSTV receiver), what's already known vs. what still needs researching,
   deliberately excluding the app-launching/memory-placement question (expected to get much easier once a

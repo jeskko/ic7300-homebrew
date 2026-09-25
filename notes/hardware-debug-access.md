@@ -1,7 +1,7 @@
 # Hardware debug access (JTAG) — found via schematic, not firmware
 
 Investigated whether a serial/debug interface already exists (before
-considering any software code-loading route for live RAM access — see
+considering any software custom-code loading route for live RAM access — see
 [[firmware-update]]'s security section for that alternative, now
 deprioritized by this finding). Checked the two USB CDC serial ports
 first as the user's own lead, then the schematics
@@ -63,7 +63,7 @@ and separately traced the DSP's own boot flash (`IC902`) at the pin level — se
 `IC902` entry. So the "real second/third processor's firmware to find" speculation above was correct; the
 container does carry more than main-CPU code.
 
-## Assessment: this should take priority over any software code-loading route
+## Assessment: this should take priority over any software custom-code loading route
 
 A working JTAG/SWD connection to the main CPU gives halt/step, arbitrary
 live memory read/write (including the runtime-populated globals that are
@@ -72,7 +72,7 @@ blank in our static Ghidra image — e.g. the TCB pointer investigated in
 no risk of bricking anything (doesn't touch flash unless directed to).
 That's strictly more capable than the "trick a subroutine into running
 SD-card code" idea from [[firmware-update]], and far lower risk. **This
-should be tried before any bug-hunting route.**
+should be tried before any code-defect-hunting route.**
 
 ## Confirmed physically populated (user-provided photos)
 

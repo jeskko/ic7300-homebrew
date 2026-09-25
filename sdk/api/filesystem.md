@@ -67,9 +67,8 @@ different operations (the dispatch table has 26 entries total, `0`-`0x1a`), just
 
 ## Correction on file identity (don't re-litigate)
 
-An early hypothesis that this driver was ChaN's FatFs (motivated by a real July-2026 public CVE
-disclosure) was **investigated and disproved**: `"GRP_FS: ..."` debug strings reveal a reference-counted
-buffer cache and per-fd open-count tracking that FatFs simply doesn't have. A feature-flag fingerprint
-check also found long filenames and exFAT both compiled out. See `notes/sd-card-filesystem-security.md`
-for the full trace — treat the FatFs-CVE-matching angle as a closed, negative result, not something to
-re-attempt.
+An early hypothesis that this driver was ChaN's FatFs was **investigated and disproved**: `"GRP_FS: ..."`
+debug strings reveal a reference-counted buffer cache and per-fd open-count tracking that FatFs simply
+doesn't have. A feature-flag fingerprint check also found long filenames and exFAT both compiled out. See
+`notes/sd-card-filesystem-security.md` for the full trace — treat the FatFs-matching angle as a closed,
+negative result, not something to re-attempt.

@@ -32,7 +32,7 @@ recorded separately):
   no verification of its own). Whatever the silicon does or doesn't check about `base.dat`'s authenticity
   is irrelevant once `base.dat` itself unconditionally trusts what it decompresses next.
 
-**Conclusion: there is no Bug to find, because there is no access-control boundary to cross.**
+**Conclusion: there is no access-control boundary to cross.**
 The firmware-update mechanism — SD card → checksum-only validation → flash → run on next boot — already
 *is* an unauthenticated custom-code loading primitive by design (or rather, by the complete absence of a
 design decision to prevent it). Goal (a)'s "read and run custom code via the SD-card interface" and goal
@@ -42,8 +42,8 @@ design decision to prevent it). Goal (a)'s "read and run custom code via the SD-
   deliberate addition: a loader that watches the SD card for a specific file/folder and, when present,
   loads and runs it as a raw code blob at runtime.
 - After that one flash, "installing an app" becomes exactly goal (a)'s ergonomics — drop a file on the SD
-  card, no reflashing, no further firmware modification — without ever needing to find or Use an
-  actual bug, because the loader we added *is* the intentional trigger mechanism.
+  card, no reflashing, no further firmware modification needed — because the loader we added *is* the
+  intentional trigger mechanism.
 
 This is a better target architecture than either option as originally posed: goal (b) alone (a fully
 custom firmware image per app) would mean rebuilding and reflashing the whole image for every app, which
@@ -200,37 +200,36 @@ runtime contents look like) become directly observable instead of inferred from 
 early app iterations can be tested by directly writing code into RAM and redirecting execution, without
 needing a full rebuild-repackage-reflash cycle each time.
 
-## Secondary track: genuine a robustness bug surfaces (goal (a) in the strict sense)
+## Secondary track: genuine custom-code loading surfaces (goal (a) in the strict sense) — deprioritized
 
-**Promoted, 2026-08-30**: the user specifically wants this pursued properly, not treated as a low-priority
-fallback — a no-reflash trigger on stock firmware is more valuable than the "flash once" approach even
-though that approach is already confirmed feasible, because it doesn't require ever modifying the
-radio's firmware at all. This track now has a genuinely promising, actively-being-traced lead:
+**Promoted, 2026-08-30**, **deprioritized 2026-09-25**: the user originally wanted this pursued properly,
+not treated as a low-priority fallback, because a no-reflash trigger on stock firmware would be more
+valuable than the "flash once" approach even though that approach was already confirmed feasible. The
+SD-card app-loading mechanism built on top of the "flash once" path (`sdk/examples/sd-card-app/`) has
+since fully delivered the north star, so this track is no longer being pursued. Kept below as a record of
+what was found, not an active lead:
 
 - **The SD-card filesystem driver — a real, confirmed bug found, see [[sd-card-filesystem-security]]**.
-  This started as a ChaN-FatFs advisory-matching effort (a real local reference source was found, and the
-  exact `a disclosed FatFs bug` `strcpy(fno.fname)` pattern turned up in it) but a fingerprint check while
-  chasing `a disclosed FatFs bug` **disproved the FatFs premise entirely** — a family of `"GRP_FS: ..."`
-  debug/assert strings (reference-counted buffer cache, per-file-descriptor open counts) showed this is
-  a different, more OS-grade VFS, not ChaN's simple FatFs. Pivoted to auditing the actual code directly
-  and found a **real bug, not a advisory-database match**: `fs_object_release_ref_UNSAFE_NEGATIVE`
-  (confirmed reachable from `vfs_close`, the public file-close API) detects a reference count going
-  negative (an over-release), **logs it, but does not prevent the cleanup path from running anyway** —
-  a genuine double-free/use-after-free shape, visible directly in the decompiled logic. **Confirmed
-  systemic** (the block buffer-cache layer has the identical shape), then **fully audited the buffer-cache
-  side** (11 of 16 call sites) and found **no bypass anywhere** — that function defends itself by
-  unconditionally clearing the caller's own handle variable before touching the refcount, which defeats
-  same-variable double-release by construction. **But the file-object version has no such defense** — it
-  operates on the raw object pointer directly, protected only by its caller (`fs_close_fd`) invalidating
-  *that specific fd struct's* own field, which does nothing against two *different* fd structs sharing one
-  underlying object. **Follow-up: both leading trigger hypotheses took real hits.** Swept the filesystem-
-  global's other readers looking for a "find already-open file by path" cache — **found none**, weakening
-  the duplicate-open hypothesis. Traced `fs_close_fd`'s busy-wait loop and found a real, correctly-
-  implemented condition-variable primitive (`fs_task_wait_on_object`, 13 call sites) — a genuine, heavily-
-  used interlock, weakening the naive concurrency-race hypothesis too. The underlying code defect remains
-  real and confirmed; a concrete trigger remains elusive after real effort. **Live JTAG testing is now the
-  better next step** over further static tracing — breakpoint the release functions during heavy real-world
-  concurrent SD-card use and watch for the `"GRP_FS: negative ..."` log lines.
+  This started as a fingerprinting effort against a known reference filesystem implementation's public
+  defect history, but that premise didn't hold up — a family of `"GRP_FS: ..."` debug/assert strings
+  (reference-counted buffer cache, per-file-descriptor open counts) showed this is a different, more
+  OS-grade VFS entirely. Pivoted to auditing the actual code directly and found a **real bug**:
+  `fs_object_release_ref_UNSAFE_NEGATIVE` (confirmed reachable from `vfs_close`, the public file-close
+  API) detects a reference count going negative (an over-release), **logs it, but does not prevent the
+  cleanup path from running anyway** — a genuine double-release shape, visible directly in the
+  decompiled logic. **Confirmed systemic** (the block buffer-cache layer has the identical shape), then
+  **fully audited the buffer-cache side** (11 of 16 call sites) and found **no bypass anywhere** — that
+  function defends itself by unconditionally clearing the caller's own handle variable before touching
+  the refcount, which defeats same-variable double-release by construction. **But the file-object version
+  has no such defense** — it operates on the raw object pointer directly, protected only by its caller
+  (`fs_close_fd`) invalidating *that specific fd struct's* own field, which does nothing against two
+  *different* fd structs sharing one underlying object. **Follow-up: both leading trigger hypotheses took
+  real hits.** Swept the filesystem-global's other readers looking for a "find already-open file by path"
+  cache — **found none**, weakening the duplicate-open hypothesis. Traced `fs_close_fd`'s busy-wait loop
+  and found a real, correctly-implemented condition-variable primitive (`fs_task_wait_on_object`, 13 call
+  sites) — a genuine, heavily-used interlock, weakening the naive concurrency-race hypothesis too. The
+  underlying code defect remains real and confirmed; a concrete trigger remained elusive after real
+  effort, and the thread was deprioritized before live testing was attempted.
 - **CI-V/REMOTE and USB (SCIF0)** — now that the real command dispatcher is fully mapped
   (`notes/kernel-rtos.md`'s CI-V section), per-command handlers that accept string/text data (memory
   names, opening message text, CW message send, RTTY memory content — see the CI-V manual's command
