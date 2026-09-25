@@ -37,6 +37,6 @@ planes in this order.
 
 A live zero-map of `0x20600000`–`0x209fffff` (64 KB granularity, after boot, before any app ran)
 found data in use from `0x20800000` up, including this framebuffer. `0x20610000`–`0x207fffff`
-was entirely zero; the SDK uses `0x20640000`–`0x206bffff` for app framebuffers. This is the
+was entirely zero; the SDK (ABI v3) uses `0x20710000`–`0x2078fbff` for app framebuffers (v2: `0x20640000`–`0x206bffff`). This is the
 same "zero after boot" level of evidence as `sdk/app-loader-design.md`'s RAM-placement section,
 not a marker-then-reboot test.

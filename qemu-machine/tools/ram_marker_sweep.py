@@ -167,8 +167,8 @@ class Sweep:
 # Screen coordinates are for the 1.42 UI at 480x272; list rows are at y = 55/117/180/236 and a
 # list's page-down/up buttons at (448, 170)/(448, 55).
 
-APP_REGION = (0x20610000, 0x20630000)       # sdk/include/hb/abi.h
-APP_FBS = (0x20640000, 0x20640000 + 2 * 0x40000 - 0x400)   # HB_FB0..HB_FB1 + 480*272*2
+APP_REGION = (0x20610000, 0x20710000)       # sdk/include/hb/abi.h (v3)
+APP_FBS = (0x20710000, 0x20710000 + 2 * 0x40000 - 0x400)   # HB_FB0..HB_FB1 + 480*272*2
 
 
 def wait_civ(sw: Sweep, timeout: float = 90) -> bool:

@@ -61,10 +61,23 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
 (`*(u16*)0x20390222`, absolute across pages; tested on pages 2 and 3), then loads and runs
 `C:\homebrew\<name>` with the checks below.
 
-## ABI v2 (`sdk/include/hb/abi.h`)
+## ABI v3 (`sdk/include/hb/abi.h`)
 
-- The chosen `.BIN` is loaded at `0x20610000`. Code, data, bss and stack must fit in 128 KB
-  (`HB_APP_REGION`).
+- **Memory map.** Everything is inside `0x20600000`–`0x207fffff`, cached and executable RAM
+  the firmware never uses (`notes/memory-map.md`: marker sweep, static trace, MMU map):
+
+  | Address | Size | Use |
+  |---|---|---|
+  | `0x20600000` | 64 KB | the loader (2.7 KB today) |
+  | `0x20610000` | 1 MB | `HB_APP_REGION`: the app's code, data, bss and 16 KB stack |
+  | `0x20710000`, `0x20750000` | 2 × 255 KB | `HB_FB0/1`, the graphics framebuffers |
+  | `0x20790000`–`0x207fffff` | 448 KB | `HB_HEAP`, for `hb_malloc()` (`hb/heap.h`) |
+
+  Above `0x20800000` the RAM is execute-never, then holds the firmware's page tables and
+  uncached GPU/DMA memory.
+- The chosen `.BIN` is read into `HB_APP_REGION` in 64 KB chunks until end of file, so no
+  single file RPC moves more than 64 KB. A file bigger than the region is refused, and the
+  picker doesn't list it.
 - It starts with `struct hb_app_header {magic, abi_version, entry, image_end}`. The loader
   refuses the file unless the magic and version match, `entry` is word-aligned inside the bytes
   actually read, and `image_end` lies within the region.
@@ -72,9 +85,10 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
   `api` is `{abi_version, fw_build = 0x0142, idle_hook, input_grab}`. While the app leaves
   `idle_hook` set, the loader calls it once per `main_idle_loop` pass and won't load another
   app. While `input_grab` is set, the firmware's touch/key handling is skipped (below).
-- v1 → v2 (2026-09-25) added `input_grab`. The loader accepts only v2 apps, and a v1 app's
-  runtime refuses to start on a v2 loader, so apps need a rebuild. That costs nothing while no
-  loader has been installed on real hardware.
+- v1 → v2 (2026-09-25) added `input_grab`. v2 → v3 (same day) grew the region from 128 KB to
+  1 MB, moved the framebuffers from `0x20640000`/`0x20680000` and added the heap. The loader
+  accepts only its own version, and an app's runtime refuses an older loader, so apps need a
+  rebuild each time. That costs nothing while no loader has been installed on real hardware.
 
 ## The app runtime (`sdk/runtime/`)
 
@@ -123,6 +137,10 @@ mmd   -i $D/sdcard.img@@1M ::homebrew
 python3 sdk/tools/build_app.py --keep sdk/examples/cube/build -o $D/CUBE.BIN sdk/examples/cube/main.c
 python3 sdk/tools/build_app.py --keep sdk/examples/minesweeper/build -o $D/MINES.BIN sdk/examples/minesweeper/main.c
 mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN $D/CUBE.BIN $D/MINES.BIN ::homebrew/
+python3 sdk/tools/build_app.py --keep sdk/loader/test_apps/big/build -o $D/BIG.BIN sdk/loader/test_apps/big/main.c
+python3 -c "d=open('$D/BIG.BIN','rb').read(); open('$D/TOOBIG.BIN','wb').write(d+bytes(0x100001-len(d)))"
+python3 qemu-machine/tools/build_sdcard.py -o $D/sd_big.img --size-mb 128
+mmd -i $D/sd_big.img@@1M ::homebrew; mcopy -i $D/sd_big.img@@1M $D/BIG.BIN $D/TOOBIG.BIN ::homebrew/
 
 python3 sdk/loader/test_emu.py                                # scripted end-to-end test
 python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bin --sd $D/sdcard.img
@@ -133,6 +151,7 @@ python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bi
 | Card | Flags | Checks |
 |---|---|---|
 | `ABOUT.BIN`, `CUBE.BIN`, `HELLO.BIN`, `MINES.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), CUBE (overlay on, input grabbed, 30 frames/s, taps don't reach the picker underneath, tap toggles wireframe/filled, X exits and restores GR3), MINES (first dig lays 12 mines clear of it, hold/FLAG-mode flags, digging every safe cell wins, a mine loses and freezes, no tap reaches the picker, EXIT key quits without reaching the picker), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
+| `BIG.BIN` (789 KB), `TOOBIG.BIN` (1 MB + 1) | `--big` | only BIG listed; its 768 KB blob arrives whole (markers at start, middle and end, checksum), and its heap checks pass: four 80 KB blocks in bounds and holding their data, an oversize request fails, freed neighbours coalesce, realloc moves and keeps the data, and the heap is whole again at the end ("BIG OK", 2.4 s from tap to dialog) |
 | `A01`–`A16.BIN`, written A09–A16 first | `--paging` | exactly A01–A14 listed (the cap keeps the alphabetically-first 14); page 2 row 2 launches the right app (A06 = about-box), page 3 row 3 too |
 | no `\homebrew` folder | `--expect-no-apps` | placeholder row only; tapping it does nothing |
 | `README.TXT`, a directory `DIR.BIN`, a 0-byte `EMPTY.BIN` | `--expect-no-apps` | all skipped |
@@ -157,8 +176,8 @@ firmware leaves GR3 configured but set to "show the lower layer". So:
   front and back buffers swap.
 - **`hb_gfx_close()`**, which also runs automatically when `main()` returns, puts GR3 back to
   LOWER with its read off (the stock state). It keeps the input grab until the finger lifts.
-- There are two framebuffers, at `0x20640000` and `0x20680000` (`HB_FB0/1`). That RAM was all
-  zero in a live map after boot, between points earlier marker tests showed survive boot.
+- There are two framebuffers, `HB_FB0/1` at `0x20710000` and `0x20750000` (ABI v3; they were
+  at `0x20640000`/`0x20680000` in v2).
 - The drawing is software: clear, rectangle, line and filled triangle, all clipped.
 
 **Touch and keys.** `hb_touch_read()` reads the front-panel register file
@@ -181,9 +200,9 @@ still screenshots pixel-identical to the reference.
 
 - **Graphics on real hardware**: the GR3 overlay and D-cache cleaning follow the Renesas driver
   and ARM rules but are untested on silicon; tearing and frame rate aren't known either. The
-  framebuffer RAM (`0x20640000`–`0x206bffff`) passed the emulator's whole-range marker sweep
-  (2026-09-25, `qemu-machine/tools/ram_marker_sweep.py`): the firmware never wrote any of
-  `0x20601000`–`0x2080afff`. It hasn't been tested on hardware. The dials still reach the radio
+  whole homebrew area (`0x20600000`–`0x207fffff`: app region, framebuffers, heap) passed the
+  emulator's whole-range marker sweep and a static trace (2026-09-25, `notes/memory-map.md`).
+  It hasn't been tested on hardware. The dials still reach the radio
   while an app has input.
 - **Real hardware**: nothing here has run on the radio yet. The cache maintenance before
   jumping into an app in particular is unverified (QEMU models no cache incoherency).

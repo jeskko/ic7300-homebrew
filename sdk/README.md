@@ -65,6 +65,10 @@ for why this whole effort exists.
   a firmware list screen of them (a borrowed stock screen, restored on exit). The scripted
   emulator test `loader/test_emu.py` covers launching, relaunch, paging, the 14-app cap, and
   empty/junk/no-card cases.
+- **Bigger apps** (same day, ABI v3): apps may be 1 MB (code, data, bss, stack) and get a
+  448 KB heap (`hb/heap.h`: `hb_malloc`/`calloc`/`realloc`/`free`), all in RAM the firmware
+  never uses (`notes/memory-map.md`). The loader reads apps in 64 KB chunks.
+  `loader/test_emu.py --big` loads a 789 KB test app and exercises the heap.
 - **`examples/minesweeper/`** (same day): App 3 of `app-requirements.md`, retargeted from Tetris
   to a 10×10 Minesweeper. Tap to dig, hold to flag, EXIT key or X to quit. Drawn as raw raster
   on the GR3 canvas; its README explains why the firmware's GUI components can't express the

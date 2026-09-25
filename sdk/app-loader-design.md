@@ -319,8 +319,8 @@ borrowed dialog); the list below still applies to it unless marked.
   the RTTY decoder, and SD save/load (`notes/memory-map.md`, "RAM above the homebrew loader"). Screen
   capture and voice-TX recording weren't covered live, but were traced statically: all of their
   buffers are fixed or bounded and below `0x205dcf60` (same file, "Screen capture and voice
-  recording"). It hasn't run on hardware. The app region could
-  grow into this range on that evidence; it hasn't been changed yet.
+  recording"). It hasn't run on hardware. **ABI v3 (same day) uses it:** a 1 MB app region,
+  the framebuffers and a 448 KB heap, all in `0x20610000`–`0x207fffff` (`sdk/loader/README.md`).
 - **`RPC_WAIT`'s unbounded wait.** Not a timeout despite the `0x46` argument's name in earlier notes
   (corrected in `notes/kernel-rtos.md`) — a full RPC ring makes it spin forever. Because every
   example's hook runs from `main_idle_loop` (or, for the menu button, whatever UI-tap context calls
@@ -339,7 +339,7 @@ borrowed dialog); the list below still applies to it unless marked.
 - **`APP.BIN` content validation** — partly closed by loader v1: magic, ABI version, entry and RAM
   bounds are checked (a headerless file is refused, tested). No checksum yet, so a truncated or
   corrupted file with a valid header would still run.
-- **App SDK** — started (loader v1: C apps, versioned ABI, 128 KB region, blocking UI calls).
+- **App SDK** — started (loader v1: C apps, versioned ABI, blocking UI calls; ABI v3 2026-09-25: 1 MB region + 448 KB heap).
   Multiple apps are done too (`\homebrew\*.BIN` + a picker, at most 14). Not yet done:
   per-app metadata (display name, icon, version) beyond the file name.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for

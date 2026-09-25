@@ -1,8 +1,9 @@
 /* Homebrew app API.
  *
  * An app is a plain C program: write `int main(void)`, build it with sdk/tools/build_app.py,
- * drop the resulting APP.BIN in C:\IC-7300\ on the SD card, and start it from
- * MENU > SET > SD Card > Homebrew Apps.
+ * drop the resulting NAME.BIN in C:\homebrew\ on the SD card, and start it from
+ * MENU > SET > SD Card > Homebrew Apps. It may be up to 1 MB including bss and stack, and
+ * hb/heap.h gives it another 448 KB of dynamic memory.
  *
  * main() runs on the radio's UI thread, but on its own stack (a coroutine), so calls that
  * wait -- ui_message_box(), hb_wait_until() -- really do block *your* code while the radio keeps

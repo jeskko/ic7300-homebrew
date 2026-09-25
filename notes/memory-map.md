@@ -208,7 +208,7 @@ scenario step and diffs it against the previous dump. Any write, zeroing include
   - SD Save Setting and Load Setting.
 - **Positive control:** the SDK apps (CUBE, MINES) are launched in the same run. Their writes
   show up exactly where expected, in the app region and both framebuffers
-  (`0x20640000`–`0x206bfbff`), so the harness does catch writes.
+  (`0x20640000`–`0x206bfbff` at the time, ABI v2), so the harness does catch writes.
 - **Not covered live:**
   - Screen capture: a POWER tap doesn't trigger it in the emulator.
   - Voice TX memory recording: the scenario's taps didn't start it.

@@ -1,4 +1,4 @@
-/* Homebrew loader <-> app ABI (v1).
+/* Homebrew loader <-> app ABI (v3).
  *
  * The loader (sdk/loader/, flashed once as part of a modified body.bin) reads APP.BIN from the
  * SD card into HB_APP_REGION, checks its header, and calls header->entry(api) on the UI thread
@@ -19,18 +19,26 @@
 #ifndef HB_ABI_H
 #define HB_ABI_H
 
-#define HB_ABI_VERSION      2u      /* v2: + input_grab (v1 apps must be rebuilt) */
+#define HB_ABI_VERSION      3u      /* v3: 1 MB region, framebuffers moved, app heap */
 #define HB_APP_MAGIC        0x31304248u     /* "HB01" */
 
-/* RAM the app image (code + data + bss + stack) must fit in. Sits inside the region confirmed
- * safe from the runtime allocator by marker tests (sdk/app-loader-design.md). */
+/* The homebrew RAM map (v3). 0x20600000-0x207fffff is ordinary cached, executable RAM that
+ * the firmware never uses: its own RAM ends with the mode stacks at 0x205dcf60, and a marker
+ * sweep plus a static trace found nothing of it above that (notes/memory-map.md). The loader
+ * itself sits at 0x20600000.
+ *
+ *   0x20610000  HB_APP_REGION   1 MB: the app image (code + data + bss + stack)
+ *   0x20710000  HB_FB0          two 480x272 RGB565 framebuffers for sdk/runtime/gfx.c
+ *   0x20750000  HB_FB1
+ *   0x20790000  HB_HEAP         448 KB: hb_malloc() (sdk/runtime/heap.c)
+ *   0x20800000  HB_HEAP_END     (above: execute-never, then firmware page tables and GPU RAM)
+ */
 #define HB_APP_REGION       0x20610000u
-#define HB_APP_REGION_SIZE  0x00020000u     /* 128 KB */
-
-/* Two 480x272 RGB565 framebuffers for sdk/runtime/gfx.c, in the same region: all zero in a
- * live RAM map after boot, between points marker tests showed survive a full boot. */
-#define HB_FB0              0x20640000u
-#define HB_FB1              0x20680000u
+#define HB_APP_REGION_SIZE  0x00100000u     /* 1 MB */
+#define HB_FB0              0x20710000u
+#define HB_FB1              0x20750000u     /* each 480*272*2 = 0x3fc00 bytes */
+#define HB_HEAP             0x20790000u
+#define HB_HEAP_END         0x20800000u
 
 /* Firmware build the loader was built for -- the runtime refuses to run against any other,
  * since hb/firmware.h's addresses are only valid for this one. */

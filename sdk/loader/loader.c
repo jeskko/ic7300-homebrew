@@ -56,17 +56,42 @@ static void cache_sync(uint32_t start, uint32_t len)
     __asm__ volatile("mcr p15, 0, %0, c7, c5, 6\n\tdsb\n\tisb" :: "r"(0) : "memory");
 }
 
+/* Read the whole file into HB_APP_REGION in chunks, so no single file RPC has to move up to
+ * 1 MB. Returns the length, or -1 on an error or a file bigger than the region. */
+#define READ_CHUNK          0x10000u
+
+static uint8_t g_probe;
+
 static int32_t load_file(const char *path)
 {
     if (fw_rpc_wait(fw_file_open(path, 0, &g_handle, g_scratch), FW_RPC_ERR_SELECT) != 0)
         return -1;
-    g_read_actual = 0;
-    int rc = fw_rpc_wait(fw_file_read(g_handle, (void *)HB_APP_REGION, HB_APP_REGION_SIZE,
-                                      &g_read_actual), FW_RPC_ERR_SELECT);
+    uint32_t total = 0;
+    int32_t result = -1;
+    for (;;) {
+        uint32_t want = HB_APP_REGION_SIZE - total;
+        if (want > READ_CHUNK)
+            want = READ_CHUNK;
+        if (want == 0) {                /* region full: anything left means too big */
+            g_read_actual = 0;
+            if (fw_rpc_wait(fw_file_read(g_handle, &g_probe, 1, &g_read_actual),
+                            FW_RPC_ERR_SELECT) == 0 && g_read_actual == 0)
+                result = (int32_t)total;
+            break;
+        }
+        g_read_actual = 0;
+        if (fw_rpc_wait(fw_file_read(g_handle, (void *)(HB_APP_REGION + total), want,
+                                     &g_read_actual), FW_RPC_ERR_SELECT) != 0 ||
+            g_read_actual < 0)          /* negative errno, per the wrapper */
+            break;
+        total += (uint32_t)g_read_actual;
+        if ((uint32_t)g_read_actual < want) {           /* short read: end of file */
+            result = (int32_t)total;
+            break;
+        }
+    }
     fw_rpc_wait(fw_file_close(g_handle, 0), FW_RPC_ERR_SELECT);
-    if (rc != 0)
-        return -1;
-    return g_read_actual;   /* negative errno on failure, per the wrapper */
+    return result;
 }
 
 static void run_app(const char *path)

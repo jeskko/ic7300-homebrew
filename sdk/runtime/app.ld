@@ -1,6 +1,6 @@
 /* APP.BIN layout: header first, then code/data; bss and the app stack follow, not stored in
  * the file. Everything must fit in HB_APP_REGION (sdk/include/hb/abi.h). */
-MEMORY { APP (rwx) : ORIGIN = 0x20610000, LENGTH = 128K }
+MEMORY { APP (rwx) : ORIGIN = 0x20610000, LENGTH = 1M }
 
 ENTRY(_hb_start)
 

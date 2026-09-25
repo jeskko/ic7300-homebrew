@@ -46,7 +46,7 @@ CURRENT_SCREEN = 0x203de17f
 SAVED_CURSOR = 0x203de4cc + 0x288 + 0x40 * 4    # the borrowed category's saved cursor
 ROW_Y = (55, 117, 180, 240)
 GR3 = 0xfcff7780
-FB = (0x20640000, 0x20680000)
+FB = (0x20710000, 0x20750000)           # HB_FB0/1 (hb/abi.h, v3)
 CUBE_BG = 0x0863                        # HB_RGB(10, 12, 24)
 OK_BUTTON = (357, 192)
 
@@ -279,6 +279,10 @@ def main() -> None:
                     help=r"the card has no \homebrew\*.BIN: expect the placeholder row")
     ap.add_argument("--expect-rows", help="comma-separated labels the picker must show; "
                     "then only checks back/restore")
+    ap.add_argument("--big", action="store_true",
+                    help=r"the card has \homebrew\BIG.BIN (sdk/loader/test_apps/big: a ~770 KB "
+                         r"image and a heap workout) and TOOBIG.BIN (0x100001 bytes): expect "
+                         "only BIG listed, and its 'BIG OK' dialog")
     ap.add_argument("--paging", action="store_true",
                     help=r"the card has \homebrew\A01..A16.BIN, A06 = about-box, the rest "
                          "hello-gui: expect A01..A14, and page 2 row 2 to launch about-box")
@@ -329,6 +333,21 @@ def main() -> None:
         elif args.expect_rows:
             want = [r.encode() for r in args.expect_rows.split(",")]
             check(labels == want, f"lists {want}")
+        elif args.big:
+            check(labels == [b"BIG"], "lists BIG, not TOOBIG (1 MB + 1 byte, over the region)")
+            rt = nm(HERE / "test_apps" / "big" / "build" / "app.elf")
+            t0 = time.time()
+            emu.touch(150, ROW_Y[0], 0.2)
+            while emu.read(DIALOG_STATE, 1)[0] != 0x66 and time.time() - t0 < 30:
+                time.sleep(0.5)
+            print(f"     dialog up {time.time() - t0:.1f} s after the tap (load + test)")
+            emu.shot("big-dialog")
+            step = struct.unpack("<i", emu.read(rt["g_fail_step"], 4))[0]
+            check(step == 0, f"image and heap checks passed (g_fail_step = {step})")
+            check(emu.cstr(emu.word(OK_RECORD + 4)) == b"BIG OK", "  ...and it says BIG OK")
+            emu.touch(*OK_BUTTON, 2.0)
+            check(emu.read(rt["g_app_done"], 1)[0] == 1 and emu.word(api + 8) == 0,
+                  "main() returned, app gone")
         elif args.paging:
             want = [b"A%02d" % i for i in range(1, 15)]
             check(labels == want, "lists the alphabetically-first 14 of 16 apps")
