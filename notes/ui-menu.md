@@ -193,7 +193,13 @@ Extending the list is cheap, though, because the count and the list pointer are 
   as Format), en = jp = "Homebrew Apps"}`. N is neither 5 nor 7, so `settings_item_diode_region_gate`
   always includes it.
 
-Not yet tested live.
+**Live-tested, 2026-09-25** — see `sdk/examples/homebrew-apps-menu/`: this exact patch, built and
+booted in `qemu-machine`, driven through the real touchscreen UI. The SD CARD menu genuinely shows
+3 pages (stock is 2), page 3 shows one correctly-labeled "Homebrew Apps" row with no rendering
+glitches, and tapping it runs the action with no crash, no navigation side effect, and the radio
+fully responsive to CI-V afterward. Confirms every claim in this section (the count/list-pointer
+patch, the new catalog record, the padding-gap placement, the `bx`-with-no-arguments action
+convention) against real behavior, not just static reading.
 
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the

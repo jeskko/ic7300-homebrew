@@ -134,10 +134,17 @@ than guessing (`sdk/api/filesystem.md` has the confirmed command IDs). Live-veri
 separate `APP.BIN` file loaded from the card emits its own distinct CI-V frame (proving it genuinely ran),
 the radio resumes normally, and a missing file fails closed with no crash or hang. This is Phase 3's own
 "trivial do-nothing/blink-something-obvious app loaded from SD card" milestone, reached the same day as
-Phase 2's own hook — see that phase's text below, now satisfied rather than still pending. What's left:
-a real "Homebrew Apps" menu button (both examples still trigger via a hidden front-panel key combo, not a
-real menu item) and a real app SDK beyond "load and call one fixed file" — tracked as open items in
-`app-loader-design.md`.
+Phase 2's own hook — see that phase's text below, now satisfied rather than still pending.
+
+**Same day, the real "Homebrew Apps" menu button also built and live-tested** — see
+`sdk/examples/homebrew-apps-menu/`. Traced the real SET-menu list engine (`notes/ui-menu.md`) and found the
+SD CARD menu's item count and item list are both plain data — two data patches (no instruction touched)
+add a genuine, correctly-labeled "Homebrew Apps" row, live-verified through the real touchscreen UI
+(screenshots in that example's README): MENU → SET → SD Card now shows 3 pages instead of 2, and tapping
+the new row loads and runs `APP.BIN` from the SD card exactly like `sd-card-app` does. This closes out both
+halves of the user's original ask — a place to run apps from the SD card, and a way to put a homebrew apps
+button in the menu — as real, live-tested mechanisms. What's left: a real app SDK beyond "load and call one
+fixed file" — tracked as an open item in `app-loader-design.md`.
 
 Concrete open design questions, needing a firm answer before writing the loader itself:
 - **Where does the loader hook in?** Candidates already surfaced by this project's own RTOS work: a

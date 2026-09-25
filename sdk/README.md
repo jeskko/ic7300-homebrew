@@ -42,8 +42,12 @@ for why this whole effort exists.
   real, separate `APP.BIN` file loaded fresh from the SD card at runtime and executed, using file-I/O
   wrapper functions found and confirmed via `firmware_update_main`'s own real code (`sdk/api/filesystem.md`
   has the confirmed command IDs). This is the actual "install an app = drop a file on the SD card, no
-  reflash" mechanism the project's whole reframing was built around — proven, not just designed. A real
-  menu-button trigger (both examples still use a hidden key combo) is the next increment, not yet built.
+  reflash" mechanism the project's whole reframing was built around — proven, not just designed.
+- **`examples/homebrew-apps-menu/`** — same day, the real menu-button trigger the other two examples
+  lacked: two *data* patches (no instruction touched) add a genuine, correctly-labeled "Homebrew Apps" row
+  to the real SD CARD menu, live-verified through the real touchscreen UI (screenshots in its README) —
+  MENU → SET → SD Card now shows 3 pages instead of 2, and tapping the new row runs `APP.BIN` from the SD
+  card exactly like `sd-card-app` does. This closes out both halves of the user's original ask.
 
 ## Expected growth
 

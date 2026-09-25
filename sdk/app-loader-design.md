@@ -20,9 +20,22 @@ code (`0xf`=open/`0x11`=read/`0x13`=seek/`0x10`=close, full detail in `sdk/api/f
 a real, separate `APP.BIN` file loaded from the SD card at runtime emits its own distinct CI-V frame (proving
 it genuinely ran, not the firmware hook itself), the radio resumes normally afterward, and — tested
 separately — a missing `APP.BIN` fails closed with no frame, no hang, no crash. This is the actual "install
-an app = drop a file on the SD card, no reflash" mechanism this whole design has been aiming at. What's left
-of the original goal: a real "Homebrew Apps" menu button (still a hidden key combo today) and everything a
-real app SDK needs beyond "load and call one file" (multiple apps, a real memory/size budget, versioning).
+an app = drop a file on the SD card, no reflash" mechanism this whole design has been aiming at.
+
+**2026-09-25, sixth pass — the real "Homebrew Apps" menu button also WORKING, LIVE-TESTED.**
+`sdk/examples/homebrew-apps-menu/` replaces the hidden key combo with a genuine, visible row in the real
+SD CARD menu, driven through the actual touchscreen UI (screenshots in that example's README) rather than
+CI-V alone: MENU → SET → SD Card now shows 3 pages instead of 2, page 3 has one correctly-labeled
+"Homebrew Apps" row, and tapping it loads and runs `APP.BIN` from the SD card exactly like `sd-card-app`
+does — same CI-V frame, same clean resume, same fail-closed behavior with no `APP.BIN` present. Found by
+tracing the real settings-list engine (`notes/ui-menu.md`'s "SET-style settings-list engine" section) —
+two *data* patches (an item count and a list pointer, plus one new catalog record in a confirmed-unused
+padding gap), no instruction touched at all, unlike the other two examples' `main_idle_loop` retarget. This
+closes out the user's original two-part ask (a place to run apps from SD card, and a way to put a homebrew
+apps button in the menu) — both are now real, live-tested mechanisms, not just designs.
+
+What's left: everything a real app SDK needs beyond "load and call one fixed file" (multiple apps, a real
+memory/size budget, versioning, an app-picker UI if more than one app is ever installed at once).
 
 **2026-09-25, second pass**: an Opus fresh-eyes investigation (dispatched from this design's first draft)
 resolved both blocking open questions from the first pass — the CI-V staging cookbook, and the real
@@ -162,25 +175,30 @@ design: the app stages `[to][from][cmd][payload...][0xFD]` at `rxbuf+0x66` (`rxb
 ready flag `rxbuf[0xca] = 1`, then sets `drv |= 0x40` last (`drv = 0x20390039`) — the exact sequence a real
 command handler follows, just with an arbitrary payload instead of a real command's own reply data.
 
-## A real "Homebrew Apps" menu button — a concrete, previously-unknown lead
+## A real "Homebrew Apps" menu button — DONE, live-tested
 
-> **Update 2026-09-25**: this is now traced; see `notes/ui-menu.md` ("SET-style settings-list engine") and
-> the open item below. The record layout quoted in this section is off by one field group. The real
-> layout is `{action, query, flags, en, jp}` at base `0x2018ed48`.
+> **2026-09-25**: fully traced and built — see `notes/ui-menu.md` ("SET-style settings-list engine") for the
+> real mechanism and `sdk/examples/homebrew-apps-menu/` for the working, live-tested result. The record
+> layout this section originally guessed was off by one field group; the real layout is `{action, query,
+> flags, en, jp}` at base `0x2018ed48` (`g_settings_item_catalog`).
 
-The tap-to-post trace surfaced the actual mechanism a menu item like "Firmware Update" uses: a
-**previously undocumented 20-byte item-record table** around `0x2018eebc` (`{en_label, jp_label,
-cb_action, cb_query, flags}`, Save/Load Setting, Format, Unmount, REC Start/Stop, Play Files, CI-V Address
-and more as siblings, stride `0x14`) — a real, different table from the already-known 72-byte generic list
-widget (`0x2018f0ec`) `notes/ui-menu.md` documents for QUICK MENU/MEMORY MENU/etc. **Not yet traced**: what
-widget code actually reads this table (how many records it renders, whether the count is a fixed constant
-or scans for a terminator) — the load-bearing question for whether a genuinely new, visible row can be
-added the same low-risk way the dead case IDs/states can (repurpose an existing, already-counted-but-dead
-slot, if one exists) versus needing to understand and extend the render/count logic itself. Real next step
-for the *menu button* half of the user's ask, separate from — and not blocking — the CI-V hello-world
-proof of concept, which doesn't need a visible menu entry at all for its first trigger (see below).
+The real mechanism: every SET-tree list screen (SD CARD among them) is driven by a per-category item list
+(`g_settings_category_registry`, `0x201993e0`) indexing a shared 20-byte-record catalog
+(`g_settings_item_catalog`, `0x2018ed48`, `{action, query, flags, en, jp}`) — a different table from the
+already-known 72-byte generic list widget (`0x2018f0ec`) `notes/ui-menu.md` documents for QUICK MENU/MEMORY
+MENU/etc. Tapping a catalog-backed row tail-calls `catalog[val].action` with no arguments. The SD CARD
+menu's own registry entry has exactly 8 real items and no dead slot — but the item count and the list
+pointer are both plain data, and there's a confirmed-unused padding gap right after the registry table to
+put a new catalog record in. `sdk/examples/homebrew-apps-menu/` patches both (no instruction touched at
+all) and is live-verified through the real touchscreen UI: MENU → SET → SD Card genuinely shows 3 pages
+instead of 2, with a correctly-labeled "Homebrew Apps" row on the new page that loads and runs `APP.BIN`
+from the SD card exactly like `sd-card-app` does.
 
 ## Trigger for the first proof of concept
+
+Historical: this section covers the trigger choice for `civ-hello-world`/`sd-card-app` specifically, made
+before the real menu button (above) existed. Kept for context on why a hidden combo was the right call for
+*those* two examples' own scope — `homebrew-apps-menu` is the real trigger now, for anything that wants one.
 
 Doesn't need to be the real menu button (that's the separable lead above). Cheapest, lowest-ambiguity
 options, either wired into the same hook location chosen above:
@@ -194,33 +212,26 @@ options, either wired into the same hook location chosen above:
 Pick one when writing the actual hook code; both are equally valid for a first test and neither blocks the
 other design pieces above.
 
-## Open items (as of 2026-09-25, fifth pass)
+## Open items (as of 2026-09-25, sixth pass)
 
-- **The `-icount` hang.** Both `civ-hello-world` and `sd-card-app` reliably hang under this machine's usual
-  `-icount` timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not
-  root-caused — worth a real look before trusting any future hook-based test under `-icount`, and before
-  assuming this class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be
+- **The `-icount` hang.** All three examples (`civ-hello-world`, `sd-card-app`,
+  `homebrew-apps-menu`) reliably hang under this machine's usual `-icount` timing (`--fast`
+  included); plain unthrottled execution works correctly and repeatably. Not root-caused — worth a
+  real look before trusting any future hook-based test under `-icount`, and before assuming this
+  class of hook is safe on real hardware (which has no `-icount` equivalent, so may just be
   unaffected, but that's an assumption, not a confirmed fact).
 - **The full extent of the "unsafe past static image end" region** — confirmed unsafe at `0x20395b18` and
   `0x20500000` (progressively, not instantly), confirmed safe at `0x20600000` and several points above it
   after a full boot. The exact boundary between unsafe and safe, and whether "safe so far in these tests"
   could still be consumed by heavier runtime activity (e.g. BMP capture, voice recording, other large
   buffer allocations this project already knows exist) over a longer running session, is not established.
-- **A real app SDK beyond "load and call one fixed file"** — `sd-card-app`'s loader has a fixed path, a
+- **A real app SDK beyond "load and call one fixed file"** — every example's loader has a fixed path, a
   fixed 32 KB size cap, and no versioning/multi-app story. Real next-layer design work, not yet started.
-- **A real "Homebrew Apps" row: the static analysis is done; it needs an implementation and a live test.**
-  The render, count and tap logic is traced in `notes/ui-menu.md` ("SET-style settings-list engine"). There
-  is no dead slot in the SD CARD list (category 0x18, 8 real items), but the count is plain registry data.
-  The minimal patch is:
-  - `registry[0x18]` at `0x20199500`: count 9, list pointer → a new 9-entry list with an extra `(3, N)`
-  - one 20-byte `{action, 0, 0x00010700, en, jp}` catalog record at `0x2018ed48 + N*20` in the unused
-    padding `0x20199758`–`0x201998cc` (e.g. `0x2019975c`, N = 0x881)
-
-  The action is reached by `bx` with no arguments.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.
 - Closed, checked negative: the `0x2019b70c` SD-UI state table has no dead/unused entry — don't re-sweep it.
 - Closed, superseded: the `ram_placeholder` execute-permission question — moot, see above.
+- Closed, live-tested: the real "Homebrew Apps" menu button — see `sdk/examples/homebrew-apps-menu/`.
 - Closed, confirmed: `file_rpc_post_command`'s open/read/seek/close command IDs (`0xf`/`0x11`/`0x13`/`0x10`)
   — see `sdk/api/filesystem.md` and `sdk/examples/sd-card-app/`.
