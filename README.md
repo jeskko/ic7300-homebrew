@@ -10,6 +10,11 @@ Nothing under `/data/misc/icom/7300/` is ever modified — this repo holds
 our own notes, tooling, and (once created) a fresh Ghidra project, informed
 by but not built on top of the prior work there.
 
+**Scope**: this is hobbyist reverse-engineering and firmware modding of the user's own, physically-owned
+IC-7300 — the same category as OpenWRT-style router re-flashing or game-console homebrew. The exact model
+researched here has no built-in network interface at all (USB/serial only), and has since been superseded
+on the market by the IC-7300MK2 (announced 2025), which is the current model in Icom's lineup.
+
 ## Ultimate goal
 
 **Stated 2026-08-30**: beyond documentation for its own sake, the end goal is the ability to write and

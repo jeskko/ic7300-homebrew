@@ -19,10 +19,14 @@ tools/fp.py press MENU`.
 FRONT_PANEL_HELP below is printed after start (see that string for the key map).
 
 Usage: run_gui.py [--display gtk|sdl|none] [--screendump out.ppm --after 170]
-                   [--fast | --icount SPEC] [--no-pwrk] [--civ PATH]
+                   [--flash PATH] [--fast | --icount SPEC] [--no-pwrk] [--civ PATH]
                    [--no-audio] [--tone HZ:LEVEL] [--noise LEVEL]
                    [--af N] [--rfsql N] [--fpga-sweep-hz N] [--fpga-signals SPEC]
                    [--no-mouse] [--no-keys] [--debug DEVS] [--log PATH]
+
+--flash lets you boot a custom-built flash image (e.g. one of sdk/examples/*/build.py's
+output containers, run through build_flash.py) instead of overwriting the default
+qemu-machine/flash.bin. See sdk/examples/*/README.md for the full build-then-run recipe.
 """
 
 from __future__ import annotations
@@ -59,6 +63,10 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--display", default="gtk")
+    ap.add_argument("--flash", type=Path,
+                     help="boot this flash image instead of the default qemu-machine/flash.bin "
+                          "(build one with qemu-machine/tools/build_flash.py from a repacked "
+                          "container, e.g. an sdk/examples/*/build.py output)")
     ap.add_argument("--screendump")
     ap.add_argument("--after", type=float, default=170.0)
     ap.add_argument("--fast", action="store_true",
@@ -102,6 +110,10 @@ def main():
     if args.fast and args.icount:
         ap.error("--fast and --icount are mutually exclusive")
 
+    flash = args.flash.resolve() if args.flash else FLASH
+    if not flash.exists():
+        ap.error(f"--flash {flash}: file not found")
+
     if args.fast:
         icount = "shift=1,sleep=off"
     elif args.icount:
@@ -138,7 +150,7 @@ def main():
 
     image = HERE / ("riic2_eeprom.img" if args.no_pwrk else "riic2_eeprom_pwrk_test.img")
     qemu_args = [
-        str(QEMU), "-M", "rz-a1h", "-display", args.display, "-kernel", str(FLASH),
+        str(QEMU), "-M", "rz-a1h", "-display", args.display, "-kernel", str(flash),
         "-monitor", "none",
         "-global", f"rza1h-riic.image={image}",
         "-qmp", f"unix:{sock},server,nowait",
@@ -154,6 +166,9 @@ def main():
                        "-serial", "chardev:civ"]
     else:
         qemu_args += ["-serial", "none"]
+
+    if args.flash:
+        print(f"booting custom flash image: {flash}")
 
     stderr = open(args.log, "w") if args.debug else subprocess.DEVNULL
     proc = subprocess.Popen(qemu_args, stdin=subprocess.DEVNULL, stderr=stderr, env=env)
