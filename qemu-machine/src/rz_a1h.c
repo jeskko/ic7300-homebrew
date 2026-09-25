@@ -476,6 +476,8 @@ static void rza1h_init(MachineState *machine)
      * Overlap-mapped inside "io-e8200000"; no IRQs (the firmware polls DMAC CHSTAT). */
     {
         DeviceState *ssif = qdev_new(TYPE_RZA1H_SSIF);
+        /* /machine/ssif: the stimulus-file/tone properties are set over QMP there. */
+        object_property_add_child(OBJECT(machine), "ssif", OBJECT(ssif));
         sysbus_realize_and_unref(SYS_BUS_DEVICE(ssif), &error_fatal);
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(ssif), 0, RZA1H_SSIF_BASE, 0);
     }

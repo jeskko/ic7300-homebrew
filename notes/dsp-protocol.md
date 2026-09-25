@@ -356,6 +356,13 @@ the dmac.c streaming channels implement the list above; details and knobs are in
 `qemu-machine/README.md` ("the DSP audio link streams"). A 1000 Hz DX_REC L tone arrives at
 exactly 1000 Hz in both the 48 kHz ring and the 8 kHz recorder staging.
 
+**Stimulus files (2026-09-25) ✅:** the fake DSP can instead play an audio file (.au/WAV, 16-bit,
+resampled to 96 kHz) into any RX slot: DX_REC L/R and DX_FMT L/R. Set it with `RZA1H_AF_FILE` etc.
+at boot, or at runtime with `qom-set /machine/ssif af-file`. The file arrives in the 48 kHz
+ring sample-accurately at unity gain (`tools/audio_stimulus_check.py`, ncc ≥ 0.989; the limit
+is the 0.01 FS noise floor). Knobs: `qemu-machine/README.md`. Next: feed the CW/FT8/SSTV test
+files into DX_FMT and see which of its two readers (FUN_20020e18, FUN_200635ec) reacts.
+
 ## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
 
 `qemu-machine/tools/civ_dsp_sweep.py` boots the emulator with SCIF0 (CI-V) on a socket, sends one

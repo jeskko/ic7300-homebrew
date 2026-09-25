@@ -5,6 +5,7 @@ only the current-state summary (confirmed facts, the peripheral status table, an
 resume point). Sections below are in the order they happened. Addresses, register values, hex
 offsets, function names, and cross-references are preserved verbatim from the original notes.
 
+
 ## First pass — the migration's motivating question, and the real off-by-32 GIC bug
 
 **The migration's actual motivating question is now answered, with a real bug found and
@@ -8613,3 +8614,19 @@ spot-check.
 7. **SD-card/VFS testing (`sdk/roadmap.md`'s Phase 0 payoff)** — `body.bin`'s own MMCIF driver
    has still never been reached by any traced boot path; reaching it (e.g. via the SD-update
    flow) remains the actual Phase-0 payoff. Full derivation of every step in README-history.md.
+
+## Audio stimulus files from the fake DSP (2026-09-25)
+
+`ssif.c` gained file-backed sources, knobs in README.md. The live check is
+`tools/audio_stimulus_check.py`. It does a PWRK boot, arms the file on DX_REC L (env or
+`qom-set`), snapshots the firmware's 48 kHz ring 0x203fbdc0 over QMP (8 × 36 int16;
+`ssif0_rx_pump_dx_rec` 0x20060614 keeps every 2nd frame's top 16 bits), and matches each block
+against the file resampled to 48 kHz with scipy's `resample_poly`.
+- `CW.test.au` (12 kHz), armed from env at boot: `playing` logged at vt 0.604 s, right at SSIF0
+  REN. Keyed blocks: ncc 0.9992–0.9996, amplitude ratio 1.00–1.03. The offsets aren't
+  consecutive because the steady tone matches at many places.
+- Band-limited (15 kHz) noise, 44.1 kHz stereo WAV, gain 0.5, armed by qom-set after boot:
+  every block ncc 0.989–0.998, amplitude 0.96–1.04. The expected ceiling with the 0.01 FS noise
+  floor at rms ≈ 0.06 is ≈ 0.995. The 8 blocks of each snapshot are consecutive, 0.75 ms apart
+  in the file, with the ring's wrap visible. Their position (0.98 s, 1.84 s, 2.68 s) matches
+  `af-status` (1.0, 1.8, 2.7 s).

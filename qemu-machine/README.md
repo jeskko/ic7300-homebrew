@@ -36,6 +36,23 @@ Measured with `tools/bench_boot.py`.
   state, class-tagged replies, identity replies, realistic 2-frame latency) and audio over
   SSIF0/1 (`src/ssif.c` — 96 kHz I2S; a synthetic tone reaches the firmware's own RX-audio ring
   at the right frequency and level). Spec: `notes/dsp-protocol.md`.
+- **The fake DSP plays audio stimulus files** (`src/ssif.c`, 2026-09-25) into any RX slot,
+  replacing the tone: `af` = DX_REC L (RX audio: audio FFT, QSO recorder), `mic` = DX_REC R,
+  `fmt` = DX_FMT L (demod output, read by the decoders), `fmt-r` = DX_FMT R. Formats: Sun .au or
+  WAV, 16-bit PCM, any rate up to 96 kHz, first channel of several. Resampled to 96 kHz with a
+  16-tap windowed sinc (passband 0.45 of the file's rate). Samples: `scratch/samples/*.test.au`
+  (CW, FT8, SSTV; 12 kHz mono).
+  - Boot: `RZA1H_AF_FILE="path[,gain=G][,delay=S][,loop]"`, likewise `RZA1H_MIC_FILE`,
+    `RZA1H_FMT_FILE`, `RZA1H_FMT_R_FILE`. fmt follows af unless it's set itself. A file starts S
+    seconds of link time after it's armed, then plays once (silence after) or loops. The noise
+    floor (`RZA1H_AF_NOISE`, 0.01) stays on.
+  - Runtime, QMP on `/machine/ssif`: `qom-set` `af-file` (same syntax; re-setting restarts it,
+    `none` clears it and brings the tone back), `af-tone` (`hz:level`), and read-only `af-status`
+    (`waiting 1.0 s`, `playing 12.4/21.8 s (looped)`, `done`, `tone`, `off`). The same for
+    `mic-`, `fmt-` and `fmt-r-`. A device reset rewinds files but keeps the settings.
+  - Verified with `tools/audio_stimulus_check.py FILE [--runtime] [--gain G]`: the file arrives in
+    the 48 kHz ring sample-accurately at unity gain (details in README-history.md). Not checked
+    yet: whether the DX_FMT decoders decode anything.
 - **The SD card slot works** (`src/sdhi.c`, 2026-09-25): `body.bin` drives the card through
   **SDHI0** (`0xE804E000`, Renesas' SD driver library), not MMCIF — that's why the old `mmc.c`
   was never touched. The card is upstream QEMU's `sd-card` on the SDHI's SD bus
@@ -102,7 +119,7 @@ Older status entries and the full session-by-session narrative: [README-history.
 | SCIF0-7 (UART) | `scif.c` | Real TX (baud-rate-accurate pacing) with per-channel level-triggered TXI; real RXI backing two virtual responders — a front-panel one on channel 3, a DSP-link one on channel 5. Per-channel bus logger: `RZA1H_DEBUG=scif<N>` |
 | IF-DSP behind SCIF5 | `fake_dsp.c` | Behavioural model built from the DSP's own code: per-opcode state, the 7 class-tagged TX slots, identity replies from the version tags, realistic 2-frame command latency. `RZA1H_DEBUG=dsp` |
 | FPGA behind RSPI2 | `fake_fpga.c` | Behavioural model of the band-scope sweep protocol: 7-byte register file, 475-sample sweep reply, sweep-rate knobs (`RZA1H_FPGA_SWEEP_HZ`/`_FLOOR`/`_SIGNALS`). `RZA1H_DEBUG=fpga` |
-| SSIF0/1 (DSP audio, I2S) | `ssif.c` | Real register model (SSISR.IIRQ, FIFO data regs); RX content is the fake DSP's synthetic tone/noise, TX (DR_AF) logged as peak levels. `RZA1H_DEBUG=ssif` |
+| SSIF0/1 (DSP audio, I2S) | `ssif.c` | Real register model (SSISR.IIRQ, FIFO data regs); RX content is the fake DSP's synthetic tone/noise or a stimulus file (`RZA1H_AF_FILE`, QOM `/machine/ssif`), TX (DR_AF) logged as peak levels. `RZA1H_DEBUG=ssif` |
 | RX-8803LC RTC | `rx8803.c` | Real RIIC1 I2C slave; backs `body.bin`'s live idle-state RTC traffic |
 | SPIBSC0 + boot flash | `spibsc.c` | XIP ROM plus manual SPI mode: WREN/RDSR/WRSR/RDID/read/page program/4K,64K,chip erase on an EN25Q64 model; optional save-file |
 | WDT | `wdt.c` | Keyed WTCSR/WTCNT/WRCSR, overflow → system reset with RSTE, WOVF survives the reset |
