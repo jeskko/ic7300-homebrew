@@ -8,6 +8,8 @@
  *   hb_idle_hook   -- replaces main_idle_loop's `bl civ_tx_pump`: runs civ_tx_pump as before,
  *                     puts the borrowed screen back once the picker is left, then runs the
  *                     resident app's idle_hook, if it set one (see hb/abi.h).
+ *   hb_input_hook  -- replaces main_idle_loop's `bl ui_input_poll_tick`: runs it as before
+ *                     unless the resident app has grabbed input (api->input_grab).
  *
  * The picker. The firmware has no free list screen, so we borrow PLAYER SET (screen 0x63,
  * category 0x40, one stock row, deep in the voice-recorder menus): while the picker is up, its
@@ -32,6 +34,7 @@ static struct hb_loader_api g_api = {
     .abi_version = HB_ABI_VERSION,
     .fw_build = HB_FW_142,
     .idle_hook = 0,
+    .input_grab = 0,
 };
 
 static uint32_t g_scratch[9];           /* the open RPCs' 36-byte scratch argument */
@@ -263,4 +266,19 @@ void hb_idle_hook(void)
     void (*hook)(void) = g_api.idle_hook;
     if (hook)
         hook();
+    else
+        g_api.input_grab = 0;           /* no app, no grab -- whatever the app left behind */
+}
+
+void hb_input_hook(void)
+{
+    if (!g_api.input_grab) {
+        fw_ui_input_poll_tick();
+        return;
+    }
+    /* Grabbed: the firmware sees no touch or key activity. Keep the key scanner's shadow
+     * equal to the live bits, so keys held or released meanwhile don't turn into presses
+     * once the grab ends. */
+    for (int k = FW_FP_KEYS_FIRST; k <= FW_FP_KEYS_LAST; k++)
+        fw_fp_latched[k] = fw_fp_regs[k];
 }

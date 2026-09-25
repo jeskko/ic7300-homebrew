@@ -57,6 +57,10 @@ for why this whole effort exists.
 - **`examples/hello-gui/`** — the first C app and first GUI app: a firmware-drawn "Hello, world!"
   dialog with an OK button; `ui_message_box()` returns after OK, then the app exits.
   **`examples/about-box/`** shows two popups in a row.
+- **Graphics** (same day): `hb/gfx.h` + `hb/input.h`. An app gets a full-screen double-buffered
+  canvas on VDC5 plane GR3, over the radio's own UI, with software drawing, touch input the UI
+  underneath doesn't see, and a ms clock. **`examples/cube/`**, a spinning 3D cube (tap it for
+  wireframe/filled, X to exit), is live-tested at 30 frames/s in the emulator.
 - **Multiple apps** (same day): apps are `\homebrew\*.BIN` on the card, and Homebrew Apps opens
   a firmware list screen of them (a borrowed stock screen, restored on exit). The scripted
   emulator test `loader/test_emu.py` covers launching, relaunch, paging, the 14-app cap, and

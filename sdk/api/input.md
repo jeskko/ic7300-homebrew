@@ -5,6 +5,15 @@ not needed by Apps 1/2/4.
 
 All addresses below verified against the live Ghidra project (`body.bin`) 2026-08-30.
 
+## ✅ Available in the SDK now: touch, with an input grab (2026-09-25)
+
+`hb_touch_read()` (`sdk/include/hb/input.h`) returns touch down/X/Y in screen pixels from the
+front-panel register file. While an app holds the screen (`hb_gfx_open()`), the loader skips the
+firmware's own touch and key handling so the UI underneath doesn't react. Live-tested with
+`sdk/examples/cube/`. Key and dial reads for apps aren't wrapped yet;
+`notes/front-panel-report.md` has the full field and key tables. (The sections below predate
+that file and are superseded by it.)
+
 ## 🔎 Front-panel packet protocol: framing understood, most message types not decoded
 
 Physical link: **SCIF3**, base `0xE8008800`, pins `P6_0`/`P6_1` — a 33-byte packet-framed UART, same

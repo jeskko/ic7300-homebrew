@@ -46,6 +46,47 @@ struct fw_dirent {                      /* 0x34 bytes */
 #define fw_dir_read     FW_FN(0x200bc3e4, int, (int handle, struct fw_dirent *d))
 #define fw_dir_close    FW_FN(0x200bc30c, int, (int handle))
 
+/* ---- Front panel input (notes/front-panel-report.md) -------------------------------------
+ * The RL78 front-panel MCU's 32-byte register file, updated by the SCIF3 RX path on change.
+ * +0x13 touch tag (0 = touching, calibrated pixels), +0x14/+0x16 X/Y BE16 (0..479/0..271),
+ * +0x0d..+0x11 key bits. The key scanner diffs against the latched shadow copy. */
+#define fw_fp_regs              ((volatile uint8_t *)0x203dcab6)
+#define fw_fp_latched           ((volatile uint8_t *)0x203dca96)
+#define FW_FP_TOUCH_TAG         0x13
+#define FW_FP_TOUCH_X           0x14
+#define FW_FP_TOUCH_Y           0x16
+#define FW_FP_KEYS_FIRST        0x0d
+#define FW_FP_KEYS_LAST         0x11
+/* Touch, keys, auto-repeat and long-press ticking, called once per main_idle_loop pass. */
+#define fw_ui_input_poll_tick   FW_FN(0x2002fca8, void, (void))
+
+/* ---- Time ------------------------------------------------------------------------------ */
+/* +1 per RTOS tick in rtos_tick_handler (0x20188084); measured 1 kHz. */
+#define fw_tick_ms              (*(volatile uint32_t *)0x20390a78)
+
+/* ---- VDC5 channel 0 graphics planes (sdk/runtime/gfx.c; RZ/A1H HW manual ch. 35) -------
+ * The firmware draws its UI into GR2 (RGB565 480x272, AB1 DISP_SEL = BLEND); GR0/GR1 are
+ * off and GR3 -- the top of the fixed GR0 < GR1 < GR2 < GR3 stack -- is left at LOWER, i.e.
+ * transparent. Offsets per plane: */
+#define FW_VDC5_GR2             0xfcff7700u
+#define FW_VDC5_GR3             0xfcff7780u
+#define GR_UPDATE   0x00        /* b0 IBUS_VEN, b4 P_VEN, b8 UPDATE; read 1 until applied */
+#define GR_FLM_RD   0x04        /* b0 = read enable */
+#define GR_FLM1     0x08
+#define GR_FLM2     0x0c        /* framebuffer base */
+#define GR_FLM3     0x10        /* [30:16] line stride */
+#define GR_FLM4     0x14
+#define GR_FLM5     0x18        /* [26:16] lines - 1 */
+#define GR_FLM6     0x1c        /* [31:28] format (0 = RGB565), [26:16] width - 1, [12:10] swap */
+#define GR_AB1      0x20        /* [1:0] DISP_SEL: 0 back, 1 lower, 2 current, 3 blend */
+#define GR_AB2      0x24        /* {VS, VW} */
+#define GR_AB3      0x28        /* {HS, HW} */
+#define GR_AB4      0x2c
+#define GR_AB5      0x30
+#define GR_AB6      0x34
+#define GR_AB7      0x38
+#define FW_VDC5_REG(plane, off) (*(volatile uint32_t *)((plane) + (off)))
+
 /* ---- SET-style list screens (notes/ui-menu.md, "SET-style settings-list engine") -------- */
 struct fw_settings_category {           /* g_settings_category_registry entry */
     uint32_t        count;

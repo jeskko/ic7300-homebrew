@@ -115,6 +115,12 @@ previously stated MENU = key code 9 and QUICK = key code 12. Those were FRONT CH
 index, a threshold of 0x54 ticks, and release/hold callbacks. `FUN_2002eec8` re-tests the live
 bit every tick to see if it's still held.
 
+**Where it's polled** (2026-09-25): `main_idle_loop` calls `ui_input_poll_tick` (`0x2002fca8`)
+once per pass, from `0x20052f24`. That one function runs the touch state machine
+(`FUN_20064944`), the key scanner and auto-repeat, routes key events, and ticks long-presses
+(`FUN_2002eec8`). The dials are consumed by separate calls in the same loop. `sdk/loader/`
+retargets that call to gate it for apps that grab input.
+
 ## 6. Touch ✅
 
 Chain: buffer offsets 0x13–0x17 → `FUN_200640c8` → `FUN_20064944` (state 0x203fc708) → hit-test

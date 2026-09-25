@@ -560,3 +560,13 @@ the old `FUN_*` names/guesses:
   reset, right before any SCIF3 front-panel traffic.
 
 Ghidra state: 13 further renames/plate comments across both passes, all saved.
+
+## RTOS tick counter (2026-09-25)
+
+**`g_rtos_tick_count`** (`0x20390a78`, u32) is incremented once per OSTM0 tick by
+**`rtos_tick_handler`** (`0x20188084`). The same handler then services the delay lists, which
+read the counter as a u16. Found by diffing kernel RAM 2 s apart in `qemu-machine`
+(`--icount off`): +2000 over 2004 ms wall, so the tick is 1 kHz (OSTM0 `CMP` = 32000 at 32 MHz,
+see `ostm0_tick_arm_and_get_irq_id`). A second word, `0x20390ae8`, also counts at 1 kHz but
+started far higher (~366 000) and has no literal reference in the image; it hasn't been
+identified. The SDK's `hb_millis()` reads `g_rtos_tick_count`.

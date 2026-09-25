@@ -6,8 +6,7 @@
  * pass the loader calls hb_idle(), which switches back into the app once its wait condition
  * holds. When main() returns we clear idle_hook, and the loader is free to load an app again.
  */
-#include "hb/abi.h"
-#include "hb/app.h"
+#include "runtime_internal.h"
 
 struct hb_coro { void *sp; };
 
@@ -21,9 +20,18 @@ static bool g_app_done;
 static bool (*g_wait_done)(void *arg);
 static void *g_wait_arg;
 
+void (*hb__cleanup)(void);
+
+struct hb_loader_api *hb__runtime_api(void)
+{
+    return g_api;
+}
+
 static void app_trampoline(void)
 {
     main();
+    if (hb__cleanup)
+        hb__cleanup();
     g_app_done = true;
     hb_coro_switch(&g_app, &g_host);    /* never resumed */
     for (;;) {}
@@ -63,7 +71,7 @@ void hb_yield(void)
 
 void hb_runtime_start(struct hb_loader_api *api)
 {
-    if (api->abi_version != HB_ABI_VERSION || api->fw_build != HB_FW_142)
+    if (api->abi_version < HB_ABI_VERSION || api->fw_build != HB_FW_142)
         return;
     g_api = api;
 

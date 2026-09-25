@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-r"""End-to-end emulator test for the loader's app picker, with sdk/examples/hello-gui and
-sdk/examples/about-box as the apps. Boots the loader firmware in qemu-machine, taps through
+r"""End-to-end emulator test for the loader's app picker, with sdk/examples/hello-gui,
+sdk/examples/about-box and sdk/examples/cube as the apps. Boots the loader firmware in qemu-machine, taps through
 MENU > SET > SD Card > Homebrew Apps like a user would, and checks guest memory plus a
 screenshot at each step.
 
 Build the inputs first (see README.md "Build and test"), then:
-    python3 sdk/loader/test_emu.py                     # card with \homebrew\{ABOUT,HELLO}.BIN
+    python3 sdk/loader/test_emu.py                     # card with \homebrew\{ABOUT,CUBE,HELLO}.BIN
     python3 sdk/loader/test_emu.py --sd EMPTY.img --expect-no-apps
 
 Exits non-zero on the first failed check. Screenshots land in --shots
@@ -45,6 +45,9 @@ PICKER_TITLE_STOCK = 0x2035a4f0          # "PLAYER SET"
 CURRENT_SCREEN = 0x203de17f
 SAVED_CURSOR = 0x203de4cc + 0x288 + 0x40 * 4    # the borrowed category's saved cursor
 ROW_Y = (55, 117, 180, 240)
+GR3 = 0xfcff7780
+FB = (0x20640000, 0x20680000)
+CUBE_BG = 0x0863                        # HB_RGB(10, 12, 24)
 OK_BUTTON = (357, 192)
 
 
@@ -127,6 +130,55 @@ def launch(emu: Emu, api: int, row: int, app: str, texts: list[bytes]) -> None:
     check(emu.read(CURRENT_SCREEN, 1)[0] == 0x63, "still on the picker")
 
 
+def center_bg_pixels(emu: Emu) -> int:
+    """How many of a 5x5 grid of pixels around the screen centre show the cube's background
+    colour, read from the framebuffer GR3 is currently displaying."""
+    base = emu.word(GR3 + 0x0c)
+    n = 0
+    for dy in range(-20, 21, 10):
+        row = emu.read(base + (136 + dy) * 960 + (240 - 20) * 2, 82)
+        for dx in range(0, 41, 10):
+            n += struct.unpack_from("<H", row, dx * 2)[0] == CUBE_BG
+    return n
+
+
+def run_cube(emu: Emu, api: int, row: int) -> None:
+    runtime = nm(EXAMPLES / "cube" / "build" / "app.elf")
+    print(f"-- launch cube (row {row})")
+    emu.touch(150, ROW_Y[row], 2.5)
+    emu.shot("cube-1")
+    check(emu.word(GR3 + 0x04) & 1 == 1, "GR3 read enabled")
+    check(emu.word(GR3 + 0x20) & 3 == 2, "GR3 DISP_SEL = CURRENT (overlay shown)")
+    check(emu.word(GR3 + 0x0c) in FB, "GR3 shows one of the SDK framebuffers")
+    check(emu.word(api + 12) == 1, "input grabbed")
+    f0, t0 = emu.word(runtime["g_frames"]), time.time()
+    time.sleep(2.0)
+    f1, t1 = emu.word(runtime["g_frames"]), time.time()
+    fps = (f1 - f0) / (t1 - t0)
+    print(f"     {fps:.1f} frames/s (wall clock, --icount off)")
+    check(fps > 10, "animating")
+    check(center_bg_pixels(emu) >= 20, "wireframe: centre mostly background")
+
+    cursor = emu.read(0x20390222, 2)
+    emu.touch(30, ROW_Y[row + 1], 1.5)         # a picker row underneath, clear of the cube
+    check(emu.read(0x20390222, 2) == cursor and emu.word(api + 8) == runtime["hb_idle"],
+          "tap outside the cube: picker underneath didn't react")
+
+    emu.touch(240, 136, 1.5)                    # the cube
+    emu.shot("cube-2-filled")
+    check(center_bg_pixels(emu) == 0, "tap on the cube: filled faces")
+    emu.touch(240, 136, 1.5)
+    check(center_bg_pixels(emu) >= 20, "tap again: back to wireframe")
+
+    emu.touch(456, 24, 2.5)                     # the X
+    emu.shot("cube-3-exit")
+    check(emu.word(GR3 + 0x04) & 1 == 0 and emu.word(GR3 + 0x20) & 3 == 1,
+          "exit: GR3 back to read-off / LOWER")
+    check(emu.word(api + 12) == 0 and emu.word(api + 8) == 0, "grab released, app gone")
+    check(emu.read(runtime["g_app_done"], 1)[0] == 1, "main() returned")
+    check(emu.read(CURRENT_SCREEN, 1)[0] == 0x63, "back on the picker")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", type=Path, default=SCRATCH / "shots")
@@ -197,11 +249,12 @@ def main() -> None:
             emu.touch(448, 170)                 # page 3/4
             launch(emu, api, 2, "hello-gui", [b"Hello, world!"])
         else:
-            check(labels == [b"ABOUT", b"HELLO"], "lists ABOUT, HELLO (sorted, .BIN dropped)")
-            launch(emu, api, 1, "hello-gui", [b"Hello, world!"])
+            check(labels == [b"ABOUT", b"CUBE", b"HELLO"], "lists ABOUT, CUBE, HELLO (sorted)")
+            launch(emu, api, 2, "hello-gui", [b"Hello, world!"])
             launch(emu, api, 0, "about-box",
                    [b"Homebrew SDK for the IC-7300", b"Apps live in \\homebrew"])
-            launch(emu, api, 1, "hello-gui", [b"Hello, world!"])     # relaunch
+            run_cube(emu, api, 1)
+            launch(emu, api, 2, "hello-gui", [b"Hello, world!"])     # relaunch after the cube
 
         emu.press("EXIT", 2.0)                  # back out of the picker
         emu.shot("3-back")

@@ -10,6 +10,7 @@ Defaults to /data/misc/icom/7300/7300_142.dat -> scratch/hb_loader_142.dat (repo
 
 Patches, all checked against the expected stock bytes first:
   - main_idle_loop's `bl civ_tx_pump` (0x20052f64) -> `bl hb_idle_hook` (per-pass app tick)
+  - main_idle_loop's `bl ui_input_poll_tick` (0x20052f24) -> `bl hb_input_hook` (input grab)
   - SD CARD menu (g_settings_category_registry[0x18]): 8 -> 9 items, list pointer -> a copy
     with a "Homebrew Apps" row appended, whose catalog record's action is hb_menu_action.
     The list, label and record live in a confirmed-unused padding gap inside the image, so
@@ -37,6 +38,8 @@ LOADER_ADDR = 0x20600000
 
 IDLE_CALL_SITE = 0x20052f64
 IDLE_CALL_ORIG = bytes.fromhex("06f9feeb")          # bl civ_tx_pump (0x20011384)
+INPUT_CALL_SITE = 0x20052f24
+INPUT_CALL_ORIG = bytes.fromhex("5f73ffeb")         # bl ui_input_poll_tick (0x2002fca8)
 
 REGISTRY_SD_CARD = 0x20199500
 REGISTRY_ORIG_COUNT = 8
@@ -81,7 +84,7 @@ def build(container_in: Path, container_out: Path) -> None:
     work = HERE / "build"
     work.mkdir(exist_ok=True)
     loader, syms = compile_loader(work)
-    action, idle = syms["hb_menu_action"], syms["hb_idle_hook"]
+    action, idle, inp = syms["hb_menu_action"], syms["hb_idle_hook"], syms["hb_input_hook"]
     print(f"loader.c -> {len(loader)} bytes at {LOADER_ADDR:#x} "
           f"(hb_menu_action {action:#x}, hb_idle_hook {idle:#x})")
 
@@ -98,6 +101,7 @@ def build(container_in: Path, container_out: Path) -> None:
 
     # Check everything we're about to overwrite is what we expect (i.e. this is 1.42).
     assert at(IDLE_CALL_SITE, 4) == IDLE_CALL_ORIG, "idle call site mismatch -- wrong version?"
+    assert at(INPUT_CALL_SITE, 4) == INPUT_CALL_ORIG, "input call site mismatch -- wrong version?"
     assert word(REGISTRY_SD_CARD) == REGISTRY_ORIG_COUNT, "SD CARD registry count mismatch"
     assert word(REGISTRY_SD_CARD + 4) == REGISTRY_ORIG_LIST, "SD CARD registry list mismatch"
     assert NEW_LABEL_ADDR + len(LABEL) <= GAP_END
@@ -105,6 +109,7 @@ def build(container_in: Path, container_out: Path) -> None:
         "padding gap not empty"
 
     put(IDLE_CALL_SITE, arm_bl(IDLE_CALL_SITE, idle))
+    put(INPUT_CALL_SITE, arm_bl(INPUT_CALL_SITE, inp))
 
     new_list = at(REGISTRY_ORIG_LIST, 4 * REGISTRY_ORIG_COUNT) + struct.pack("<I", 3 | (NEW_CATALOG_INDEX << 16))
     put(NEW_LIST_ADDR, new_list)

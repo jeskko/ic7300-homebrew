@@ -20,13 +20,17 @@ adds what a real app needs:
 | Blocking calls | impossible (would freeze the UI) | `ui_message_box()`, `hb_wait_until()`, `hb_yield()` |
 | Which app | one fixed `C:\IC-7300\APP.BIN` | any `\homebrew\*.BIN`, picked from a list |
 | Relaunch while running | n/a | refused (no reload over resident code) |
+| Graphics / touch | none | full-screen overlay canvas + input grab (ABI v2) |
 
 ## Patches (`build.py`, each checked against the stock bytes first)
 
 1. **Idle tick**: `main_idle_loop`'s `bl civ_tx_pump` (`0x20052f64`) becomes `bl hb_idle_hook`.
    The hook runs `civ_tx_pump` exactly as before, restores the borrowed picker screen once it
    has been left (below), then runs the resident app's `idle_hook`, if one is set.
-2. **Menu row**: the same two data patches as `homebrew-apps-menu`. The SD CARD registry goes
+2. **Input grab**: `main_idle_loop`'s `bl ui_input_poll_tick` (`0x20052f24`) becomes
+   `bl hb_input_hook`. The hook runs the stock function unless the app has set
+   `api->input_grab`.
+3. **Menu row**: the same two data patches as `homebrew-apps-menu`. The SD CARD registry goes
    8 → 9 items, and a new catalog record's action is `hb_menu_action`. The list, label and
    record live in the image's confirmed-unused padding gap. The 14 catalog slots right after
    the record (`0x882`–`0x88f`) are left zero for the picker's rows.
@@ -57,7 +61,7 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
 (`*(u16*)0x20390222`, absolute across pages; tested on pages 2 and 3), then loads and runs
 `C:\homebrew\<name>` with the checks below.
 
-## ABI v1 (`sdk/include/hb/abi.h`)
+## ABI v2 (`sdk/include/hb/abi.h`)
 
 - The chosen `.BIN` is loaded at `0x20610000`. Code, data, bss and stack must fit in 128 KB
   (`HB_APP_REGION`).
@@ -65,8 +69,12 @@ A row tap calls `hb_app_row_action`. It reads the tapped row from the list curso
   refuses the file unless the magic and version match, `entry` is word-aligned inside the bytes
   actually read, and `image_end` lies within the region.
 - After cache maintenance, the loader calls `entry(&api)` from the menu tap, on the UI thread.
-  `api` is `{abi_version, fw_build = 0x0142, idle_hook}`. While the app leaves `idle_hook` set,
-  the loader calls it once per `main_idle_loop` pass and won't load another app.
+  `api` is `{abi_version, fw_build = 0x0142, idle_hook, input_grab}`. While the app leaves
+  `idle_hook` set, the loader calls it once per `main_idle_loop` pass and won't load another
+  app. While `input_grab` is set, the firmware's touch/key handling is skipped (below).
+- v1 → v2 (2026-09-25) added `input_grab`. The loader accepts only v2 apps, and a v1 app's
+  runtime refuses to start on a v2 loader, so apps need a rebuild. That costs nothing while no
+  loader has been installed on real hardware.
 
 ## The app runtime (`sdk/runtime/`)
 
@@ -112,7 +120,8 @@ python3 sdk/tools/build_app.py --keep sdk/examples/about-box/build -o $D/ABOUT.B
 emu/.venv/bin/python3 qemu-machine/tools/build_flash.py scratch/hb_loader_142.dat $D/flash.bin
 python3 qemu-machine/tools/build_sdcard.py -o $D/sdcard.img --size-mb 128
 mmd   -i $D/sdcard.img@@1M ::homebrew
-mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN ::homebrew/
+python3 sdk/tools/build_app.py --keep sdk/examples/cube/build -o $D/CUBE.BIN sdk/examples/cube/main.c
+mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN $D/CUBE.BIN ::homebrew/
 
 python3 sdk/loader/test_emu.py                                # scripted end-to-end test
 python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bin --sd $D/sdcard.img
@@ -122,15 +131,57 @@ python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bi
 
 | Card | Flags | Checks |
 |---|---|---|
-| `ABOUT.BIN`, `HELLO.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
+| `ABOUT.BIN`, `CUBE.BIN`, `HELLO.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), CUBE (overlay on, input grabbed, 30 frames/s, taps don't reach the picker underneath, tap toggles wireframe/filled, X exits and restores GR3), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
 | `A01`–`A16.BIN`, written A09–A16 first | `--paging` | exactly A01–A14 listed (the cap keeps the alphabetically-first 14); page 2 row 2 launches the right app (A06 = about-box), page 3 row 3 too |
 | no `\homebrew` folder | `--expect-no-apps` | placeholder row only; tapping it does nothing |
 | `README.TXT`, a directory `DIR.BIN`, a 0-byte `EMPTY.BIN` | `--expect-no-apps` | all skipped |
 | `SnakeGame.BIN`, `lower.bin` | `--expect-rows LOWER,SNAKEG~1` | short-name labels |
 | no card at all | `--sd none --expect-no-apps` | directory open fails cleanly → placeholder |
 
+## Graphics and input (`hb/gfx.h`, `hb/input.h`; `runtime/gfx.c`, `runtime/input.c`)
+
+**The screen.** The firmware draws its whole UI with the OpenVG GPU into VDC5 graphics plane
+GR2: RGB565, 480×272, framebuffer `0x20974fe0`, continuously redrawn. Drawing into that would
+fight the firmware. The VDC5 stacks GR0 < GR1 < GR2 < GR3 in fixed hardware order, and the
+firmware leaves GR3 configured but set to "show the lower layer". So:
+
+- **`hb_gfx_open()`** copies GR2's geometry (the `FLM1/3/4/5/6` and `AB2–AB5` registers) onto
+  GR3, and points GR3 at SDK framebuffer 0. It sets GR3's `DISP_SEL` to CURRENT, enables its
+  read, and sets `UPDATE` bits `0x111`. This follows the Renesas VDC5 driver's own sequence
+  (`R_VDC_ReadDataControl` + `R_VDC_StartProcess`). The firmware keeps drawing GR2 underneath,
+  unseen.
+- **`hb_gfx_present()`** cleans the D-cache over the back buffer, then writes the new base to
+  `GR3_FLM2` with `IBUS_VEN`. It waits, yielding, until the bit reads back 0, which means the
+  flip happened at vsync. A 50 ms timeout covers the wait in case the bit never clears. Then the
+  front and back buffers swap.
+- **`hb_gfx_close()`**, which also runs automatically when `main()` returns, puts GR3 back to
+  LOWER with its read off (the stock state). It keeps the input grab until the finger lifts.
+- There are two framebuffers, at `0x20640000` and `0x20680000` (`HB_FB0/1`). That RAM was all
+  zero in a live map after boot, between points earlier marker tests showed survive boot.
+- The drawing is software: clear, rectangle, line and filled triangle, all clipped.
+
+**Touch and keys.** `hb_touch_read()` reads the front-panel register file
+(`notes/front-panel-report.md`): tag `+0x13`, then X/Y big-endian at `+0x14/+0x16`, in
+calibrated pixels. While the app has grabbed input, `hb_input_hook` skips
+`ui_input_poll_tick`, which handles touch, the key scanner, auto-repeat and long-press. It also
+copies the live key bits into the scanner's latched shadow, so nothing held or released
+meanwhile becomes a press afterwards. The dials aren't grabbed: they're consumed elsewhere in
+`main_idle_loop`, and still tune the radio.
+
+**Time.** `hb_millis()` reads `g_rtos_tick_count` (`0x20390a78`), which the RTOS tick handler
+increments. It was measured live at 1 kHz.
+
+**Emulator.** `qemu-machine/src/vdc5.c` used to scan out only one plane. It now composites the
+planes in order, and it clears `GRn_UPDATE` at each frame so the flip wait works. A stock boot
+still screenshots pixel-identical to the reference.
+
 ## Open items
 
+- **Graphics on real hardware**: the GR3 overlay and D-cache cleaning follow the Renesas driver
+  and ARM rules but are untested on silicon; tearing and frame rate aren't known either. The
+  framebuffer RAM (`0x20640000`–`0x206bffff`) is zero after boot and not seen in use, but it has
+  not had the marker-then-reboot test that `0x20600000` had. The dials still reach the radio
+  while an app has input.
 - **Real hardware**: nothing here has run on the radio yet. The cache maintenance before
   jumping into an app in particular is unverified (QEMU models no cache incoherency).
 - **Coroutine stack vs. the RTOS**: while the app runs, the UI task's `sp` points into

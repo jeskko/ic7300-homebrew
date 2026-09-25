@@ -6,6 +6,16 @@ framing.
 
 All addresses below verified against the live Ghidra project (`body.bin`) 2026-08-30.
 
+## ✅ Available in the SDK now: a full-screen canvas (2026-09-25)
+
+`hb_gfx_open()` / `hb_gfx_present()` / `hb_gfx_close()` (`sdk/include/hb/gfx.h`) give an app a
+double-buffered 480×272 RGB565 canvas on VDC5 plane GR3, on top of the firmware's own GR2 UI,
+plus software clear/rect/line/triangle. It's live-tested in the emulator with
+`sdk/examples/cube/` at 30 frames/s. Mechanism: `sdk/loader/README.md`, "Graphics and input";
+register facts: `notes/display-vdc5.md`. An app with the canvas doesn't need the icon-blit or
+OpenVG paths below; those questions stay open for anyone wanting to draw *into* the radio's own
+UI (which is GR2 at `0x20974fe0`).
+
 ## ✅ Available in the SDK now: firmware popup dialogs (2026-09-25)
 
 `ui_message_box(text)` (`sdk/include/hb/app.h`) shows the radio's own popup dialog with up to 6
@@ -64,12 +74,10 @@ and not safely shareable, has not been examined. The library's own exported func
 haven't been catalogued either — this whole path needs real investigation before it's usable by an app,
 unlike the icon-blit path above.
 
-## 🔎 Open: the VDC5 display controller itself is unresearched
+## ✅ The VDC5 display controller (2026-09-25)
 
-The RZ/A1H's VDC5 peripheral (the actual hardware framebuffer driver underneath EGL) has zero register
-addresses or framebuffer base/format/stride derived independently of the EGL layer. Not necessarily needed
-if the icon-blit path pans out for direct pixel access, but would matter for anything wanting to bypass
-existing app-level primitives entirely.
+Plane layout, the UI framebuffer's base/format/stride and the register recipe are in
+`notes/display-vdc5.md`. (This section previously read "unresearched".)
 
 ## Also confirmed, not yet connected to a display API
 

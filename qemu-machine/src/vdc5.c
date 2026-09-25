@@ -104,11 +104,32 @@ static void rza1h_vdc5_update_irq(RZA1HVdc5State *s)
     }
 }
 
+/* Graphics planes GR0..GR3 in hardware stacking order, bottom first (the pipeline order is
+ * fixed in silicon; each plane's AB1 DISP_SEL decides whether it shows). */
+static const hwaddr vdc5_planes[] = { 0x200, 0x900, 0x300, 0x380 };
+#define GR_UPDATE   0x00
+#define GR_FLM_RD   0x04
+#define GR_FLM2     0x0c
+#define GR_FLM3     0x10
+#define GR_FLM5     0x18
+#define GR_FLM6     0x1c
+#define GR_AB1      0x20
+#define GR_AB2      0x24
+#define GR_AB3      0x28
+
 static void rza1h_vdc5_frame_tick(void *opaque)
 {
     RZA1HVdc5State *s = RZA1H_VDC5(opaque);
 
     s->frames++;
+    /* GRn_UPDATE: IBUS_VEN (b0), P_VEN (b4) and UPDATE (b8) request that the plane's new
+     * register values take effect at the next vsync, and read back as 1 until they have.
+     * The scan-out below always uses the live registers (no tearing is modelled); clearing
+     * the bits here is what lets software wait for "applied" (sdk/runtime/gfx.c does). */
+    for (size_t i = 0; i < ARRAY_SIZE(vdc5_planes); i++) {
+        s->regs[vdc5_planes[i] + GR_UPDATE] &= ~0x11;
+        s->regs[vdc5_planes[i] + GR_UPDATE + 1] &= ~0x01;
+    }
     for (int r = 0; r < 3; r++) {
         s->status[r] |= vdc5_frame_events[r];
     }
@@ -156,11 +177,17 @@ static void rza1h_vdc5_write(void *opaque, hwaddr offset, uint64_t value,
 
 /*
  * Live display (2026-09-24): a QEMU graphic console showing what the LCD
- * would show -- run with `-display gtk` (or sdl) instead of -nographic. Scans
- * out the first graphics plane with a framebuffer pointer (GR2 in practice:
- * GRn_FLM2 = base, FLM3[30:16] = stride, FLM6[31:28] = format, [26:16] =
- * width-1; same decoding as tools/vdc5_framebuffer_peek.py). No blending of
- * several planes, no scaling -- the real panel is 480x272.
+ * would show -- run with `-display gtk` (or sdl) instead of -nographic.
+ *
+ * Composites the graphics planes bottom to top (2026-09-25, for the SDK's
+ * app overlay on GR3): a plane is drawn if its read is enabled (FLM_RD b0)
+ * and its DISP_SEL (AB1[1:0]) is CURRENT (2) or BLEND (3); BACK/LOWER planes
+ * are skipped. Decoding: FLM2 = base, FLM3[30:16] = stride, FLM5[26:16] =
+ * lines-1, FLM6[31:28] = format (RGB565 or ARGB8888 only), [26:16] = width-1,
+ * AB2/AB3 = {start, size} vertical/horizontal. Planes are placed relative to
+ * the first shown plane's area origin. BLEND is drawn opaque: the firmware's
+ * own GR2 is RGB565 blended over nothing, and the SDK overlay is CURRENT.
+ * No scaling -- the real panel is 480x272.
  */
 #define VDC5_LCD_W 480
 #define VDC5_LCD_H 272
@@ -175,37 +202,62 @@ static uint32_t vdc5_reg32(RZA1HVdc5State *s, hwaddr off)
 
 static bool rza1h_vdc5_gfx_update(void *opaque)
 {
-    static const hwaddr planes[] = { 0x300, 0x380, 0x200, 0x900 }; /* GR2 GR3 GR0 GR1 */
     RZA1HVdc5State *s = RZA1H_VDC5(opaque);
     DisplaySurface *surf = qemu_console_surface(s->con);
     uint8_t row[VDC5_LCD_W * 4];
-    uint32_t base = 0, stride = 0, fmt = 0;
+    bool have_origin = false;
+    int org_x = 0, org_y = 0;
 
     if (!surf || surface_bits_per_pixel(surf) != 32) {
         return true;
     }
-    for (size_t i = 0; i < ARRAY_SIZE(planes) && !base; i++) {
-        base = vdc5_reg32(s, planes[i] + 0x0c);
-        stride = (vdc5_reg32(s, planes[i] + 0x10) >> 16) & 0x7fff;
-        fmt = vdc5_reg32(s, planes[i] + 0x1c) >> 28;
-    }
     for (int y = 0; y < VDC5_LCD_H; y++) {
-        uint32_t *out = (uint32_t *)((uint8_t *)surface_data(surf) +
-                                     y * surface_stride(surf));
-        if (!base || !stride || (fmt != 0 && fmt != 4)) {
-            memset(out, 0, VDC5_LCD_W * 4);
+        memset((uint8_t *)surface_data(surf) + y * surface_stride(surf), 0, VDC5_LCD_W * 4);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(vdc5_planes); i++) {
+        hwaddr p = vdc5_planes[i];
+        uint32_t sel = vdc5_reg32(s, p + GR_AB1) & 3;
+        uint32_t base = vdc5_reg32(s, p + GR_FLM2);
+        uint32_t stride = (vdc5_reg32(s, p + GR_FLM3) >> 16) & 0x7fff;
+        uint32_t fmt = vdc5_reg32(s, p + GR_FLM6) >> 28;
+        int w = ((vdc5_reg32(s, p + GR_FLM6) >> 16) & 0x7ff) + 1;
+        int h = ((vdc5_reg32(s, p + GR_FLM5) >> 16) & 0x7ff) + 1;
+        int area_x = vdc5_reg32(s, p + GR_AB3) >> 16;
+        int area_y = vdc5_reg32(s, p + GR_AB2) >> 16;
+        int bpp = fmt == 4 ? 4 : 2;
+
+        if (!(vdc5_reg32(s, p + GR_FLM_RD) & 1) || sel < 2 || !base || !stride ||
+            (fmt != 0 && fmt != 4)) {
             continue;
         }
-        address_space_read(&address_space_memory, base + y * stride,
-                           MEMTXATTRS_UNSPECIFIED, row,
-                           VDC5_LCD_W * (fmt == 4 ? 4 : 2));
-        for (int x = 0; x < VDC5_LCD_W; x++) {
-            if (fmt == 4) {
-                out[x] = ldl_le_p(row + x * 4) & 0xffffff;
-            } else {
-                uint16_t v = lduw_le_p(row + x * 2);
-                out[x] = ((v >> 11) & 31) * 255 / 31 << 16 |
-                         ((v >> 5) & 63) * 255 / 63 << 8 | (v & 31) * 255 / 31;
+        if (!have_origin) {
+            org_x = area_x;
+            org_y = area_y;
+            have_origin = true;
+        }
+        int dx = area_x - org_x, dy = area_y - org_y;
+        for (int y = 0; y < h; y++) {
+            int oy = y + dy;
+            if (oy < 0 || oy >= VDC5_LCD_H) {
+                continue;
+            }
+            int x0 = MAX(0, -dx), x1 = MIN(w, VDC5_LCD_W - dx);
+            if (x1 <= x0) {
+                continue;
+            }
+            uint32_t *out = (uint32_t *)((uint8_t *)surface_data(surf) +
+                                         oy * surface_stride(surf));
+            address_space_read(&address_space_memory, base + y * stride + x0 * bpp,
+                               MEMTXATTRS_UNSPECIFIED, row, (x1 - x0) * bpp);
+            for (int x = x0; x < x1; x++) {
+                const uint8_t *px = row + (x - x0) * bpp;
+                if (fmt == 4) {
+                    out[x + dx] = ldl_le_p(px) & 0xffffff;
+                } else {
+                    uint16_t v = lduw_le_p(px);
+                    out[x + dx] = ((v >> 11) & 31) * 255 / 31 << 16 |
+                                  ((v >> 5) & 63) * 255 / 63 << 8 | (v & 31) * 255 / 31;
+                }
             }
         }
     }
