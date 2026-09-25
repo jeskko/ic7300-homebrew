@@ -349,6 +349,9 @@ static void rza1h_init(MachineState *machine)
     sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 4,
                        qdev_get_gpio_in(gic,
                            RZA1H_MTU2_TGI4D_IRQ - RZA1H_GIC_NUM_INTERNAL));
+    sysbus_connect_irq(SYS_BUS_DEVICE(mtu2), 5,
+                       qdev_get_gpio_in(gic,
+                           RZA1H_MTU2_TGI1A_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
     /* riic.c -- upgraded from a bare RAM region to a real device,
      * 2026-09-08 second pass, once body.bin's own cold-boot RIIC2 read
@@ -479,6 +482,8 @@ static void rza1h_init(MachineState *machine)
         /* /machine/ssif: the stimulus-file/tone properties are set over QMP there. */
         object_property_add_child(OBJECT(machine), "ssif", OBJECT(ssif));
         sysbus_realize_and_unref(SYS_BUS_DEVICE(ssif), &error_fatal);
+        /* the fake DSP's RTTY demodulator drives P8_7 (RTD) */
+        qdev_connect_gpio_out_named(ssif, "rtd", 0, qdev_get_gpio_in_named(gpio, "rtd", 0));
         sysbus_mmio_map_overlap(SYS_BUS_DEVICE(ssif), 0, RZA1H_SSIF_BASE, 0);
     }
 

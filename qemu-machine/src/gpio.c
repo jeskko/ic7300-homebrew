@@ -459,6 +459,7 @@ static void rza1h_gpio_reset(DeviceState *dev)
      * default -- without it, `scif5_wait_hsk1_ready` never sees it ready and busy-waits its full
      * ~16-minute software timeout instead (see qemu-machine/README.md's Status section). */
     s->pin_level[8] |= 0x200;
+    s->pin_level[8] |= 0x80;   /* P8_7 RTD idles at mark (see rza1h_gpio_set_rtd) */
 
     /* P1_7 ("PWRK") is the front-panel power key -- a plain pull-up + switch-to-ground button,
      * confirmed active-low (2026-09-20, see notes/ic7300-signal-chain.md's "PWRK handler
@@ -544,6 +545,20 @@ static void rza1h_gpio_set_civ_bus_busy(Object *obj, bool busy, Error **errp)
     }
 }
 
+/* P8_7 = RTD, the DSP's RTTY receive data (demodulated FSK mark/space, 1 = mark), driven by
+ * ssif.c's fake-DSP demodulator through the "rtd" GPIO line; sampled by the firmware at 1 kHz
+ * from MTU2 TGI1A (rtty_rx_tgi1a_sample_rtd, 0x200b0ad8). See notes/dsp-protocol.md. */
+static void rza1h_gpio_set_rtd(void *opaque, int n, int level)
+{
+    RZA1HGpioState *s = RZA1H_GPIO(opaque);
+
+    if (level) {
+        s->pin_level[8] |= 0x80;
+    } else {
+        s->pin_level[8] &= ~0x80;
+    }
+}
+
 static void rza1h_gpio_init(Object *obj)
 {
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
@@ -558,6 +573,7 @@ static void rza1h_gpio_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem_extirq);
     sysbus_init_irq(sbd, &s->irq7);
     sysbus_init_irq(sbd, &s->irq3);
+    qdev_init_gpio_in_named(DEVICE(obj), rza1h_gpio_set_rtd, "rtd", 1);
 
     object_property_add_bool(obj, "pwrk-pressed", rza1h_gpio_get_pwrk_pressed,
                              rza1h_gpio_set_pwrk_pressed);

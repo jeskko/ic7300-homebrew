@@ -406,12 +406,19 @@ The RX-enable decision (0x20414c3c byte 0) lives in the same Ghidra function,
 0x200b0bdc, which carries the label `rtty_rx_baudot_to_ascii`. It needs byte 0x203def00+0x2df and a few flags; it then calls
 `rtty_rx_timer_start(2, …)`.
 
-**In the emulator** (live, RTTY + DECODE screen): the UART is armed (0x20414c3c byte 0 = 1) and
-MTU2 ch1 is programmed (TCR_1 = 1, TIER_1 = 1, TGRA_1 = 0x1f40). But `mtu2.c` doesn't model
-channel 1, so TCNT_1 stays 0 and TGI1A never fires, and nothing drives RTD. So no text decodes.
-Making it decode needs (a) MTU2 ch1 TGRA compare-match → GIC 146, and (b) a fake-DSP FSK demod
-(mark/space tone detectors on the stimulus at 2125/2295) driving P8_7 in `gpio.c`. Polarity:
-idle/mark = 1, since the UART starts on 1→0.
+**In the emulator** ✅ (2026-09-25): the RX path decodes end to end.
+- `mtu2.c` models ch1: TSTR = 0xc3 at runtime, i.e. CST1 is set by init, and TGRA_1 advances by
+  8000 per ISR run.
+- `ssif.c`'s fake-DSP demodulator drives RTD from the fmt source. It is active only while the
+  fake DSP's mode, opcode 0x22 byte 1, is 4 (RTTY) or 5 (RTTY-R). CI-V `06 08` gives DSP code 5,
+  confirmed by the inversion working.
+- Polarity: mark = 1, and mark is the lower tone.
+- The user's 10 s sample decodes on screen to "WELCOME TO WIKIPEDIA, THE FREE ENCYCLOPEDIA
+  THAT". The spectrum-mirrored copy decodes to the same text in RTTY-R. An offline Python copy
+  of the demod plus the firmware's UART logic produces the identical string.
+- Decode-screen text: the text object at 0x20397166 (`DAT_20013d14`), plain ASCII.
+- Open: how the real DSP picks mark/shift. The CPU presumably sends the RTTY DECODE SET
+  settings in some opcode; the model uses env knobs instead.
 
 ## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
 

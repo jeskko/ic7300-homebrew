@@ -132,6 +132,8 @@ static uint32_t freq_merge(uint32_t f, uint32_t w)
 }
 
 /* A command's effect on the DSP state (the handler). */
+uint8_t fake_dsp_mode = 0xff;
+
 static void apply(FakeDsp *d, uint32_t w)
 {
     uint8_t op = w >> 24;
@@ -140,6 +142,9 @@ static void apply(FakeDsp *d, uint32_t w)
     switch (op) {
     case 0x10:
         d->rx_freq_hz = freq_merge(d->rx_freq_hz, w);
+        break;
+    case 0x22:
+        fake_dsp_mode = (w >> 16) & 0xff;
         break;
     case 0xe0:
         identity_reply(d, w);
@@ -314,6 +319,7 @@ void fake_dsp_reset(FakeDsp *d)
     }
     d->p[0x20] = d->p[0x21] = 0xffffffff;
     d->p[0x22] = 0x22ffffff;
+    fake_dsp_mode = 0xff;
     d->p[0x40] = 0x40005555;
     memcpy(d->c_word, slot_class, sizeof(d->c_word));
     memcpy(d->l_word, slot_class, sizeof(d->l_word));

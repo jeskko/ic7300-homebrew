@@ -35,7 +35,8 @@ Measured with `tools/bench_boot.py`.
 - **The CPU↔DSP link is modelled**: command/status over SCIF5 (`src/fake_dsp.c` — per-opcode
   state, class-tagged replies, identity replies, realistic 2-frame latency) and audio over
   SSIF0/1 (`src/ssif.c` — 96 kHz I2S; a synthetic tone reaches the firmware's own RX-audio ring
-  at the right frequency and level). Spec: `notes/dsp-protocol.md`.
+  at the right frequency and level), plus the RTTY data line (RTD, P8_7) from a fake FSK
+  demodulator. Spec: `notes/dsp-protocol.md`.
 - **The fake DSP plays audio stimulus files** (`src/ssif.c`, 2026-09-25) into any RX slot,
   replacing the tone: `af` = DX_REC L (RX audio: audio FFT, QSO recorder), `mic` = DX_REC R,
   `fmt` = DX_FMT L (demod output, read by the decoders), `fmt-r` = DX_FMT R. Formats: Sun .au or
@@ -54,13 +55,20 @@ Measured with `tools/bench_boot.py`.
     the 48 kHz ring sample-accurately at unity gain (details in README-history.md).
   - `tools/run_gui.py --af-file/--fmt-file/--mic-file SPEC` passes the knobs through, and
     `--qmp PATH` opens a second QMP socket for `qom-set` while the window runs.
-  - **DX_FMT consumers tested** (`tools/decode_stimulus_test.py RTTY_FILE`, all 13 checks pass;
-    it shifts any RTTY recording to 2125/2295 Hz itself). The RTTY decode screen's tuning scope
-    shows the mark/space peaks at the right bins, and the waterfall draws. The FM TSQL CTCSS
-    detector flags 88.5 Hz and rejects 85.4/91.5/100 Hz. **RTTY text does not decode yet**: the
-    real DSP demodulates FSK onto pin P8_7 (RTD), and the CPU samples it from MTU2 ch1 TGI1A (GIC
-    146). Neither is modelled; see `notes/dsp-protocol.md`, "DX_FMT consumers and the RTTY
-    receive path".
+  - **RTTY decodes to text** (2026-09-25). The fake DSP's FSK demodulator (`src/ssif.c`)
+    watches the fmt source while the mode is RTTY/RTTY-R. It runs mark/space tone detectors at
+    `RZA1H_RTTY_MARK` (2125) and `RZA1H_RTTY_SHIFT` (170), and drives pin P8_7 (RTD; 1 = mark;
+    inverted in RTTY-R). `mtu2.c` channel 1 gives the firmware its 1 ms TGI1A sampler. The
+    firmware's own UART and Baudot table do the rest. QOM `/machine/ssif rtd-edges` counts RTD
+    transitions.
+  - `tools/decode_stimulus_test.py RTTY_FILE [--expect TEXT]` (19 checks, all pass). It shifts
+    any RTTY recording to 2125/2295 Hz itself. The checks:
+    - the RTTY decode screen's tuning scope peaks at mark/space and the waterfall draws;
+    - the user's sample decodes to "WELCOME TO WIKIPEDIA, THE FREE ENCYCLOPEDIA THAT";
+    - RTTY-R decodes the mirrored sample to the same text, and garbles the normal one;
+    - the FM TSQL CTCSS detector flags 88.5 Hz and rejects 85.4/91.5/100 Hz.
+
+    Paths: `notes/dsp-protocol.md`, "DX_FMT consumers and the RTTY receive path".
 - **The SD card slot works** (`src/sdhi.c`, 2026-09-25): `body.bin` drives the card through
   **SDHI0** (`0xE804E000`, Renesas' SD driver library), not MMCIF — that's why the old `mmc.c`
   was never touched. The card is upstream QEMU's `sd-card` on the SDHI's SD bus
@@ -122,7 +130,7 @@ Older status entries and the full session-by-session narrative: [README-history.
 | GPIO/port registers | `gpio.c` | Real masked set/clear, `PNOT` toggle, live `PPR` pin levels; also hosts the 74AHC595 band-switch shift-register model (`RZA1H_DEBUG=sr595`, decoded to schematic names MSTB1/2, DSTB, PSTB) |
 | L2C (PL310 cache controller) | `l2c.c` | Real (`CACHE_ID`/`CACHE_TYPE`/`REG7` self-clear semantics) |
 | CPG | `rz_a1h.c`'s `add_plain_ram_region()` | Plain storage, no behavior — nothing traced needs more yet |
-| MTU2 | `mtu2.c` | Real: channel 3's `TGI3A` (the 500 µs system tick, GIC 154, live re-arm), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), two more purely-polled compare-match events. Real 32 MHz clock. Every other channel/register plain storage |
+| MTU2 | `mtu2.c` | Real: channel 3's `TGI3A` (the 500 µs system tick, GIC 154, live re-arm), channel 4's `TGI4A`/`TGI4C` (GIC 159/161), channel 1's `TGI1A` (the RTTY bit sampler, GIC 146, live TCNT_1 with TPSC prescaler), two more purely-polled compare-match events. Real 32 MHz clock. Every other channel/register plain storage |
 | RIIC0-2 (I2C) | `riic.c` | Real CR2/SR2/DRT/DRR/STI/TI/TEI/RI/SPI protocol, real bit-rate-generator-paced timing. RIIC2 backs a real `hw/nvram/eeprom_at24c.c` EEPROM slave (16KB, addr 0x50) loaded with the firmware's own captured factory-default image (`tools/build_riic_eeprom_image.py`) — only RIIC2 exercised by any traced boot path so far |
 | SCIF0-7 (UART) | `scif.c` | Real TX (baud-rate-accurate pacing) with per-channel level-triggered TXI; real RXI backing two virtual responders — a front-panel one on channel 3, a DSP-link one on channel 5. Per-channel bus logger: `RZA1H_DEBUG=scif<N>` |
 | IF-DSP behind SCIF5 | `fake_dsp.c` | Behavioural model built from the DSP's own code: per-opcode state, the 7 class-tagged TX slots, identity replies from the version tags, realistic 2-frame command latency. `RZA1H_DEBUG=dsp` |

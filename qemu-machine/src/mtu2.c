@@ -236,6 +236,17 @@
  * approximating a period. See `MTU2_SWTIMER_C_TARGET` and the
  * `swtimer_c_deadline_ns` field for the verbatim firmware and the exact
  * reasoning.
+ *
+ * Channel 1 / TGI1A (2026-09-25): the RTTY receiver's 1 ms bit sampler.
+ * `rtty_rx_timer_start` (0x200b0850) writes TGRA_1 = TCNT_1 + 8000, clears
+ * TSR_1.TGFA and registers event 0x92 = GIC 146; its ISR
+ * `rtty_rx_tgi1a_sample_rtd` (0x200b0ad8) re-arms TGRA_1 += 8000 and samples
+ * the RTD pin (P8_7, gpio.c). TCR_1 = 0x01: TPSC 001 = P0phi/4 = 8 MHz (the
+ * channel 0-2 TPSC table), so 8000 counts = 1 ms. Modelled like channel 3: a
+ * live free-running TCNT_1 on the virtual clock (while TSTR.CST1 is set) and
+ * a match scheduled (TGRA_1 - TCNT_1) mod 65536 counts ahead on each TGRA_1
+ * write. Offsets from the SVD: TCR_1 0x380, TIER_1 0x384, TSR_1 0x385,
+ * TCNT_1 0x386, TGRA_1 0x388; TSTR.CST1 = bit 1.
  */
 
 #include "qemu/osdep.h"
@@ -275,6 +286,9 @@ struct RZA1HMtu2State {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
     RZA1HMtu2Event ch3a; /* TGI3A, GIC ID 154 */
+    RZA1HMtu2Event ch1a; /* TGI1A, GIC ID 146 -- see file comment's channel 1 paragraph */
+    int64_t tcnt1_base_ns; /* virtual time at which TCNT_1 read 0 (while counting) */
+    uint16_t tcnt1_frozen; /* TCNT_1 while CST1 is clear */
     int64_t tcnt3_base_ns; /* virtual time at which the free-running TCNT_3 read 0 */
     RZA1HMtu2Event ch4a; /* TGI4A, GIC ID 159 */
     RZA1HMtu2Event ch4b; /* TGI4B, GIC ID 160 -- see file comment */
@@ -326,6 +340,12 @@ struct RZA1HMtu2State {
 #define MTU2_TCNT_3  0x210
 #define MTU2_TSR_3   0x22c
 
+#define MTU2_TCR_1   0x380
+#define MTU2_TIER_1  0x384
+#define MTU2_TSR_1   0x385
+#define MTU2_TCNT_1  0x386
+#define MTU2_TGRA_1  0x388
+
 #define MTU2_TCR_4   0x201
 #define MTU2_TIER_4  0x209
 #define MTU2_TGRA_4  0x21c
@@ -340,6 +360,7 @@ struct RZA1HMtu2State {
 #define MTU2_TSR_4   0x22d
 
 #define MTU2_TSTR    0x280
+#define MTU2_TSTR_CST1   (1 << 1)
 #define MTU2_TSTR_CST3   (1 << 6)
 #define MTU2_TSTR_CST4   (1 << 7)
 
@@ -467,6 +488,49 @@ static void rza1h_mtu2_ch3a_arm(RZA1HMtu2State *s)
     ptimer_transaction_commit(s->ch3a.timer);
 }
 
+/* Channel 1's counter clock: TPSC (TCR_1 bits 2:0) of the channel 0-2 table, internal clocks
+ * only (P0phi/1, /4, /16, /64); the external-clock encodings aren't used by this firmware. */
+static uint32_t rza1h_mtu2_ch1_hz(RZA1HMtu2State *s)
+{
+    static const uint8_t shift[8] = { 0, 2, 4, 6, 0, 0, 0, 0 };
+
+    return MTU2_FREQ_HZ >> shift[s->regs[MTU2_TCR_1] & 7];
+}
+
+static uint16_t rza1h_mtu2_tcnt1(RZA1HMtu2State *s)
+{
+    int64_t ns;
+
+    if (!(s->regs[MTU2_TSTR] & MTU2_TSTR_CST1)) {
+        return s->tcnt1_frozen;
+    }
+    ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->tcnt1_base_ns;
+    return (uint16_t)muldiv64(ns, rza1h_mtu2_ch1_hz(s), NANOSECONDS_PER_SECOND);
+}
+
+static void rza1h_mtu2_set_tcnt1(RZA1HMtu2State *s, uint16_t v)
+{
+    s->tcnt1_frozen = v;
+    s->tcnt1_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                       muldiv64(v, NANOSECONDS_PER_SECOND, rza1h_mtu2_ch1_hz(s));
+}
+
+static void rza1h_mtu2_ch1a_arm(RZA1HMtu2State *s)
+{
+    uint16_t tgr = s->regs[MTU2_TGRA_1] | (s->regs[MTU2_TGRA_1 + 1] << 8);
+    uint32_t delta = (uint16_t)(tgr - rza1h_mtu2_tcnt1(s));
+
+    ptimer_transaction_begin(s->ch1a.timer);
+    if (s->regs[MTU2_TSTR] & MTU2_TSTR_CST1) {
+        ptimer_set_freq(s->ch1a.timer, rza1h_mtu2_ch1_hz(s));
+        ptimer_set_limit(s->ch1a.timer, delta ? delta : 0x10000, 1);
+        ptimer_run(s->ch1a.timer, 0);
+    } else {
+        ptimer_stop(s->ch1a.timer);
+    }
+    ptimer_transaction_commit(s->ch1a.timer);
+}
+
 static void rza1h_mtu2_rearm(RZA1HMtu2State *s, RZA1HMtu2Event *ev)
 {
     if (ev == &s->ch3a) {
@@ -496,6 +560,9 @@ static uint64_t rza1h_mtu2_read(void *opaque, hwaddr offset, unsigned size)
 
     if (offset == MTU2_TCNT_3 && size == 2) {
         return rza1h_mtu2_tcnt3(s);
+    }
+    if (offset == MTU2_TCNT_1 && size == 2) {
+        return rza1h_mtu2_tcnt1(s);
     }
 
     if (offset == MTU2_DSP_PACE_STATUS && size == 1) {
@@ -538,6 +605,34 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
     RZA1HMtu2Event *ev;
 
     switch (offset) {
+    case MTU2_TSR_1:
+        s->regs[offset] &= (uint8_t)value;   /* write-0-to-clear, like TSR_3 */
+        rza1h_mtu2_update_irq(s, &s->ch1a);
+        return;
+    case MTU2_TIER_1:
+        s->regs[offset] = (uint8_t)value;
+        rza1h_mtu2_update_irq(s, &s->ch1a);
+        return;
+    case MTU2_TCNT_1:
+        if (size == 2) {
+            rza1h_mtu2_set_tcnt1(s, value);
+            rza1h_mtu2_ch1a_arm(s);
+        } else {
+            memcpy(&s->regs[offset], &value, size);
+        }
+        return;
+    case MTU2_TCR_1: {
+        uint16_t tcnt = rza1h_mtu2_tcnt1(s);   /* keep the count across a prescaler change */
+
+        s->regs[offset] = (uint8_t)value;
+        rza1h_mtu2_set_tcnt1(s, tcnt);
+        rza1h_mtu2_ch1a_arm(s);
+        return;
+    }
+    case MTU2_TGRA_1:
+        memcpy(&s->regs[offset], &value, size);
+        rza1h_mtu2_ch1a_arm(s);
+        return;
     case MTU2_TSR_3:
         /* Write-0-to-clear / write-1-to-preserve, the real MTU2 TSR
          * protocol -- see file comment for why a plain store is wrong. */
@@ -568,6 +663,15 @@ static void rza1h_mtu2_write(void *opaque, hwaddr offset, uint64_t value,
         uint8_t old = s->regs[offset];
         uint8_t now = (uint8_t)value;
 
+        if ((now ^ old) & MTU2_TSTR_CST1) {
+            uint16_t tcnt = rza1h_mtu2_tcnt1(s);   /* sampled under the old CST1 */
+
+            s->regs[offset] = now;
+            rza1h_mtu2_set_tcnt1(s, tcnt);
+            rza1h_mtu2_ch1a_arm(s);
+            rza1h_debug("mtu2", "ch1 %s (TCNT_1 %u)", (now & MTU2_TSTR_CST1) ? "started" :
+                        "stopped", tcnt);
+        }
         s->regs[offset] = now;
         if ((now & MTU2_TSTR_CST3) && !(old & MTU2_TSTR_CST3)) {
             rza1h_mtu2_rearm(s, &s->ch3a);
@@ -698,6 +802,15 @@ static void rza1h_mtu2_ch3a_tick(void *opaque)
     rza1h_mtu2_update_irq(s, &s->ch3a);
 }
 
+static void rza1h_mtu2_ch1a_tick(void *opaque)
+{
+    RZA1HMtu2State *s = RZA1H_MTU2(opaque);
+
+    ptimer_set_limit(s->ch1a.timer, 0x10000, 1);   /* next match: a full wrap later */
+    s->regs[MTU2_TSR_1] |= 1;
+    rza1h_mtu2_update_irq(s, &s->ch1a);
+}
+
 static void rza1h_mtu2_ch4a_tick(void *opaque)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(opaque);
@@ -744,6 +857,9 @@ static void rza1h_mtu2_reset(DeviceState *dev)
 
     memset(s->regs, 0, sizeof(s->regs));
     rza1h_mtu2_stop(&s->ch3a);
+    rza1h_mtu2_stop(&s->ch1a);
+    s->tcnt1_frozen = 0;
+    s->tcnt1_base_ns = s->tcnt3_base_ns;
     rza1h_mtu2_stop(&s->ch4a);
     rza1h_mtu2_stop(&s->ch4b);
     rza1h_mtu2_stop(&s->ch4c);
@@ -806,15 +922,26 @@ static void rza1h_mtu2_init(Object *obj)
     s->ch4d.tstr_cst_bit = MTU2_TSTR_CST4;
     s->ch4d.arms_on_tstr = false; /* TGI4A/TGI4B-style -- see file comment's TGI4D paragraph */
     sysbus_init_irq(sbd, &s->ch4d.irq);
+
+    /* sysbus IRQ 5 (after the five above, so their indices don't move) */
+    s->ch1a.tcr_off = MTU2_TCR_1;
+    s->ch1a.tier_off = MTU2_TIER_1;
+    s->ch1a.tgr_off = MTU2_TGRA_1;
+    s->ch1a.tsr_off = MTU2_TSR_1;
+    s->ch1a.bit = 0;
+    s->ch1a.tstr_cst_bit = MTU2_TSTR_CST1;
+    s->ch1a.arms_on_tstr = true;
+    sysbus_init_irq(sbd, &s->ch1a.irq);
 }
 
 static void rza1h_mtu2_realize(DeviceState *dev, Error **errp)
 {
     RZA1HMtu2State *s = RZA1H_MTU2(dev);
-    RZA1HMtu2Event *events[] = { &s->ch3a, &s->ch4a, &s->ch4b, &s->ch4c, &s->ch4d };
+    RZA1HMtu2Event *events[] = { &s->ch3a, &s->ch4a, &s->ch4b, &s->ch4c, &s->ch4d,
+                                 &s->ch1a };
     ptimer_cb callbacks[] = { rza1h_mtu2_ch3a_tick, rza1h_mtu2_ch4a_tick,
                              rza1h_mtu2_ch4b_tick, rza1h_mtu2_ch4c_tick,
-                             rza1h_mtu2_ch4d_tick };
+                             rza1h_mtu2_ch4d_tick, rza1h_mtu2_ch1a_tick };
     size_t i;
 
     for (i = 0; i < ARRAY_SIZE(events); i++) {

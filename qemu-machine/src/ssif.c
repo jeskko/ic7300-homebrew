@@ -31,6 +31,14 @@
  * "<source>-tone" and "<source>-file" (the same syntax; "none" clears a file, which brings the
  * tone back, and re-setting a file restarts it), plus a read-only "<source>-status"
  * ("tone", "waiting 1.0 s", "playing 12.3/77.6 s", "done", "off").
+ * RTTY demodulator (the DSP's FSK demod, notes/dsp-protocol.md "RTTY receive path"): while
+ * the fake DSP's mode (opcode 0x22) is RTTY (4) or RTTY-R (5), the fmt source's samples go
+ * through mark/space tone detectors (complex mix to 0 Hz, 2-pole 60 Hz low-pass each) and the
+ * stronger tone drives the "rtd" GPIO line = P8_7 (1 = mark; inverted for RTTY-R; mark when
+ * both tones are below the squelch or in any other mode). The firmware samples it at 1 kHz
+ * and does the UART framing and Baudot itself. Knobs: RZA1H_RTTY_MARK (2125 Hz),
+ * RZA1H_RTTY_SHIFT (170 Hz), RZA1H_RTTY_SQUELCH (0.01 of full scale, tone amplitude).
+ * The transitions land on DMA-block edges (0.75 ms), well inside a 22 ms bit.
  * What it receives: DR_AF L/R peak levels, logged once per second of emulated time when
  * non-zero (RZA1H_DEBUG=ssif).
  *
@@ -43,6 +51,8 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
+#include "hw/core/irq.h"
+#include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
@@ -51,6 +61,7 @@
 
 #include "rz_a1h.h"
 #include "rza1h_debug.h"
+#include "fake_dsp.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(RZA1HSsifState, RZA1H_SSIF)
 
@@ -102,9 +113,26 @@ typedef struct SsifChannel {
     bool tx_seen;
 } SsifChannel;
 
+/* Mark/space tone detector (see the file comment). */
+typedef struct SsifFskTone {
+    double c, s;                 /* phasor e^{-j w n} */
+    double dc, ds;               /* its per-frame rotation */
+    double i1, q1, i2, q2;       /* two one-pole stages of the mixed product */
+} SsifFskTone;
+
+typedef struct SsifFsk {
+    SsifFskTone mark, space;
+    double alpha, squelch2;
+    unsigned renorm;
+    int level;                   /* last level driven on rtd, -1 = not yet */
+    uint64_t edges;
+} SsifFsk;
+
 struct RZA1HSsifState {
     SysBusDevice parent_obj;
     MemoryRegion iomem;
+    qemu_irq rtd;
+    SsifFsk fsk;
     SsifChannel ch[SSIF_CHANNELS];
     SsifSource src[SSIF_SOURCES];
     bool fmt_follows_tone, fmt_follows_file;
@@ -355,6 +383,82 @@ static double ssif_file_sample(SsifSource *src)
     return f->gain * x;
 }
 
+static void ssif_fsk_tone_init(SsifFskTone *t, double hz)
+{
+    memset(t, 0, sizeof(*t));
+    t->c = 1;
+    t->dc = cos(2 * M_PI * hz / SSIF_FRAME_HZ);
+    t->ds = -sin(2 * M_PI * hz / SSIF_FRAME_HZ);
+}
+
+static void ssif_fsk_init(SsifFsk *f)
+{
+    const char *e;
+    double mark = 2125, shift = 170, sq = 0.01;
+
+    if ((e = getenv("RZA1H_RTTY_MARK"))) {
+        mark = atof(e);
+    }
+    if ((e = getenv("RZA1H_RTTY_SHIFT"))) {
+        shift = atof(e);
+    }
+    if ((e = getenv("RZA1H_RTTY_SQUELCH"))) {
+        sq = atof(e);
+    }
+    ssif_fsk_tone_init(&f->mark, mark);
+    ssif_fsk_tone_init(&f->space, mark + shift);
+    f->alpha = 1 - exp(-2 * M_PI * 60 / SSIF_FRAME_HZ);
+    f->squelch2 = sq * sq / 4;   /* |mixed|^2 of a tone of amplitude sq is (sq/2)^2 */
+    f->renorm = 0;
+    f->level = -1;
+    f->edges = 0;
+}
+
+/* One tone's detector step; returns |lowpassed mix|^2. */
+static double ssif_fsk_tone_step(SsifFskTone *t, double x, double a)
+{
+    double c = t->c * t->dc - t->s * t->ds;
+
+    t->s = t->c * t->ds + t->s * t->dc;
+    t->c = c;
+    t->i1 += a * (x * t->c - t->i1);
+    t->q1 += a * (x * t->s - t->q1);
+    t->i2 += a * (t->i1 - t->i2);
+    t->q2 += a * (t->q1 - t->q2);
+    return t->i2 * t->i2 + t->q2 * t->q2;
+}
+
+/* One DX_FMT L sample through the RTTY demodulator; drives rtd on a change. */
+static void ssif_fsk_sample(RZA1HSsifState *s, double x)
+{
+    SsifFsk *f = &s->fsk;
+    int level = 1;
+
+    if (fake_dsp_mode == 4 || fake_dsp_mode == 5) {
+        double m = ssif_fsk_tone_step(&f->mark, x, f->alpha);
+        double sp = ssif_fsk_tone_step(&f->space, x, f->alpha);
+
+        if (++f->renorm >= 4096) {   /* keep the phasors on the unit circle */
+            for (SsifFskTone *t = &f->mark; t <= &f->space; t++) {
+                double r = 1 / hypot(t->c, t->s);
+                t->c *= r;
+                t->s *= r;
+            }
+            f->renorm = 0;
+        }
+        if (MAX(m, sp) >= f->squelch2) {
+            level = (m >= sp) ^ (fake_dsp_mode == 5);
+        }
+    }
+    if (level != f->level) {
+        if (f->level >= 0) {
+            f->edges++;
+        }
+        f->level = level;
+        qemu_set_irq(s->rtd, level);
+    }
+}
+
 /* Next 24-bit left-justified word for this channel's RX slot. */
 static uint32_t ssif_rx_word(RZA1HSsifState *s, int n)
 {
@@ -382,6 +486,9 @@ static uint32_t ssif_rx_word(RZA1HSsifState *s, int n)
     src->frames++;
     c->rx_slot++;
     x = MIN(MAX(x, -0.999999), 0.999999);
+    if (src == &s->src[2]) {
+        ssif_fsk_sample(s, x);
+    }
     return (uint32_t)(int32_t)(x * 2147483392.0) & 0xffffff00u;
 }
 
@@ -471,6 +578,7 @@ static void rza1h_ssif_reset(DeviceState *dev)
     if (getenv("RZA1H_AF_NOISE")) {
         s->ch[0].noise = s->ch[1].noise = atof(getenv("RZA1H_AF_NOISE"));
     }
+    ssif_fsk_init(&s->fsk);
     /* Rewind the sources; their tone and file settings survive the reset. */
     for (int i = 0; i < SSIF_SOURCES; i++) {
         SsifSource *src = &s->src[i];
@@ -610,6 +718,9 @@ static void rza1h_ssif_init(Object *obj)
     for (int i = 0; i < SSIF_SOURCES; i++) {
         s->src[i].name = ssif_source_names[i];
     }
+    qdev_init_gpio_out_named(DEVICE(obj), &s->rtd, "rtd", 1);
+    /* RTTY demodulator activity: RTD level changes since reset (read-only) */
+    object_property_add_uint64_ptr(obj, "rtd-edges", &s->fsk.edges, OBJ_PROP_FLAG_READ);
     ssif_add_props(obj, 0, ssif_get_tone_0, ssif_set_tone_0, ssif_get_file_0, ssif_set_file_0,
                    ssif_get_status_0);
     ssif_add_props(obj, 1, ssif_get_tone_1, ssif_set_tone_1, ssif_get_file_1, ssif_set_file_1,

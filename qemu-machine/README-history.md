@@ -8648,3 +8648,18 @@ MENU > DECODE, `qom-set /machine/ssif fmt-file|fmt-tone`, and memory reads over 
   stays in USB and MENU slot 3 opens VOICE TX instead of DECODE. The test retries each one until
   it gets FB, and reads the mode back.
 
+## RTTY decodes: MTU2 ch1 + a fake FSK demodulator on RTD (2026-09-25, later still)
+
+- MTU2 ch1 (`mtu2.c`): live TCNT_1 (TPSC from TCR_1, 8 MHz here), match at (TGRA_1 − TCNT_1)
+  mod 65536, TSR_1 write-0-to-clear, GIC 146 as sysbus IRQ 5. Live: TSTR = 0xc3; TGRA_1 went
+  0x82f4 → 0xdb34 between two reads, so the ISR runs. `bench_boot.py`: the main screen is
+  pixel-exact at 3.1 s emulated, unchanged.
+- Demodulator (`ssif.c`): complex mix to 0 Hz at mark and at space, a 2-pole 60 Hz low-pass
+  each, and the stronger one wins. The squelch is 0.01 FS tone amplitude. It runs at 96 kHz on
+  the fmt source, and edges land on 0.75 ms DMA-block boundaries. Checked offline first
+  (numpy/scipy copy + the firmware's UART timing + the table from body.bin), which decoded the
+  sample exactly, then live.
+- Live: RTTY → "WELCOME TO WIKIPEDIA, THE FREE ENCYCLOPEDIA THAT" on screen (216 RTD edges in
+  10 s). RTTY-R with the mirrored file → the same text. RTTY-R with the normal file →
+  `IKWHK832(':&'6/'7-2&!2?:)`-style garbage. Gotcha: CI-V mode 05 is FM; RTTY-R is 08.
+

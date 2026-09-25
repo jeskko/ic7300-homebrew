@@ -48,6 +48,11 @@ typedef struct FakeDsp {
     uint32_t replies;
 } FakeDsp;
 
+/* The demodulator mode the fake DSP was last told (opcode 0x22 byte 1: 0 USB, 1 LSB, 2 CW,
+ * 4 RTTY, 5 RTTY-R, 0x0a AM, 0x0c FM; 0xff = none yet). A global because the DSP's audio side
+ * lives in ssif.c (the RTTY demodulator driving the RTD pin reads it). */
+extern uint8_t fake_dsp_mode;
+
 void fake_dsp_reset(FakeDsp *d);
 /* A complete command word from the CPU (already un-bit-reversed). */
 void fake_dsp_command(FakeDsp *d, uint32_t w);

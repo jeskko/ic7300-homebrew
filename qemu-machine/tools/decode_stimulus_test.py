@@ -10,15 +10,18 @@ places (notes/dsp-protocol.md, "DX_FMT consumers"):
   - CTCSS tone detector, FUN_200636b0 -> FUN_200635ec/FUN_20063f08: armed by FUN_200527b8 via
     FUN_20063548(tone index) in FM with TSQL on; state byte 0x203fc6e7 (1 = running);
     "tone present" flag 0x203fc6f3.
-RTTY *text* doesn't come from DX_FMT: the DSP demodulates FSK and drives the mark/space bit on
-pin P8_7 (RTD), which the CPU samples at 1 kHz from MTU2 ch1 TGI1A (GIC 146) -- neither is
-modelled yet, so no text decodes in the emulator (see notes/dsp-protocol.md).
+RTTY *text* doesn't come from DX_FMT on the CPU: the DSP demodulates FSK and drives the
+mark/space bit on pin P8_7 (RTD), which the CPU samples at 1 kHz from MTU2 ch1 TGI1A (GIC 146)
+and frames/decodes itself. In the emulator ssif.c's fake-DSP demodulator drives RTD from the
+fmt source and mtu2.c models ch1 (notes/dsp-protocol.md, "RTTY receive path").
 
-Test 1: RTTY mode, MENU > DECODE, RTTY file on DX_FMT: expect the scope enabled and FFT peaks
-at mark 2125 / space 2295 Hz. Test 2: FM, TSQL 88.5 Hz, tones on DX_FMT: expect the detector
-to flag 88.5 Hz only.
+Test 1: RTTY mode, MENU > DECODE, RTTY file on DX_FMT: expect the scope enabled, FFT peaks at
+mark 2125 / space 2295 Hz, and the decoded text on the screen (the text object at 0x20397166)
+-- --expect TEXT, or at least 8 letters. Test 2: RTTY-R with the file's spectrum mirrored
+(mark and space swapped): the same text again; then RTTY-R with the unmirrored file: not.
+Test 3: FM, TSQL 88.5 Hz, tones on DX_FMT: expect the detector to flag 88.5 Hz only.
 
-Usage: decode_stimulus_test.py RTTY_FILE [--out DIR]
+Usage: decode_stimulus_test.py RTTY_FILE [--expect TEXT] [--out DIR]
   RTTY_FILE: any RTTY recording (.au/.wav, 16-bit). Its two FSK tones are found by FFT and the
   signal is shifted (SSB, Hilbert) so they sit at 2125/2295 Hz, written as a 12 kHz WAV.
   e.g. decode_stimulus_test.py "../scratch/samples/rtty 10 seconds.wav"
@@ -49,6 +52,7 @@ SSIF = "/machine/ssif"
 SCREEN_STATE = 0x203DE180
 FFT_ENABLE, FFT_BINS, FFT_BIN0 = 0x203A2DE5, 0x203A2BDD, 0x145
 CTCSS_STATE, CTCSS_PRESENT = 0x203FC6E7, 0x203FC6F3
+DECODE_TEXT, DECODE_TEXT_LEN = 0x20397166, 0x5ed   # DAT_20013d14's text object
 
 
 def shift_to_mark(src: Path, dst: Path) -> tuple[float, float]:
@@ -79,17 +83,27 @@ def shift_to_mark(src: Path, dst: Path) -> tuple[float, float]:
     # centre the pair on 2210 Hz (mark 2125 / space 2295 for a 170 Hz shift)
     z = np.real(hilbert(y) * np.exp(2j * np.pi * (2210 - (lo + hi) / 2) * np.arange(len(y)) / 12000))
     z *= 0.5 / np.abs(z).max()
+    write_wav(dst, z)
+    # the same with the spectrum mirrored about 2210 Hz: mark and space swap (RTTY-R)
+    t = np.arange(len(z)) / 12000
+    write_wav(dst.with_name(dst.stem + "_rev.wav"),
+              np.real(np.conj(hilbert(z)) * np.exp(2j * np.pi * 4420 * t)))
+    return lo, hi
+
+
+def write_wav(dst: Path, z: np.ndarray):
+    z = z * 0.5 / np.abs(z).max()
     with wave.open(str(dst), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(12000)
         w.writeframes((z * 32767).astype("<i2").tobytes())
-    return lo, hi
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rtty_file", type=Path)
+    ap.add_argument("--expect", help="text the RTTY recording carries (checked as a substring)")
     ap.add_argument("--out", type=Path, default=None, help="directory for screenshots")
     args = ap.parse_args()
 
@@ -124,6 +138,27 @@ def main():
                                    for i in range(n))
         ssif = lambda prop, val: q.cmd("qom-set", path=SSIF, property=prop, value=val)
         shot = lambda name: q.cmd("screendump", filename=str(out / f"{name}.ppm"))
+
+        def decoded_text():
+            raw = tmp / "text.bin"
+            q.cmd("pmemsave", val=DECODE_TEXT, size=DECODE_TEXT_LEN, filename=str(raw))
+            return raw.read_bytes().split(b"\0")[0].decode("latin-1")
+
+        def play_once(path, timeout=240, start=True):
+            if start:
+                ssif("fmt-file", str(path))
+            t0 = time.time()
+            while time.time() - t0 < timeout:
+                time.sleep(2)
+                st = q.cmd("qom-get", path=SSIF, property="fmt-status").get("return", "")
+                if st == "done":
+                    time.sleep(1)   # the last character's stop bit
+                    return True
+            return False
+
+        def new_text(before):
+            after = decoded_text()
+            return after[len(before):] if after.startswith(before) else after
         t0 = time.time()
         while time.time() - t0 < 30 and q.pc() != 0x20029B18:
             time.sleep(0.05)
@@ -156,7 +191,8 @@ def main():
         time.sleep(2)
         state = mem(SCREEN_STATE)[0]
         check("RTTY decode screen open", state in (10, 12), f"screen state {state}")
-        ssif("fmt-file", f"{stim},loop")
+        before = decoded_text()
+        ssif("fmt-file", str(stim))
         time.sleep(6)
         check("scope capture enabled", mem(FFT_ENABLE)[0] == 1, f"flag {mem(FFT_ENABLE)[0]}")
         bins = mem(FFT_BINS, 105)
@@ -167,7 +203,26 @@ def main():
         check("FFT peaks at mark/space", abs(hz(lo) - 2125) < 18 and abs(hz(hi) - 2295) < 18,
               f"{hz(lo):.0f} Hz ({bins[lo]}), {hz(hi):.0f} Hz ({bins[hi]}); "
               f"median bin {sorted(bins)[52]}")
+        check("RTTY file played", play_once(stim, start=False), "fmt-status done")
+        text = new_text(before).split("\r")[-1]
+        letters = sum(ch.isalpha() for ch in text)
+        good = (args.expect in text) if args.expect else letters >= 8
+        check("RTTY text decoded", good, repr(text))
+        ref = args.expect or text.strip()
         shot("rtty-decode")
+
+        # --- Test 2: RTTY-R: mirrored file decodes, the normal one doesn't ---
+        check("mode RTTY-R", set_mode(0x08), "CI-V 06 08 read back")
+        before = decoded_text()
+        play_once(stim.with_name(stim.stem + "_rev.wav"))
+        rtext = new_text(before)
+        check("RTTY-R decodes the mirrored file", bool(ref) and ref in rtext,
+              repr(rtext))
+        before = decoded_text()
+        play_once(stim)
+        wtext = new_text(before)
+        check("RTTY-R garbles the normal file", ref not in wtext, repr(wtext))
+        shot("rtty-r-decode")
         ssif("fmt-file", "none")
         fp.press("EXIT")
         fp.press("EXIT")

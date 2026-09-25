@@ -126,6 +126,7 @@
  * one that already gave OSTM0 its ID 134). */
 #define RZA1H_MTU2_BASE 0xFCFF0000
 #define RZA1H_MTU2_SIZE 0x00000400
+#define RZA1H_MTU2_TGI1A_IRQ 146 /* added 2026-09-25: RTTY RX bit sampler, see mtu2.c */
 #define RZA1H_MTU2_TGI3A_IRQ 154
 #define RZA1H_MTU2_TGI4A_IRQ 159 /* added 2026-09-09, see mtu2.c's own comment */
 #define RZA1H_MTU2_TGI4B_IRQ 160 /* added 2026-09-20, see mtu2.c's own comment */
