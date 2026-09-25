@@ -329,9 +329,11 @@ borrowed dialog); the list below still applies to it unless marked.
   of these examples do. Real risk if the trigger fires during recording (`voice_audio_tick` also
   runs from `main_idle_loop`) or with no card / after Unmount.
 - **Cache maintenance is unverified on real hardware** — QEMU can't show whether it was needed or
-  whether the sequence added is correct. Check the `0x206xxxxx` region's actual cacheability
-  (translation-table entry, not decodable statically since the descriptors are computed at runtime)
-  before trusting this on real silicon.
+  whether the sequence added is correct. **Cacheability settled 2026-09-25:** the live translation
+  table maps `0x20000000`–`0x207fffff` as normal write-back write-allocate and executable
+  (`notes/memory-map.md`, "RAM layout from static analysis"), so the loader's D-clean + I-invalidate
+  and the SDK's D-clean before scan-out are both required, not optional. The sequence itself is
+  still untested on silicon.
 - **`APP.BIN` content validation** — partly closed by loader v1: magic, ABI version, entry and RAM
   bounds are checked (a headerless file is refused, tested). No checksum yet, so a truncated or
   corrupted file with a valid header would still run.

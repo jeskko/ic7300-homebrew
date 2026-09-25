@@ -220,6 +220,38 @@ scenario step and diffs it against the previous dump. Any write, zeroing include
   UI framebuffer sits at `0x20974fe0`. A zero-page scan underestimates use there: GR2 read only
   88 KB non-zero of its 255 KB, because black pixels read as zero.
 
+## RAM layout from static analysis + the live MMU tables (2026-09-25) ✅
+
+These agree with the marker sweep above, from three independent angles:
+
+- **The firmware's own RAM ends at `0x205DCF60`.** The reset handler (`0x20005050`) sets every
+  CPU mode's stack from `0x205DCF60` downward, `0x100` apart (`ldr r0,[0x200050c0]`). That is the
+  top of the linked data/bss/stack layout. Below it, `0x20395b18`+ is bss and heap, written at
+  runtime (the old appended-loader failure, `sdk/app-loader-design.md`).
+- **No code loads an address in `0x205dd000`–`0x2080afff`.** Checked with a superset disassembly
+  (`scratch/superset_142.sqlite`, every ARM and Thumb decode): of the 32613 PC-relative literal
+  loads, the 25 whose value falls in `0x20601000`–`0x2080afff` are all false decodes. 23 values
+  are ASCII text (e.g. `0x2064656c` = `"led "`) and 2 are junk decodes inside data. The nearest
+  real constants are `0x205dcf60` below and `0x2080c400`/`0x2080d000` above. This only rules out
+  compile-time addresses. A runtime-computed pointer (a pool base plus a size) would not show up,
+  which is why the marker sweep matters.
+- **MMU map.** `mmu_init_body` (`0x200b8d2c`) builds the tables with a base at `0x20000000`. The
+  attributes are computed at runtime (their static words are `0xffffffff`), so they were read
+  live from the emulator's tables. They are built by firmware code, so hardware should match.
+
+| VA = PA | Descriptor | Type | XN | Role |
+|---|---|---|---|---|
+| `0x20000000`–`0x207fffff` | 1 MB sections, TEX=101 CB=01 | normal, write-back write-allocate | no | image, bss/heap/stacks, then free from `0x205dd000` (homebrew loader + app region) |
+| `0x20800000`–`0x2080cfff` | small pages (L2 table at `0x2080c400`), TEX=101 CB=01 | normal, WBWA | **yes** | firmware (page table; `0x2080b000`+ in use) |
+| `0x2080d000`–`0x208fffff` | small pages, TEX=100 CB=00 | normal, **non-cacheable** | yes | firmware DMA/GPU memory: `0x2080d000` loaded by the UI graphics task (`0x2007ee9c`) and `0x200b01xx`; `0x2084cc00` by `graphics_stack_startup_egl_openvg` |
+| `0x20900000`–`0x209fffff` | 1 MB section, TEX=100 CB=00 | normal, non-cacheable | yes | includes the GR2 UI framebuffer `0x20974fe0` |
+| `0x20a00000`+ | sections, TEX=000 CB=00 | strongly ordered | yes | past the end of RAM |
+
+So the homebrew area (`0x20600000`–`0x207fffff`) is cached and executable. Anything the VDC5 or
+a DMA reads from there needs a D-cache clean first, as `sdk/runtime/gfx.c` does. Freshly loaded
+code needs the loader's D-clean plus I-invalidate. `0x20800000`–`0x2080afff` is free but XN, so
+it's usable for data only.
+
 ## Open questions
 - Exact base addresses for the two "mirrors" and the FPGA config block.
 - ~~Whether `0x18000000` is where the *whole* container is mapped~~ —
