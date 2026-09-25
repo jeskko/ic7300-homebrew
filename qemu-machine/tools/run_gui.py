@@ -21,6 +21,7 @@ FRONT_PANEL_HELP below is printed after start (see that string for the key map).
 Usage: run_gui.py [--display gtk|sdl|none] [--screendump out.ppm --after 170]
                    [--flash PATH] [--fast | --icount SPEC] [--no-pwrk] [--civ PATH]
                    [--no-audio] [--tone HZ:LEVEL] [--noise LEVEL]
+                   [--af-file SPEC] [--fmt-file SPEC] [--mic-file SPEC]
                    [--af N] [--rfsql N] [--fpga-sweep-hz N] [--fpga-signals SPEC]
                    [--no-mouse] [--no-keys] [--debug DEVS] [--log PATH]
 
@@ -85,6 +86,8 @@ def main():
     ap.add_argument("--no-pwrk", action="store_true",
                      help="boot straight up: use riic2_eeprom.img and skip the QMP PWRK "
                           "press/wait (default is the realistic PWRK-hold power-on)")
+    ap.add_argument("--qmp", help="also expose a second QMP server on this unix socket path "
+                    "(the first one, /tmp/qemu_run_gui.sock, stays connected to this script)")
     ap.add_argument("--civ", help="also expose CI-V (SCIF0) on this unix socket path "
                                    "(talk to it with tools/civ.py PATH ...; radio address 0x94)")
     ap.add_argument("--no-audio", action="store_true",
@@ -92,6 +95,12 @@ def main():
     ap.add_argument("--tone", help="RZA1H_AF_TONE: fake RX audio tone HZ:LEVEL "
                                     "(e.g. 1000:0.25; 'none' = silence)")
     ap.add_argument("--noise", help="RZA1H_AF_NOISE level")
+    ap.add_argument("--af-file", help="RZA1H_AF_FILE: stimulus audio file for DX_REC L (RX "
+                    "audio), 'path[,gain=G][,delay=S][,loop]'; also DX_FMT L unless --fmt-file. "
+                    "Runtime: qom-set /machine/ssif af-file (see src/ssif.c)")
+    ap.add_argument("--fmt-file", help="RZA1H_FMT_FILE: stimulus file for DX_FMT L (demod "
+                    "output: RTTY decode scope, CTCSS detector)")
+    ap.add_argument("--mic-file", help="RZA1H_MIC_FILE: stimulus file for DX_REC R (mic)")
     ap.add_argument("--af", type=lambda x: int(x, 0),
                      help="RZA1H_FP_AF: front-panel AF pot position at power-on (0..255)")
     ap.add_argument("--rfsql", type=lambda x: int(x, 0),
@@ -139,6 +148,10 @@ def main():
         env["RZA1H_AF_TONE"] = args.tone
     if args.noise is not None:
         env["RZA1H_AF_NOISE"] = args.noise
+    for knob, val in (("RZA1H_AF_FILE", args.af_file), ("RZA1H_FMT_FILE", args.fmt_file),
+                      ("RZA1H_MIC_FILE", args.mic_file)):
+        if val is not None:
+            env[knob] = val
     if args.af is not None:
         env["RZA1H_FP_AF"] = str(args.af)
     if args.rfsql is not None:
@@ -171,6 +184,9 @@ def main():
         qemu_args += ["-icount", icount]
     if args.sd:
         qemu_args += ["-drive", f"if=sd,format=raw,file={args.sd}"]
+    if args.qmp:
+        Path(args.qmp).unlink(missing_ok=True)
+        qemu_args += ["-qmp", f"unix:{args.qmp},server,nowait"]
     if args.civ:
         Path(args.civ).unlink(missing_ok=True)
         qemu_args += ["-chardev", f"socket,id=civ,path={args.civ},server=on,wait=off",

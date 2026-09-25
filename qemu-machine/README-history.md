@@ -8630,3 +8630,21 @@ against the file resampled to 48 kHz with scipy's `resample_poly`.
   floor at rms ≈ 0.06 is ≈ 0.995. The 8 blocks of each snapshot are consecutive, 0.75 ms apart
   in the file, with the ring's wrap visible. Their position (0.98 s, 1.84 s, 2.68 s) matches
   `af-status` (1.0, 1.8, 2.7 s).
+
+## Decoders fed from stimulus files (2026-09-25, later)
+
+The DX_FMT readers were traced statically, then driven live: CI-V for mode/TSQL, `fp.py` for
+MENU > DECODE, `qom-set /machine/ssif fmt-file|fmt-tone`, and memory reads over QMP.
+- RTTY decode screen: screen state 0x203de180 = 10 and scope enable 0x203a2de5 = 1. With the
+  RTTY sample (916/1084 Hz, shifted to 2125/2295 Hz), the 105 FFT bins peak at 2127 and 2297 Hz,
+  and the screen shows the two peaks on the mark/space markers plus the waterfall. No text
+  after 20 s of looping. The UART is armed (0x20414c3c byte 0 = 1) and MTU2 ch1 is programmed
+  (TCR_1 = 1, TIER_1 = 1, TGRA_1 = 0x1f40), but TCNT_1 stays 0: ch1 isn't modelled, so the
+  TGI1A sampler of the RTD pin never runs.
+- FM + TSQL 88.5 (CI-V `1B 01 00 08 85`, `16 43 01`): detector state 0x203fc6e7 = 1. The
+  "present" flag 0x203fc6f3 is 1 for 88.5 Hz at 0.3, 0.1, 0.03 and 0.01 FS, and 0 for none,
+  85.4, 91.5 and 100 Hz.
+- Gotcha: CI-V set commands are sometimes lost, e.g. the first one after boot, where the radio
+  stays in USB and MENU slot 3 opens VOICE TX instead of DECODE. The test retries each one until
+  it gets FB, and reads the mode back.
+

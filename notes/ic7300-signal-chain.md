@@ -117,7 +117,7 @@ drive" question.
 | `HSK0` | P8_8 | — | (was: SPI Multi I/O ch.1) | 100, `EMB_A[3]`/`GP7[5]` (DSP **external memory bus address bit 3**) | — | ❌ no reference found |
 | `HSK1` | P8_9 | — | (was: SPI Multi I/O ch.1) | 98, `EMB_A[4]`/`GP7[6]` (EMIF address bit 4) | — | ✅ **found, 27th session — see history** |
 | `FRWT` | P8_10 | — | (was: SPI Multi I/O ch.1) | 96, `EMB_A[6]`/`GP7[8]` (EMIF address bit 6) | — | ❌ no reference found |
-| `RTD` | P8_7 | — | (not in original 20-signal table; DSP-side companion of the `EMB_A` group) | 97, `EMB_A[5]`/`GP7[7]` (EMIF address bit 5) | — | ❌ no reference found |
+| `RTD` | P8_7 | — (GPIO input, PPR8 bit 7) | **RTTY RX data**: the DSP's demodulated FSK mark/space bit, sampled by the CPU at 1 kHz (MTU2 ch1 TGI1A) — see [dsp-protocol.md](dsp-protocol.md) "RTTY receive path" | 97, `EMB_A[5]`/`GP7[7]` (EMIF address bit 5) | — | ✅ **found 2026-09-25** (`rtty_rx_tgi1a_sample_rtd` 0x200b0ad8) |
 | `FPDX` | P8_11 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `W1`, `DIFFIO_L28n` | ❌ no reference found |
 | `FPSX` | P8_14 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `U1`, `DIFFIO_L24n` | ❌ no reference found |
 | `FPSR` | P8_15 | — | (was: SPI Multi I/O ch.1) | — (no DSP pin) | `V1`, `DIFFIO_L25n` | ❌ no reference found |

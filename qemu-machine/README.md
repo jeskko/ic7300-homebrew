@@ -51,8 +51,16 @@ Measured with `tools/bench_boot.py`.
     (`waiting 1.0 s`, `playing 12.4/21.8 s (looped)`, `done`, `tone`, `off`). The same for
     `mic-`, `fmt-` and `fmt-r-`. A device reset rewinds files but keeps the settings.
   - Verified with `tools/audio_stimulus_check.py FILE [--runtime] [--gain G]`: the file arrives in
-    the 48 kHz ring sample-accurately at unity gain (details in README-history.md). Not checked
-    yet: whether the DX_FMT decoders decode anything.
+    the 48 kHz ring sample-accurately at unity gain (details in README-history.md).
+  - `tools/run_gui.py --af-file/--fmt-file/--mic-file SPEC` passes the knobs through, and
+    `--qmp PATH` opens a second QMP socket for `qom-set` while the window runs.
+  - **DX_FMT consumers tested** (`tools/decode_stimulus_test.py RTTY_FILE`, all 13 checks pass;
+    it shifts any RTTY recording to 2125/2295 Hz itself). The RTTY decode screen's tuning scope
+    shows the mark/space peaks at the right bins, and the waterfall draws. The FM TSQL CTCSS
+    detector flags 88.5 Hz and rejects 85.4/91.5/100 Hz. **RTTY text does not decode yet**: the
+    real DSP demodulates FSK onto pin P8_7 (RTD), and the CPU samples it from MTU2 ch1 TGI1A (GIC
+    146). Neither is modelled; see `notes/dsp-protocol.md`, "DX_FMT consumers and the RTTY
+    receive path".
 - **The SD card slot works** (`src/sdhi.c`, 2026-09-25): `body.bin` drives the card through
   **SDHI0** (`0xE804E000`, Renesas' SD driver library), not MMCIF — that's why the old `mmc.c`
   was never touched. The card is upstream QEMU's `sd-card` on the SDHI's SD bus

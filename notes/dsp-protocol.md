@@ -319,7 +319,7 @@ only make sense at 96/48 kHz. The effective sample rates are:
 |---|---|---|---|---|---|
 | DX_REC (AXR0[4] → SSIF0 RX) | DSP→CPU | L | **RX audio**, taken before AF gain and low-passed. During TX it's the CW sidetone instead ✅ | `ssif0_rx_pump_dx_rec` 0x20060614 → 48 kHz ring 0x203fbdc0 (8×36) → `qso_recorder_rx_audio_block` 0x20067254: audio FFT (48 k and 8 k) + QSO recorder (36→6 ⇒ 8 kHz) | struct+0x180, 0x11811224 |
 | DX_REC | DSP→CPU | R | **mic/TX modulation audio** 🟢 (the DSP's per-block scalar struct+0x274, ×4 interpolated) | ring 0x203fc002 (2 readers): `voice_tx_record_from_mic_block` (TX voice memory, 8 kHz), `voice_tx_record_mic_peak_level` (level meter on the record screen) | struct+0x1a0, 0x11810b34 |
-| DX_FMT (AXR0[6] → SSIF1 RX) | DSP→CPU | L | per-mode demod output ×7.5, 0 in TX. An FIR variant is used for modes 0x0b–0x0d 🟡 | `ssif1_rx_pump_dx_fmt` → ring 0x203fc246 (2 readers): FUN_20020e18 (÷8 → 1024-sample float buffer → FFT kick, a decoder?) and FUN_200635ec (fractional resampler → 8-bit → FUN_20063f08, a decoder) 🟡 | struct+0x1c0, 0x118117f4 |
+| DX_FMT (AXR0[6] → SSIF1 RX) | DSP→CPU | L | per-mode demod output ×7.5, 0 in TX. An FIR variant is used for modes 0x0b–0x0d 🟡 | `ssif1_rx_pump_dx_fmt` → ring 0x203fc246 (2 readers): the RTTY decode screen's tuning scope and the CTCSS detector ✅ (see "DX_FMT consumers and the RTTY receive path" below) | struct+0x1c0, 0x118117f4 |
 | DX_FMT | DSP→CPU | R | never written (0) | not read | struct+0x1e0 |
 | DR_AF (SSIF0 TX → AXR0[5]) | CPU→DSP | L | **playback to the speaker** (recorder playback) ✅ | `ssif0_tx_pump_dr_af` 0x20060778 pops `txL` ring 0x203fbcc0 (13×6) | even samples → LPF 3.6 kHz → speaker mix ×0.703 (AXR0[2] R) and →0x1180fdd8 |
 | DR_AF | CPU→DSP | R | **audio to the transmitter** (TX voice memory) ✅ | pops `txR` ring 0x203fbd5e | even samples → LPF → ×P[0x4b] byte1/255 (MOD level) → struct+0x298 → TX mode code |
@@ -361,7 +361,56 @@ resampled to 96 kHz) into any RX slot: DX_REC L/R and DX_FMT L/R. Set it with `R
 at boot, or at runtime with `qom-set /machine/ssif af-file`. The file arrives in the 48 kHz
 ring sample-accurately at unity gain (`tools/audio_stimulus_check.py`, ncc ≥ 0.989; the limit
 is the 0.01 FS noise floor). Knobs: `qemu-machine/README.md`. Next: feed the CW/FT8/SSTV test
-files into DX_FMT and see which of its two readers (FUN_20020e18, FUN_200635ec) reacts.
+files into DX_FMT and see which of its two readers (FUN_20020e18, FUN_200635ec) reacts. Done,
+next section.
+
+## DX_FMT consumers and the RTTY receive path (2026-09-25)
+
+**DX_FMT has exactly two CPU readers**, and neither is a text decoder. Both are confirmed live
+with stimulus files (`qemu-machine/tools/decode_stimulus_test.py`, all 13 checks pass):
+
+| Reader | Runs when | What it does | Live result |
+|---|---|---|---|
+| `rtty_scope_dx_fmt_reader` 0x20020e18 → `rtty_scope_decimate8` 0x20020d80 → `rtty_scope_fft_1024` 0x20020a50, driven by `rtty_decode_scope_tick` 0x200211c4 | mode class 2 (RTTY/RTTY-R, table 0x2018b548) **and** screen state 0x203de180 = 10/12 (MENU > DECODE); enable flag 0x203a2de5 | ÷8 to 6 kHz, 1024-point FFT once per fill, bins 0x145–0x1ad (1.90–2.52 kHz) → 105 dB bytes at 0x203a2bdd → averaged (1–4) spectrum + 78-line waterfall on the decode screen | the user's RTTY sample shifted to 2125/2295: peaks at 2127–2133 / 2297 Hz; the scope and waterfall draw |
+| `ctcss_dx_fmt_reader` 0x200635ec → `ctcss_resonator_sample` 0x20063e5c, in `ctcss_detector_tick` 0x200636b0 | FM with TSQL on: `FUN_200527b8` calls `ctcss_detector_start` 0x20063548(tone index) → `ctcss_detector_config` 0x200639d0(tone×10, 1); state byte 0x203fc6e7 = 1 (7 = another user, likely tone scan) | fractional resampler (step 0x203903d8) → tuned IIR resonator at the tone from the 50-entry CTCSS table 0x2018b558 (670…2541 = 67.0…254.1 Hz) → ±60 limiter ring → "tone present" 0x203fc6f3 | TSQL 88.5: 88.5 Hz detected at 0.1 and 0.01 FS; 85.4, 91.5, 100 Hz and silence rejected |
+
+**RTTY text is decoded on the CPU, but not from DX_FMT** ✅ (static; the live half is blocked,
+see below). The DSP demodulates FSK and drives the mark/space bit onto a GPIO wire. The CPU
+does the rest:
+
+1. **DSP**: mark/shift config at 0x11801250 picks mark from the float table 0x11825048 (1275,
+   1615, **2125**, 1700, …) and shift from 0x11825250 (**170**, 200, 425, 850), and computes space
+   = mark + shift. Mode 4/5 of the 0x22 jump table install DP+51 = 0x1180282c (every other mode
+   installs 0x1180a12c). That callback is an envelope/level detector writing C1 byte 1. The code
+   that drives the RTD output wasn't located (candidate: the shared per-block function
+   0x1180a140). DSP side from a Sonnet subagent; the two float tables are verified in
+   `front_cpu.bin`, the rest isn't.
+2. **Wire**: `RTD` = P8_7 (DSP `GP7[7]`/`EMB_A[5]`), read as PPR8 bit 7 (0xFCFE3220).
+3. **Sampler**: `rtty_rx_timer_start` 0x200b0850 sets TGRA_1 = TCNT_1 + 8000 and registers
+   event 0x92 = GIC 146 = **MTU2 ch1 TGI1A** (TCR_1 0xFCFF0380, TIER_1 0x384, TSR_1 0x385, TCNT_1
+   0x386, TGRA_1 0x388, per the SVD). Its ISR `rtty_rx_tgi1a_sample_rtd` 0x200b0ad8 re-arms +8000
+   (1 ms) and passes the pin level to `rtty_rx_uart_bit` 0x200b0928.
+4. **UART** (state 0x20414c3c): a start bit is a 1→0 edge. The first data bit is sampled 33
+   ticks later, then one every 22 ticks (22 ms = 45.45 Bd). 5 bits are shifted into +5 and the
+   stop bit is checked. Then code → +6, +7 bit 0 = new, bit 1 = framing error.
+5. **Baudot**: `rtty_rx_baudot_to_ascii` 0x200b0bdc handles 0x1b = FIGS and 0x1f = LTRS. It maps
+   the rest through the **interleaved** table 0x20335f20 (`code*2 + shift`: `E3`, `\n\n`, `A-`,
+   …; interleaving is why a plain ITA2 string search missed it) into a 16-entry ring 0x203df1e2
+   (write index 0x203df1f2).
+6. **Display**: `rtty_decode_rx_char_drain` 0x200137e0 → `rtty_decode_rx_char_filter` 0x200135ac
+   (CR/LF handling) → `rtty_rx_char_append` 0x20014604 (attribute 2 = receive colour; TX echo
+   uses 3) → decode screen text + log.
+
+The RX-enable decision (0x20414c3c byte 0) is in the same routine (Ghidra shows it merged as
+FUN_20184970). It needs byte 0x203def00+0x2df and a few flags; it then calls
+`rtty_rx_timer_start(2, …)`.
+
+**In the emulator** (live, RTTY + DECODE screen): the UART is armed (0x20414c3c byte 0 = 1) and
+MTU2 ch1 is programmed (TCR_1 = 1, TIER_1 = 1, TGRA_1 = 0x1f40). But `mtu2.c` doesn't model
+channel 1, so TCNT_1 stays 0 and TGI1A never fires, and nothing drives RTD. So no text decodes.
+Making it decode needs (a) MTU2 ch1 TGRA compare-match → GIC 146, and (b) a fake-DSP FSK demod
+(mark/space tone detectors on the stimulus at 2125/2295) driving P8_7 in `gpio.c`. Polarity:
+idle/mark = 1, since the UART starts on 1→0.
 
 ## CI-V settings sweep: what reaches the DSP vs the FPGA (2026-09-24)
 
