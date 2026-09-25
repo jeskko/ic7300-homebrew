@@ -2,9 +2,11 @@
 
 `build.py` takes a stock **1.42** container and produces `scratch/hb_loader_142.dat`: the
 stock firmware plus `loader.c`, appended at `0x20600000` and wired in with two patches. Install
-it once with SET > SD Card > Firmware Update. From then on, an app is just an `APP.BIN` on the
-SD card, built from C with `sdk/tools/build_app.py` and started from
-MENU > SET > SD Card > **Homebrew Apps**.
+it once with SET > SD Card > Firmware Update. From then on, an app is just a `.BIN` file in
+`\homebrew\` on the SD card, built from C with `sdk/tools/build_app.py`. MENU > SET > SD Card >
+**Homebrew Apps** opens a list of them; tap one to run it.
+
+![The app picker](screenshots/picker.png)
 
 This replaces the proof-of-concept chain in `sdk/examples/{civ-hello-world,sd-card-app,
 homebrew-apps-menu}`. The menu row, file I/O and fail-closed read checks are the same, and it
@@ -16,27 +18,55 @@ adds what a real app needs:
 | APP.BIN check | none, any bytes were executed | 16-byte header: magic `HB01`, ABI version, entry and RAM end, all bounds-checked |
 | App lifetime | one call, must return immediately | may run as long as it likes, via the idle tick |
 | Blocking calls | impossible (would freeze the UI) | `ui_message_box()`, `hb_wait_until()`, `hb_yield()` |
+| Which app | one fixed `C:\IC-7300\APP.BIN` | any `\homebrew\*.BIN`, picked from a list |
 | Relaunch while running | n/a | refused (no reload over resident code) |
 
 ## Patches (`build.py`, each checked against the stock bytes first)
 
 1. **Idle tick**: `main_idle_loop`'s `bl civ_tx_pump` (`0x20052f64`) becomes `bl hb_idle_hook`.
-   The hook runs `civ_tx_pump` exactly as before, then the resident app's `idle_hook`, if one is
-   set.
+   The hook runs `civ_tx_pump` exactly as before, restores the borrowed picker screen once it
+   has been left (below), then runs the resident app's `idle_hook`, if one is set.
 2. **Menu row**: the same two data patches as `homebrew-apps-menu`. The SD CARD registry goes
    8 → 9 items, and a new catalog record's action is `hb_menu_action`. The list, label and
-   record live in the image's confirmed-unused padding gap.
+   record live in the image's confirmed-unused padding gap. The 14 catalog slots right after
+   the record (`0x882`–`0x88f`) are left zero for the picker's rows.
+
+## The app picker
+
+Tapping Homebrew Apps (`hb_menu_action`):
+
+1. **Lists `C:\homebrew`** with the firmware's own directory RPCs: opendir, readdir by position
+   cookie, closedir (ids 6/9/7; `sdk/api/filesystem.md`). It keeps regular files named
+   `<1-8 chars>.BIN` (any case) whose size could hold a valid app, sorted alphabetically. It
+   keeps the first 14 in that order. Directories, other extensions and empty files are skipped.
+2. **Fills one catalog record per app** in the reserved slots. Each gets the label (the name
+   without `.BIN`) and the shared action `hb_app_row_action`. With no apps, a single
+   non-selectable "No apps in \homebrew" row is shown, using the stock placeholder query.
+3. **Borrows a stock list screen.** The firmware has no free list screen: every category
+   `0x00`–`0x49` belongs to one, and both screen tables run straight into other data
+   (`notes/ui-menu.md`, "Screens"). So the loader borrows **PLAYER SET** (screen `0x63`,
+   category `0x40`, one stock row, deep under the voice recorder). It saves and replaces that
+   category's row list, the screen's title and the category's saved cursor, then calls
+   `operating_mode_change_dispatch(0x63)`. The firmware's navigation stack makes back return to
+   SD CARD.
+4. **Restores it** on the first idle-hook pass after the current screen is no longer `0x63`.
+   The screen is only ever ours while it's on display, and the rows, title and saved cursor
+   return to their exact stock values (checked by the test).
+
+A row tap calls `hb_app_row_action`. It reads the tapped row from the list cursor
+(`*(u16*)0x20390222`, absolute across pages; tested on pages 2 and 3), then loads and runs
+`C:\homebrew\<name>` with the checks below.
 
 ## ABI v1 (`sdk/include/hb/abi.h`)
 
-- `APP.BIN` is loaded at `0x20610000`. Code, data, bss and stack must fit in 128 KB
+- The chosen `.BIN` is loaded at `0x20610000`. Code, data, bss and stack must fit in 128 KB
   (`HB_APP_REGION`).
 - It starts with `struct hb_app_header {magic, abi_version, entry, image_end}`. The loader
   refuses the file unless the magic and version match, `entry` is word-aligned inside the bytes
   actually read, and `image_end` lies within the region.
 - After cache maintenance, the loader calls `entry(&api)` from the menu tap, on the UI thread.
   `api` is `{abi_version, fw_build = 0x0142, idle_hook}`. While the app leaves `idle_hook` set,
-  the loader calls it once per `main_idle_loop` pass and won't load another APP.BIN.
+  the loader calls it once per `main_idle_loop` pass and won't load another app.
 
 ## The app runtime (`sdk/runtime/`)
 
@@ -72,10 +102,37 @@ There are no cross-task races, no new RTOS task, and no open ASID question
 - It returns whether OK was tapped. The OK callback just notes the tap and returns 2, as the
   stock no-callback path does.
 
+## Build and test
+
+```
+python3 sdk/loader/build.py                                   # -> scratch/hb_loader_142.dat
+D=scratch/homebrew
+python3 sdk/tools/build_app.py --keep sdk/examples/hello-gui/build -o $D/HELLO.BIN sdk/examples/hello-gui/main.c
+python3 sdk/tools/build_app.py --keep sdk/examples/about-box/build -o $D/ABOUT.BIN sdk/examples/about-box/main.c
+emu/.venv/bin/python3 qemu-machine/tools/build_flash.py scratch/hb_loader_142.dat $D/flash.bin
+python3 qemu-machine/tools/build_sdcard.py -o $D/sdcard.img --size-mb 128
+mmd   -i $D/sdcard.img@@1M ::homebrew
+mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN ::homebrew/
+
+python3 sdk/loader/test_emu.py                                # scripted end-to-end test
+python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bin --sd $D/sdcard.img
+```
+
+`test_emu.py` scenarios, all passing on 2026-09-25 (`--icount off`):
+
+| Card | Flags | Checks |
+|---|---|---|
+| `ABOUT.BIN`, `HELLO.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
+| `A01`–`A16.BIN`, written A09–A16 first | `--paging` | exactly A01–A14 listed (the cap keeps the alphabetically-first 14); page 2 row 2 launches the right app (A06 = about-box), page 3 row 3 too |
+| no `\homebrew` folder | `--expect-no-apps` | placeholder row only; tapping it does nothing |
+| `README.TXT`, a directory `DIR.BIN`, a 0-byte `EMPTY.BIN` | `--expect-no-apps` | all skipped |
+| `SnakeGame.BIN`, `lower.bin` | `--expect-rows LOWER,SNAKEG~1` | short-name labels |
+| no card at all | `--sd none --expect-no-apps` | directory open fails cleanly → placeholder |
+
 ## Open items
 
 - **Real hardware**: nothing here has run on the radio yet. The cache maintenance before
-  jumping into APP.BIN in particular is unverified (QEMU models no cache incoherency).
+  jumping into an app in particular is unverified (QEMU models no cache incoherency).
 - **Coroutine stack vs. the RTOS**: while the app runs, the UI task's `sp` points into
   `0x2061xxxx`, outside the stack FreeRTOS allocated for it. Preemption and IRQs during
   `main()` worked in every emulator run. Stock FreeRTOS's method-1 overflow check only fires
@@ -85,8 +142,16 @@ There are no cross-task races, no new RTOS task, and no open ASID question
 - **Borrowed dialog**: if the firmware itself wants dialog `0x66` while ours is up (it shows it
   after a settings load that corrected USB SEND/Keying), it would briefly get our text. Nothing
   else ever sees the swap. A dedicated record would need the message table relocated.
+- **Picker limits**: at most 14 apps (the padding gap's free catalog slots); labels are the
+  8.3 short names, in upper case (tested: `SnakeGame.BIN` shows as `SNAKEG~1`, `lower.bin` as
+  `LOWER`). The PLAYER SET screen's
+  EEPROM-backed saved cursor is ours while the picker is up. It's restored in RAM when you leave,
+  but a region-2 EEPROM write that happened to fire during that window would store our value;
+  stock clamps an out-of-range cursor on the next visit.
+- **Picker on real hardware**: the directory scan runs synchronously on the UI thread, like the
+  stock SD-menu rows' own file checks. It's quick on the emulator; not measured on a real card.
 - Inherited from the proof-of-concept loader and still open: `fw_rpc_wait` is unbounded if the
-  SD RPC ring is full; there's no SD-ready / recorder-busy gate before loading; and only one app
-  (`APP.BIN`) is supported, with no picker yet.
+  SD RPC ring is full, and there's no SD-ready / recorder-busy gate before scanning or loading.
+  With no card, the directory open simply fails and the picker shows "No apps".
 - `--icount`: tested only with `--icount off`, like the earlier examples (open item in
   `civ-hello-world/README.md`).

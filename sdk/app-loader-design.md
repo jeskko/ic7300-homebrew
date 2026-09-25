@@ -22,6 +22,12 @@ blocking calls yield to the firmware instead of freezing it. `sdk/examples/hello
 firmware-drawn "Hello, world!" [OK] dialog and returns after OK; its emulator test covers
 relaunch and fail-closed. Design, ABI and new open items: `sdk/loader/README.md`.
 
+**Same day, ninth pass — multiple apps.** Apps now live in `C:\homebrew\*.BIN`, and Homebrew Apps
+opens a picker. It's a real firmware list screen, one row per app, listed with the firmware's own
+directory RPCs (`sdk/api/filesystem.md`). There's no free list screen to use, so the loader
+borrows PLAYER SET (screen `0x63`) while the picker is shown and restores it afterwards
+(`notes/ui-menu.md`, "Screens"). Live-tested, including paging and the 14-app cap.
+
 **2026-09-25, fifth pass — SD-card app loading also WORKING, LIVE-TESTED.** `sdk/examples/sd-card-app/`
 builds directly on `civ-hello-world`: the firmware hook now opens `C:\IC-7300\APP.BIN`, reads it into RAM,
 and calls it, using 4 real wrapper functions found by reading `firmware_update_main`'s own working file-read
@@ -325,7 +331,8 @@ borrowed dialog); the list below still applies to it unless marked.
   bounds are checked (a headerless file is refused, tested). No checksum yet, so a truncated or
   corrupted file with a valid header would still run.
 - **App SDK** — started (loader v1: C apps, versioned ABI, 128 KB region, blocking UI calls).
-  Still one fixed path (`APP.BIN`) and no app picker or multi-app story.
+  Multiple apps are done too (`\homebrew\*.BIN` + a picker, at most 14). Not yet done:
+  per-app metadata (display name, icon, version) beyond the file name.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.

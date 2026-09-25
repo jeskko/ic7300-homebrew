@@ -55,6 +55,26 @@ cold:
 | — | `0x200bc6a4` | `0x11` | `(handle, dest_buf, len, &actual_out)` | read |
 | — | `0x200bc754` | `0x13` | `(handle, offset, 0, &actual_out)` | seek |
 | — | `0x200bc64c` | `0x10` | `(handle, 0)` | close |
+| — | `0x200bc2b4` | `6` | `(dir_path, &dir_handle_out, scratch36)` | open directory |
+| — | `0x200bc3e4` | `9` | `(dir_handle, &dirent)` | read one directory entry |
+| — | `0x200bc30c` | `7` | `(dir_handle)` | close directory |
+
+**Directory listing** (added 2026-09-25 for `sdk/loader/`'s app picker, live-tested). The pattern
+comes from the stock lookup `FUN_200221cc`. Open `"C:\homebrew"` (no trailing backslash), then
+repeatedly read into a 0x34-byte `dirent`:
+
+- Set `+0x08` to a name buffer and `+0x0c` (u16) to its size (stock uses 0x14).
+- Set `+0x2c` to the position cookie returned in `+0x30` by the previous read (0 to start).
+- A read that fails ends the listing.
+
+Output fields, observed live:
+
+- `+0x0e` kind: **1 = regular file**. The stock folder browser treats 2 as a directory and
+  skips `.`/`..`, and treats 3 as a long-name entry followed by the entry it names.
+- `+0x10`: `st_mode`-style permissions (0x1b6 = 0666).
+- `+0x14`: file size.
+
+`sdk/include/hb/firmware.h` has `struct fw_dirent` and the three calls.
 
 All four: call, then `FUN_200214b0(return_value, 0x46)` waits for the RPC to complete and returns 0 on
 success — the exact pattern `firmware_update_main` uses for every one of its own file operations. `path` is

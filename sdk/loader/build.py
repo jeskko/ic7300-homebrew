@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the homebrew loader firmware: a stock 1.42 container with sdk/loader/loader.c appended
 and wired in. Flash the result once (SET > SD Card > Firmware Update); after that, apps are just
-APP.BIN files on the SD card (sdk/tools/build_app.py).
+.BIN files in \\homebrew\\ on the SD card (sdk/tools/build_app.py), picked from SD Card > Homebrew Apps.
 
 Usage:
     python3 sdk/loader/build.py [container.dat] [output.dat]
@@ -13,7 +13,8 @@ Patches, all checked against the expected stock bytes first:
   - SD CARD menu (g_settings_category_registry[0x18]): 8 -> 9 items, list pointer -> a copy
     with a "Homebrew Apps" row appended, whose catalog record's action is hb_menu_action.
     The list, label and record live in a confirmed-unused padding gap inside the image, so
-    only the action pointer reaches into appended RAM (see
+    only the action pointer reaches into appended RAM. The 14 catalog slots after that record
+    are left zero for the app picker's rows, which loader.c fills in at runtime (see
     sdk/examples/homebrew-apps-menu/README.md for why, and notes/ui-menu.md).
 """
 
@@ -42,9 +43,10 @@ REGISTRY_ORIG_COUNT = 8
 REGISTRY_ORIG_LIST = 0x201990bc
 
 CATALOG_BASE = 0x2018ed48
-NEW_CATALOG_INDEX = 0x881
+NEW_CATALOG_INDEX = 0x881                          # the Homebrew Apps row
+APP_ROW_SLOTS = 14                                 # 0x882.., filled at runtime (loader.c MAX_APPS)
 NEW_CATALOG_RECORD = CATALOG_BASE + NEW_CATALOG_INDEX * 20
-NEW_LIST_ADDR = NEW_CATALOG_RECORD + 20
+NEW_LIST_ADDR = NEW_CATALOG_RECORD + 20 * (1 + APP_ROW_SLOTS)
 NEW_LABEL_ADDR = NEW_LIST_ADDR + 36
 GAP_END = 0x201998cc
 FORMAT_FLAGS = 0x00010700

@@ -23,6 +23,66 @@
 #define fw_rpc_wait     FW_FN(0x200214b0, int, (int request, int err_select))
 #define FW_RPC_ERR_SELECT 0x46
 
+/* Directory listing, same RPC family (ids 6/9/7). Pattern from the stock "does this file
+ * exist" lookup FUN_200221cc: open the directory, then read entries by position cookie --
+ * set d.pos = d.next_pos and d.name_len before each read -- until the RPC fails (end of
+ * directory). Observed live: kind 1 = regular file, with st_mode-style permissions at +0x10
+ * (0x1b6 = 0666) and the size at +0x14; the stock folder browser treats kind 2 as directories
+ * (skipping "." and ".."), and kind 3 as a long-name entry followed by the entry it names. */
+struct fw_dirent {                      /* 0x34 bytes */
+    uint8_t   _0[8];
+    char     *name;                     /* in: buffer, out: filled */
+    uint16_t  name_len;                 /* in: buffer size (stock uses 0x14) */
+    uint8_t   kind;                     /* 1 file, 2 directory, 3 long name */
+    uint8_t   _f;
+    uint32_t  mode;                     /* +0x10 */
+    uint32_t  size;                     /* +0x14 */
+    uint8_t   _18[0x14];
+    uint32_t  pos;                      /* +0x2c in: entry to read */
+    uint32_t  next_pos;                 /* +0x30 out: cookie for the next read */
+};
+#define FW_DIRENT_FILE  1
+#define fw_dir_open     FW_FN(0x200bc2b4, int, (const char *path, int *handle, void *scratch36))
+#define fw_dir_read     FW_FN(0x200bc3e4, int, (int handle, struct fw_dirent *d))
+#define fw_dir_close    FW_FN(0x200bc30c, int, (int handle))
+
+/* ---- SET-style list screens (notes/ui-menu.md, "SET-style settings-list engine") -------- */
+struct fw_settings_category {           /* g_settings_category_registry entry */
+    uint32_t        count;
+    const uint32_t *list;               /* entries: type | (val << 16); type 3 = catalog item */
+    uint32_t        flags;
+};
+struct fw_settings_item {               /* g_settings_item_catalog record, 20 bytes */
+    void      (*action)(void);          /* type-3 row tapped; row index in fw_list_cursor */
+    int       (*query)(uint8_t *out);   /* NULL = always selectable */
+    uint32_t    flags;                  /* low byte = render kind, 0 = plain label */
+    const char *en;
+    const char *jp;
+};
+struct fw_screen_descriptor {           /* g_screen_descriptor_table, indexed by screen - 0x13 */
+    void       *render;
+    uint8_t     _4[4];
+    const char *title_en;
+    const char *row_label_en;           /* how a parent list labels this screen */
+    const char *title_jp;
+    const char *row_label_jp;
+};
+
+#define fw_settings_registry    ((volatile struct fw_settings_category *)0x201993e0)
+#define fw_settings_catalog     ((volatile struct fw_settings_item *)0x2018ed48)
+#define fw_screen_descriptors   ((volatile struct fw_screen_descriptor *)0x2018fe24)
+#define fw_current_screen       (*(volatile uint8_t *)0x203de17f)
+#define fw_list_cursor          (*(volatile uint16_t *)0x20390222)
+/* Per-category saved list cursor (EEPROM-backed region 2). */
+#define fw_saved_cursor(cat)    (*(volatile uint32_t *)(0x203de4cc + 0x288 + (cat) * 4))
+
+#define fw_operating_mode_change_dispatch FW_FN(0x2005807c, void, (unsigned screen))
+
+/* Stock placeholder row: non-selectable, no-op action. */
+#define FW_PLACEHOLDER_ACTION   ((void (*)(void))0x20041b48)
+#define FW_PLACEHOLDER_QUERY    ((int (*)(uint8_t *))0x20041b4c)
+#define FW_ITEM_FLAGS_PLAIN     0x00010700u     /* same as the stock "Format" row */
+
 /* ---- Popup message dialogs (notes/ui-menu.md, "Popup message dialogs") ------------------
  *
  * A dialog is an *item* (index into fw_dialog_items) whose message byte selects a *message

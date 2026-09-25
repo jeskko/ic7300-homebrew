@@ -92,7 +92,8 @@ unmodified firmware to a fully-drawn, interactively-drivable main screen.
   firmware ("Homebrew Apps" in SET > SD Card, an idle tick, a header-checked APP.BIN ABI). Apps
   are plain C (`sdk/tools/build_app.py`), and blocking UI calls work via a coroutine runtime.
   `sdk/examples/hello-gui/` shows a real firmware "Hello, world!" [OK] dialog and returns after
-  OK, live-tested in the emulator.
+  OK. Any number of apps can sit in `\homebrew\` on the card, and Homebrew Apps lists them in a
+  firmware list screen (up to 14). All of this is live-tested in the emulator.
 
 **Open / next**: run the firmware's own SD updater on a repacked `.dat` in the emulator, then a
 live SD-card firmware-update test on real hardware (`sdk/roadmap.md`'s Phase 0 payoff), or a

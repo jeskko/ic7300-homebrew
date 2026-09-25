@@ -10,7 +10,7 @@ int main(void)
 }
 ```
 
-Tapping **MENU → SET → SD Card → Homebrew Apps** opens the radio's own popup dialog with our
+Picking **HELLO** from **MENU → SET → SD Card → Homebrew Apps** opens the radio's own popup dialog with our
 text and an OK button. `ui_message_box()` blocks until OK is tapped, then `main()` returns and
 the app exits. The rest of the radio keeps running the whole time.
 
@@ -30,27 +30,22 @@ borrowed dialog.
 ```
 python3 sdk/loader/build.py                        # -> scratch/hb_loader_142.dat (flash once)
 python3 sdk/tools/build_app.py --keep sdk/examples/hello-gui/build \
-    -o scratch/hello-gui/APP.BIN sdk/examples/hello-gui/main.c
-
-emu/.venv/bin/python3 qemu-machine/tools/build_flash.py scratch/hb_loader_142.dat scratch/hello-gui/flash.bin
-python3 qemu-machine/tools/build_sdcard.py -o scratch/hello-gui/sdcard.img --size-mb 128
-mmd   -i scratch/hello-gui/sdcard.img@@1M ::IC-7300
-mcopy -i scratch/hello-gui/sdcard.img@@1M scratch/hello-gui/APP.BIN ::IC-7300/APP.BIN
-
-python3 sdk/examples/hello-gui/test_emu.py         # scripted end-to-end check, below
-# or interactively:
-python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off \
-    --flash scratch/hello-gui/flash.bin --sd scratch/hello-gui/sdcard.img
+    -o scratch/homebrew/HELLO.BIN sdk/examples/hello-gui/main.c
 ```
 
-On real hardware: install `hb_loader_142.dat` once with SET > SD Card > Firmware Update, then
-copy `APP.BIN` to `IC-7300\APP.BIN` on the card. **Not yet tried on real hardware** (see
-the loader README's open items).
+Copy `HELLO.BIN` into `\homebrew\` on the card, then pick **HELLO** from SD Card > Homebrew Apps.
+`sdk/loader/README.md` has the full emulator recipe and the end-to-end test
+(`sdk/loader/test_emu.py`), which launches this app alongside `about-box`.
+
+On real hardware: install `hb_loader_142.dat` once with SET > SD Card > Firmware Update.
+**Not yet tried on real hardware** (see the loader README's open items).
 
 ## What was verified (2026-09-25, `qemu-machine`, `--icount off`)
 
-`test_emu.py` boots the loader firmware and taps through the real menus like a user would. It
-reads guest memory over QMP and takes a screenshot at each step. All checks pass:
+This was verified against loader v1, which loaded a fixed `C:\IC-7300\APP.BIN`. The same checks
+now run through the app picker in `sdk/loader/test_emu.py`. The test then lived here as
+`test_emu.py`; it booted the loader firmware, tapped through the real menus like a user would,
+and read guest memory over QMP with a screenshot at each step. All checks passed:
 
 - The main screen comes up normally with the loader's `main_idle_loop` hook in place.
 - Before the tap, no app is resident (loader `idle_hook == NULL`).

@@ -55,8 +55,12 @@ for why this whole effort exists.
   UI thread so calls like `ui_message_box()` can block without freezing the radio.
   `loader/README.md` has the design, ABI and open items.
 - **`examples/hello-gui/`** — the first C app and first GUI app: a firmware-drawn "Hello, world!"
-  dialog with an OK button; `ui_message_box()` returns after OK, then the app exits. Has a
-  scripted end-to-end emulator test (`test_emu.py`) that also covers relaunch and fail-closed.
+  dialog with an OK button; `ui_message_box()` returns after OK, then the app exits.
+  **`examples/about-box/`** shows two popups in a row.
+- **Multiple apps** (same day): apps are `\homebrew\*.BIN` on the card, and Homebrew Apps opens
+  a firmware list screen of them (a borrowed stock screen, restored on exit). The scripted
+  emulator test `loader/test_emu.py` covers launching, relaunch, paging, the 14-app cap, and
+  empty/junk/no-card cases.
 
 ## Expected growth
 

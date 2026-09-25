@@ -267,6 +267,38 @@ progress messages...) goes through this one mechanism.
   borrows item `0x66` by swapping record `0x53`'s string pointers for the duration of one dialog,
   then restores them (verified restored, live).
 
+## Screens — the two per-screen tables, navigation stack, current screen (2026-09-25)
+
+Traced for the SDK's app picker (`sdk/loader/`); everything below was checked against the 1.42
+image, and the navigation/restore behaviour was confirmed live.
+
+- **Screen ids** run `0x00`–`0x73`. `operating_mode_change_dispatch` maps anything above `0x73`
+  to 0. Ids below `0x13` are the operating screens (main screen etc.); `0x13`+ are menu screens.
+- **Two tables, both indexed by `screen - 0x13`, 0x61 entries each, both packed against other
+  data** (no room to append a screen):
+  - `operating_mode_table` `0x2019add4`, 24-byte records: `+4` u16 category (`0xff` = not a
+    list screen), `+8` enter callback, `+0x11` flag word the dispatcher tests bit by bit. One
+    code reference (literal at `0x20057e8c`, in `operating_mode_table_entry_lookup`); the table
+    is followed directly by other data at `0x2019b6ec`.
+  - **`g_screen_descriptor_table`** `0x2018fe24`, 24-byte records: `+0` render callback
+    (`settings_list_page_fill` `0x20042f3c` for SET-style lists), `+8` English title, `+0xc`
+    English label a parent list uses for this screen (prefixed with an icon byte, e.g.
+    `"\x06SD Card"`), `+0x10` Japanese title, `+0x14` Japanese label. 14 code references, all to
+    the base; entry `0x61` onwards is a different table (value-name strings).
+- Every category `0x00`–`0x49` in `g_settings_category_registry` belongs to some screen; none is
+  free.
+- **Current screen**: `*(u8*)0x203de17f` (`DAT_20057e40 = 0x203de174`, `+0xb`).
+  **Navigation stack**: dispatching to a menu screen from a menu screen pushes the current one at
+  `0x203de174 + 0x14 + depth` (depth at `+0x1e`), so back returns to it. Confirmed live:
+  dispatching `0x63` from the SD CARD row action, then EXIT, lands back on SD CARD (`0x2f`).
+- The title is read from the descriptor at render time, and a list screen's rows from the
+  registry on entry (enter callback `0x20057010` → `settings_list_builder(0)`). Both are RAM, so
+  a screen can be retitled and refilled at runtime. `sdk/loader/` borrows PLAYER SET (`0x63`,
+  category `0x40`) this way and restores it on exit (verified restored, live).
+- Plain SET-style list screens (enter `0x20057010`, the same flag word as SD CARD) include
+  `0x13`–`0x20`, `0x22`–`0x25`, `0x29`–`0x2f`, `0x3b`, `0x3c`, `0x3e`, `0x4f`, `0x50`, `0x53`,
+  `0x55`–`0x57`, `0x59`–`0x5b`, `0x62`, `0x63`.
+
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the
    position-lookup table's largest observed index) — now worth doing precisely *because* records 13/14
