@@ -241,7 +241,7 @@ static address or a bounded arena, and all of them sit below the firmware's stac
 
 How the paths were reached:
 - **Voice TX recording** uses the same recorder pipeline as the QSO recorder. `FUN_200473ec`
-  builds the job with destination byte `0` = `Voice\` or `1` = `VoiceTxoicetxN.wav`, and the
+  builds the job with destination byte `0` = `Voice\` or `1` = `VoiceTx\voicetxN.wav`, and the
   header, stream and finalise writers branch on the control struct's `+0xc` mode. The finaliser
   patches the RIFF sizes through `_DAT_2006b398` (`0x203fcd8e`). All six callers of the file-RPC
   write wrapper (`0x200bc6fc`, RPC `0x12`) were traced to one of these buffers, a stack buffer, or
