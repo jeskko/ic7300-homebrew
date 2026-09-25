@@ -17,11 +17,7 @@ run our own code ("apps") on the radio. See `sdk/roadmap.md` for the survey and 
 `sdk/app-requirements.md` for what each of a few example apps (serial/display hello-world, a simple game,
 an SSTV receiver) would still need — the short version: the firmware-update mechanism's only integrity
 check is an unkeyed MD5 with no signature verification anywhere in the traced boot or update chain, so a
-"flash once" custom-app loader is already technically feasible with no Bug needed. **Also
-actively pursuing a genuine no-reflash trigger** (works on stock firmware) — see
-`notes/sd-card-filesystem-security.md` for a
-promising in-progress lead tied to a real public FatFs advisory disclosure (long-filename buffer overflow
-class) matching the shape of the radio's own SD directory-reading code.
+"flash once" custom-app loader is already technically feasible with no Bug needed.
 
 ## Status
 
