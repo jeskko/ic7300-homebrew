@@ -49,6 +49,15 @@ for why this whole effort exists.
   MENU → SET → SD Card now shows 3 pages instead of 2, and tapping the new row runs `APP.BIN` from the SD
   card exactly like `sd-card-app` does. This closes out both halves of the user's original ask.
 
+- **`loader/`, `include/hb/`, `runtime/`, `tools/build_app.py`** — started 2026-09-25, the first
+  real SDK: a one-time loader firmware (the Homebrew Apps row plus a per-`main_idle_loop` tick and
+  a header-checked APP.BIN ABI), and a C runtime that runs an app's `main()` as a coroutine on the
+  UI thread so calls like `ui_message_box()` can block without freezing the radio.
+  `loader/README.md` has the design, ABI and open items.
+- **`examples/hello-gui/`** — the first C app and first GUI app: a firmware-drawn "Hello, world!"
+  dialog with an OK button; `ui_message_box()` returns after OK, then the app exits. Has a
+  scripted end-to-end emulator test (`test_emu.py`) that also covers relaunch and fail-closed.
+
 ## Expected growth
 
 No fixed structure imposed up front — following this project's own established pattern in `notes/`

@@ -6,6 +6,14 @@ framing.
 
 All addresses below verified against the live Ghidra project (`body.bin`) 2026-08-30.
 
+## ✅ Available in the SDK now: firmware popup dialogs (2026-09-25)
+
+`ui_message_box(text)` (`sdk/include/hb/app.h`) shows the radio's own popup dialog with up to 6
+lines of text and an OK button, and blocks until it's dismissed. It's live-tested in
+`sdk/examples/hello-gui/`. It borrows stock dialog item `0x66`; the mechanism is in
+`notes/ui-menu.md`, "Popup message dialogs". YES/NO and two-button dialogs use the same
+machinery (item type 2, both callbacks) and aren't wrapped yet.
+
 ## ✅ The simple path: icon blitting
 
 **`icon_blit_by_id_v1`** (`0x200ae4d4`, verified) / **`icon_blit_by_id_v2`** (`0x200b0294`, verified, adds

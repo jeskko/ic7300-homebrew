@@ -13,6 +13,15 @@ hang, no visible side effect other than the one CI-V message. **Achieved and liv
 loading, or safety hardening needed solving to get here — those came next, the same way the firmware-update
 reframing was proven in the emulator before anything else was built on top of it.
 
+**2026-09-25, eighth pass — a real SDK: loader v1 + C runtime + the first GUI app, live-tested.**
+`sdk/loader/` supersedes the three proof-of-concept hooks with one loader firmware (C, not
+assembly). It keeps the Homebrew Apps row and adds a per-`main_idle_loop` tick (`civ_tx_pump`'s
+call site again) and a header-checked APP.BIN ABI (`sdk/include/hb/abi.h`). Apps are C
+(`sdk/tools/build_app.py`). The runtime runs `main()` as a coroutine on the UI thread, so
+blocking calls yield to the firmware instead of freezing it. `sdk/examples/hello-gui/` shows a
+firmware-drawn "Hello, world!" [OK] dialog and returns after OK; its emulator test covers
+relaunch and fail-closed. Design, ABI and new open items: `sdk/loader/README.md`.
+
 **2026-09-25, fifth pass — SD-card app loading also WORKING, LIVE-TESTED.** `sdk/examples/sd-card-app/`
 builds directly on `civ-hello-world`: the firmware hook now opens `C:\IC-7300\APP.BIN`, reads it into RAM,
 and calls it, using 4 real wrapper functions found by reading `firmware_update_main`'s own working file-read
@@ -282,7 +291,11 @@ against stock firmware, but a real persistent side effect).
 
 Each example's own README has the fuller per-file writeup and its own regression-test confirmation.
 
-## Open items (as of 2026-09-25, seventh pass)
+## Open items (as of 2026-09-25, eighth pass)
+
+`sdk/loader/README.md` has the loader-v1-specific ones (coroutine stack vs. the RTOS, the
+borrowed dialog); the list below still applies to it unless marked.
+
 
 - **The `-icount` hang.** All three examples reliably hang under this machine's usual `-icount`
   timing (`--fast` included); plain unthrottled execution works correctly and repeatably. Not
@@ -308,9 +321,11 @@ Each example's own README has the fuller per-file writeup and its own regression
   whether the sequence added is correct. Check the `0x206xxxxx` region's actual cacheability
   (translation-table entry, not decodable statically since the descriptors are computed at runtime)
   before trusting this on real silicon.
-- **No `APP.BIN` content validation** — no size/magic/checksum check before executing a loaded file.
-- **A real app SDK beyond "load and call one fixed file"** — every example's loader has a fixed path, a
-  fixed 32 KB size cap, and no versioning/multi-app story. Real next-layer design work, not yet started.
+- **`APP.BIN` content validation** — partly closed by loader v1: magic, ABI version, entry and RAM
+  bounds are checked (a headerless file is refused, tested). No checksum yet, so a truncated or
+  corrupted file with a valid header would still run.
+- **App SDK** — started (loader v1: C apps, versioned ABI, 128 KB region, blocking UI calls).
+  Still one fixed path (`APP.BIN`) and no app picker or multi-app story.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.

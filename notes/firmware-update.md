@@ -92,6 +92,9 @@ firmware...") and noticed the record at `0x2032d1bc` (= record 29's own body) ha
 not one. Dumping the full 76-byte record for both items confirmed the real layout — `{flag(4), english_ptr
 (+4), ...unused (7 slots)..., japanese_ptr(+0x24), japanese_suffix_ptr(+0x28), ...unused (7 slots)...}` —
 and decoding the Japanese pointers directly gives an exact match for both items:
+*(Layout corrected 2026-09-25, see `notes/ui-menu.md` "Popup message dialogs": the record is
+`{flags, en[9] at +0x04, jp[9] at +0x28}`; the "Japanese pointer + suffix" below are simply
+Japanese text lines 0 and 1.)*
 - Item/record `0x1c` (`0x47`, see below): English `"Updating MAIN CPU firmware."`, Japanese
   `"メインCPUのファームウェアを書き換えて"` + shared suffix `"います。"`.
 - Item/record `0x1d` (`0x48`): English `"Updating DSP/FPGA firmware."`, Japanese

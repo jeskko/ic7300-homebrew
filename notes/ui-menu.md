@@ -225,6 +225,48 @@ doesn't go out of bounds — but it's a real, persistent side effect of using th
 in-RAM one, worth remembering if this technique is applied somewhere the "safe to clamp" property
 hasn't been separately checked.
 
+## Popup message dialogs — item table, message records, live state (2026-09-25)
+
+Traced for `sdk/examples/hello-gui/` and confirmed live in the emulator: a custom app shows a real
+firmware dialog with its own text and OK button, the button dismisses it, the callback fires.
+Every popup the radio shows ("Format OK?", "SD Card error." [CLOSE], the firmware-update
+progress messages...) goes through this one mechanism.
+
+- **`g_dialog_item_table`** (`0x2018b8f0`, `0x69` × 16-byte items, index 0 unused):
+  `+0` u8 **type** — `0` no buttons (progress: "LOADING Please wait..."), `1` one button
+  (CLOSE/OK), `2` two buttons (YES/NO, OK/CANCEL, CANCEL/NEXT), `8` timed toast (with `+2`/`+4`
+  u16 timeouts, e.g. `0x64`); `+6` u8 **message record index**; `+0xc` optional on-activate
+  function, called by `ui_activate_menu_item`. Items `0x2d`/`0x31`/`0x3a` are unused (type 1,
+  record `0xff`). Stock one-button OK dialog: item **`0x66`** → record `0x53` "The USB
+  SEND/Keying settings were corrected." [OK], shown with no callbacks at all
+  (`ui_show_message_dialog(0x66, 0, 0)` in `FUN_2004d1a4`, a settings-load routine).
+- **`g_status_message_table`** (`0x2032c91c`, `0x4c`-byte records): `+0` u32 flags (0 plain,
+  1 on destructive YES/NO questions, 2 on errors); `+0x04..+0x24` 9 English string pointers;
+  `+0x28..+0x48` 9 Japanese (Shift-JIS) pointers. In each language, **slots 0-5 are text lines,
+  6/7 the left/right button labels** (a one-button dialog uses slot 7 only), slot 8 always
+  empty; unused slots point at a shared `""` (`0x20359e5c`), never NULL. Past record `0x64` the
+  table runs into string data — there is no free record slot. (This corrects the record layout
+  in `firmware-update.md`'s dialog section, whose "japanese_ptr(+0x24)/suffix(+0x28)" is off by
+  one slot: `+0x28`/`+0x2c` are simply Japanese lines 0/1.)
+- **`g_dialog_state`** (`0x2039c584`) — the one live dialog: `+0` u8 active item (0 = none),
+  `+1` u8 last button tapped, `+2` u16 timeout, `+5` u8 flags, `+8` primary-button callback,
+  `+0xc` secondary callback, `+0x10`/`+0x14` a pending "next" item + callback, `+0x18` an on-close
+  hook.
+- **API**: `ui_show_message_dialog(item, primary_cb, secondary_cb, flag)` (`0x200198bc`) activates
+  the item and installs the callbacks; `ui_show_message_dialog_with_timeout(item, use_timeout,
+  cb)` (`0x20019920`) is the no-button/toast variant. A tap goes `FUN_20035890` →
+  **`ui_dialog_button_tap(button, &out)`** (`0x20019bf8`), which calls the button's callback as
+  `int cb(u8 *result)`; with no callback it yields 2 with `*result` left at 1. A callback that
+  returns 2 and leaves `*result` alone closes the dialog (confirmed live with the SDK's). Real callbacks seen: return 2 with
+  `*result = 3` (`menu_cycle_state_confirm_callback`); call **`ui_dialog_close`** (`0x200199ec`,
+  clears `+0`/`+8`/`+0xc`) themselves and return 3; or chain to a follow-up dialog via
+  **`ui_dialog_set_pending_next(item, cb)`** (`0x200199d0`) and return 4 (the "All Reset?" →
+  NEXT → "Clears all settings..." pair, callback `0x20041c38`), which
+  **`ui_dialog_show_pending_next`** (`0x20019cec`) then opens.
+- The whole image runs from RAM, so both tables are writable at runtime. `sdk/runtime/ui_dialog.c`
+  borrows item `0x66` by swapping record `0x53`'s string pointers for the duration of one dialog,
+  then restores them (verified restored, live).
+
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the
    position-lookup table's largest observed index) — now worth doing precisely *because* records 13/14

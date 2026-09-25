@@ -88,6 +88,12 @@ unmodified firmware to a fully-drawn, interactively-drivable main screen.
   with `qemu-machine/src/sdhi.c` it mounts a FAT32 card image, creates its folders and saves
   settings files. Heavy mounts stall under `-icount` (use `--icount off` for SD work).
 
+- **A homebrew SDK with a first GUI app** (2026-09-25): `sdk/loader/` is a one-time loader
+  firmware ("Homebrew Apps" in SET > SD Card, an idle tick, a header-checked APP.BIN ABI). Apps
+  are plain C (`sdk/tools/build_app.py`), and blocking UI calls work via a coroutine runtime.
+  `sdk/examples/hello-gui/` shows a real firmware "Hello, world!" [OK] dialog and returns after
+  OK, live-tested in the emulator.
+
 **Open / next**: run the firmware's own SD updater on a repacked `.dat` in the emulator, then a
 live SD-card firmware-update test on real hardware (`sdk/roadmap.md`'s Phase 0 payoff), or a
 custom-code hook. Also open: 6 diode-matrix positions, the IC-9700 compression scheme, and where real
