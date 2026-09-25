@@ -105,6 +105,96 @@ strings recoverable directly from records rather than needing separate correlati
 CI-V/EEPROM table or the raw label pool. Both halves of the original question ("what do the different
 menu buttons trigger") now have real, code-level answers for at least these screens.
 
+## The SET-style settings-list engine (SD CARD menu et al.) — category registry + item catalog (2026-09-25)
+
+A second, separate list engine (not the `0x2018f0ec` widget above) drives every SET-tree list screen whose
+screen-descriptor render callback is `0x20042f3c` (now `settings_list_page_fill`): SD CARD, the
+Emergency/Others screens, LOAD OPTION, the firmware-update file list, and so on. Everything below was
+checked this session against decompiles, listings and byte reads of the 1.42 image.
+
+**Data, three levels:**
+1. **Operating-mode table** `0x2019add4` (`operating_mode_table_entry_lookup`, 24-byte records, index
+   `screen-0x13`). This is a different table from `g_screen_descriptor_table` `0x2018fe24`, which holds the
+   names and the render callback. `+4` u16 = **category id**, `+8` = screen-enter callback.
+   `operating_mode_change_dispatch` copies `+4` into `*(u16*)0x20390366`. Screens 0x13–0x67 map to
+   categories 0x00–0x49 (0xff = not a list screen). **SD CARD = screen `0x2f` → category `0x18`**. Its
+   enter callback `0x20057010` only calls `settings_list_builder(0)`.
+2. **`g_settings_category_registry`** `0x201993e0`: 0x4a × `{u32 count; ptr list; u32 reserved}`. List
+   entries are `{u8 type; u8 pad; u16 val}`:
+   - type 1 = go to screen `val`
+   - type 2 = settings value item `val` (0x40-stride table `0x20190ecc`, 326 entries, edited on screen 0x68)
+   - type 3 = catalog item `val`
+3. **`g_settings_item_catalog`** `0x2018ed48`: 39 × 20-byte records `{action, query, flags, en, jp}`. The
+   flags low byte is the "kind" used by `settings_list_item_kind_renderer` (0 = plain label). This is the
+   table earlier notes placed "around `0x2018eebc`". **The earlier `{en, jp, cb_action, cb_query, flags}`
+   framing was off by one field group**: each name goes with the action/query *before* it. Every consumer
+   uses base `0x2018ed48` (literal pools `0x2003fab0`, `0x2004196c`, `0x20086674`, `0x2008abec`). Indices
+   are u16, and nothing checks their bounds.
+
+**SD CARD menu (category 0x18, count 8, list `0x201990bc`)**: Load Setting (3,9) · Save Setting (3,8) ·
+Save Form (2,325) · SD Card Info (1,0x34) · Screen Capture View (3,20) · Firmware Update (3,18) · Format
+(3,22) · Unmount (3,23). REC Start/Stop, Play Files, CI-V Address and similar are catalog entries of
+*other* categories (0x3c voice recorder, 0x1c LOAD OPTION). They are not rows of the SD menu.
+
+**Build**: `settings_list_builder(0)` (`0x2003e5f0`) copies each registry-list entry that passes
+`settings_item_visibility_filter` into `0x203da12e` (152 slots). It then sets `+0xe` = n-1 and `+0x10` = n
+in the list-state struct `0x20390218` (`+0xa` = cursor, `+0xc` = page start = cursor & ~3). **The item
+count is just `registry[cat].count` minus the filtered items.** There is no terminator and no hardcoded
+per-screen count. Lists that aren't a multiple of 4 are normal: category 0 has 7 items, and empty trailing
+slots have type 0 and render blank.
+
+**Render**: `settings_list_page_fill` fills the 4 slot records of the current page (stride 0x54 at
+`0x203ff76c+0xa4`: type, val, enabled, …). Per type:
+- type 1 → `FUN_20042c34`
+- type 2 → `FUN_20042d74` (value text) plus `FUN_20041f20` (grey-out test for a few specific value ids)
+- type 3 → `settings_list_item_kind_renderer`
+
+Labels come from `settings_list_row_label_ptr` (`0x20086000`). For type 3 that is `catalog[val]+0xc+lang*4`.
+
+**Tap → action** (the question of how a tap reaches `cb_action` is now closed):
+- **Touch**: system command `0xca` → `settings_list_touch_row_cmd_handler` (`0x20035dd0`, slot from
+  `*(u8*)0x203901f2`). It checks the row is within the count (`FUN_2003f004`), then calls
+  `settings_list_query_row`. If that returns 0, it arms `key_longpress_arm(release=0x20035db8,
+  hold=0x20035dac, 200)`; otherwise the release callback is the no-op `0x2002ed94`. The release callback
+  `0x20035db8` (raw ARM) calls `settings_list_activate_row(*(u8*)0x203901f2)`.
+- **MULTI push**: command `0x40` → `multi_push_cmd_handler` (`0x20032a44`) → `settings_list_query_row` →
+  `settings_list_activate_row(cursor - page)`.
+- **`settings_list_activate_row`** (`0x2003f184`), per type:
+  - type 1 → `operating_mode_change_dispatch(val)`
+  - type 2 → `*(u16*)0x20390220 = val`, then dispatch(0x68)
+  - **type 3 → `bx` to `catalog[val].action`**, with no arguments (actions read the cursor from
+    `*(u16*)0x20390222`)
+- **Query** (`settings_catalog_call_query`, `0x2003f07c`): a NULL query sets `*out = 1` and the row is
+  selectable. A return of 0 means selectable. Placeholder rows use query `0x20041b4c` (`*out=2; return 1`)
+  with the no-op action `0x20041b48`.
+
+**Firmware Update, concretely**: catalog idx 18 has action `0x2005dc3c` → `sd_firmware_update_row_impl`
+(`0x2005dba0`) → SD checks → `operating_mode_change_dispatch(0x38)`. The file row on the file-list screen
+(screen `0x37`, category `0x1e`, catalog idx 19, action `0x2005dd1c`) goes to
+`sd_firmware_update_file_row_impl` (`0x2005dc4c`), which sets SD-UI state `0x37`. So the update takes two
+taps, not one. This corrects the earlier tap-chain trace in `notes/kernel-rtos.md`; the downstream part of
+that trace still holds.
+
+**Adding a row (for the SDK "Homebrew Apps" button).** There is no dead slot to reuse:
+- All 8 SD-menu entries are real, visible items, and the list sits directly against category 0x19's list
+  at `0x201990dc`.
+- The only catalog records in no registry list are idx 28/29 (REC Start/Stop, swapped in by
+  `settings_list_page_fill` on screen 0x5e) and 35 (`-- Blank --`). All three are non-selectable
+  placeholders.
+
+Extending the list is cheap, though, because the count and the list pointer are plain data:
+- Patch `registry[0x18]` (`0x20199500`): count 8→9, and point the list at a new 9-entry copy with one
+  extra `(3, N)` entry. The list can live anywhere, for example next to the SDK hook at `0x20600000`.
+- The new catalog record must sit at `0x2018ed48 + N*20` with N ≤ 0xffff (u16). The zero padding after the
+  registry, `0x20199758`–`0x201998cc`, is unreferenced: registry categories ≥ 0x4a are never used and no
+  pointer points into the gap. It has stride-aligned slots from `0x2019975c` (N = 0x881) to `0x201998b0`
+  (N = 0x892).
+- The record is `{action = SDK entry (ARM or Thumb, reached via bx), query = 0, flags = 0x00010700 (same
+  as Format), en = jp = "Homebrew Apps"}`. N is neither 5 nor 7, so `settings_item_diode_region_gate`
+  always includes it.
+
+Not yet tested live.
+
 ## Open questions / next steps
 1. **Read more of the table** — only records 0-14 read so far (of at least ~46+ real entries, per the
    position-lookup table's largest observed index) — now worth doing precisely *because* records 13/14

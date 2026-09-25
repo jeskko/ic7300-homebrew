@@ -293,8 +293,15 @@ distinct vs. aliased to the same target) that matters for repurposing one.
   20-byte records `{en_label, jp_label, cb_action +8, cb_query +0xc, flags +0x10}` starting around
   `0x2018eebc` (Firmware Update's own record), with siblings for Save/Load Setting, Format, Unmount, REC
   Start/Stop, Play Files, CI-V Address, etc., stride `0x14` through roughly `0x2018ed80`-`0x2018f000`.
-  Tapping "Firmware Update" calls its record's `cb_action` (`0x2005dd1c`), which calls `FUN_2005dc4c(path,
-  1)` — this checks the SD card is ready and the **SD-UI state byte `*(u8*)0x20390368` is 0**, then sets
+  **[Corrected 2026-09-25, see `notes/ui-menu.md` "SET-style settings-list engine"]**: this record framing
+  is off by one field group. The real table is `g_settings_item_catalog` `0x2018ed48`, laid out as
+  `{action, query, flags, en, jp}`. "Firmware Update" is idx 18 (action `0x2005dc3c` →
+  `sd_firmware_update_row_impl`, which opens screen 0x38). `0x2005dd1c` is idx 19, the *file row* on the
+  firmware-update file-list screen 0x37. The sibling list above is catalog-wide: the SD menu itself is
+  Load/Save Setting, Save Form, SD Card Info, Screen Capture View, Firmware Update, Format, Unmount. The
+  rest of this bullet, from the file-row tap onward, still holds.
+  Tapping the file row calls `cb_action` (`0x2005dd1c`), which calls `FUN_2005dc4c(path,
+  1)` (now `sd_firmware_update_file_row_impl`) — this checks the SD card is ready and the **SD-UI state byte `*(u8*)0x20390368` is 0**, then sets
   it to `0x37`. A **separate 104-entry per-state handler table, `0x2019b70c`**, is ticked every idle-loop
   pass (from both `main_idle_loop` and `main_operating_loop`) by a function currently misnamed
   `digital_mode_log_writer_tick` (`0x2005d234` — real name is something like `sd_ui_state_tick`, not yet

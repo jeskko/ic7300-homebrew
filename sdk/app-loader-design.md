@@ -164,6 +164,10 @@ command handler follows, just with an arbitrary payload instead of a real comman
 
 ## A real "Homebrew Apps" menu button — a concrete, previously-unknown lead
 
+> **Update 2026-09-25**: this is now traced; see `notes/ui-menu.md` ("SET-style settings-list engine") and
+> the open item below. The record layout quoted in this section is off by one field group. The real
+> layout is `{action, query, flags, en, jp}` at base `0x2018ed48`.
+
 The tap-to-post trace surfaced the actual mechanism a menu item like "Firmware Update" uses: a
 **previously undocumented 20-byte item-record table** around `0x2018eebc` (`{en_label, jp_label,
 cb_action, cb_query, flags}`, Save/Load Setting, Format, Unmount, REC Start/Stop, Play Files, CI-V Address
@@ -204,9 +208,15 @@ other design pieces above.
   buffer allocations this project already knows exist) over a longer running session, is not established.
 - **A real app SDK beyond "load and call one fixed file"** — `sd-card-app`'s loader has a fixed path, a
   fixed 32 KB size cap, and no versioning/multi-app story. Real next-layer design work, not yet started.
-- **The `0x2018eebc` item-record table's own render/count logic** — the real path to a genuine menu button
-  (separate from, and not blocking, either proof of concept so far — both still trigger via a hidden
-  front-panel key combo, not a real menu item).
+- **A real "Homebrew Apps" row: the static analysis is done; it needs an implementation and a live test.**
+  The render, count and tap logic is traced in `notes/ui-menu.md` ("SET-style settings-list engine"). There
+  is no dead slot in the SD CARD list (category 0x18, 8 real items), but the count is plain registry data.
+  The minimal patch is:
+  - `registry[0x18]` at `0x20199500`: count 9, list pointer → a new 9-entry list with an extra `(3, N)`
+  - one 20-byte `{action, 0, 0x00010700, en, jp}` catalog record at `0x2018ed48 + N*20` in the unused
+    padding `0x20199758`–`0x201998cc` (e.g. `0x2019975c`, N = 0x881)
+
+  The action is reached by `bx` with no arguments.
 - Minor: `operating_mode_change_dispatch` (`0x2005807c`) was flagged mid-trace as a strong candidate for
   `notes/ui-menu.md`'s own long-standing "final hand-off" mystery — not chased here, noted for whoever
   picks that specific thread back up.
