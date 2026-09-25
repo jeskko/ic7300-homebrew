@@ -121,7 +121,8 @@ emu/.venv/bin/python3 qemu-machine/tools/build_flash.py scratch/hb_loader_142.da
 python3 qemu-machine/tools/build_sdcard.py -o $D/sdcard.img --size-mb 128
 mmd   -i $D/sdcard.img@@1M ::homebrew
 python3 sdk/tools/build_app.py --keep sdk/examples/cube/build -o $D/CUBE.BIN sdk/examples/cube/main.c
-mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN $D/CUBE.BIN ::homebrew/
+python3 sdk/tools/build_app.py --keep sdk/examples/minesweeper/build -o $D/MINES.BIN sdk/examples/minesweeper/main.c
+mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN $D/ABOUT.BIN $D/CUBE.BIN $D/MINES.BIN ::homebrew/
 
 python3 sdk/loader/test_emu.py                                # scripted end-to-end test
 python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bin --sd $D/sdcard.img
@@ -131,7 +132,7 @@ python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bi
 
 | Card | Flags | Checks |
 |---|---|---|
-| `ABOUT.BIN`, `CUBE.BIN`, `HELLO.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), CUBE (overlay on, input grabbed, 30 frames/s, taps don't reach the picker underneath, tap toggles wireframe/filled, X exits and restores GR3), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
+| `ABOUT.BIN`, `CUBE.BIN`, `HELLO.BIN`, `MINES.BIN` | (default) | picker title and sorted rows; launch HELLO, ABOUT (two dialogs in a row), CUBE (overlay on, input grabbed, 30 frames/s, taps don't reach the picker underneath, tap toggles wireframe/filled, X exits and restores GR3), MINES (first dig lays 12 mines clear of it, hold/FLAG-mode flags, digging every safe cell wins, a mine loses and freezes, no tap reaches the picker, EXIT key quits without reaching the picker), HELLO again; each app's dialog text and callback, clean exit, stock dialog text restored; back → SD CARD with the borrowed screen's rows, title and saved cursor restored; picker reopens |
 | `A01`–`A16.BIN`, written A09–A16 first | `--paging` | exactly A01–A14 listed (the cap keeps the alphabetically-first 14); page 2 row 2 launches the right app (A06 = about-box), page 3 row 3 too |
 | no `\homebrew` folder | `--expect-no-apps` | placeholder row only; tapping it does nothing |
 | `README.TXT`, a directory `DIR.BIN`, a 0-byte `EMPTY.BIN` | `--expect-no-apps` | all skipped |
@@ -162,7 +163,8 @@ firmware leaves GR3 configured but set to "show the lower layer". So:
 
 **Touch and keys.** `hb_touch_read()` reads the front-panel register file
 (`notes/front-panel-report.md`): tag `+0x13`, then X/Y big-endian at `+0x14/+0x16`, in
-calibrated pixels. While the app has grabbed input, `hb_input_hook` skips
+calibrated pixels. `hb_key_down()` reads a key's bit from the same file
+(`+0x0d..+0x11`). While the app has grabbed input, `hb_input_hook` skips
 `ui_input_poll_tick`, which handles touch, the key scanner, auto-repeat and long-press. It also
 copies the live key bits into the scanner's latched shadow, so nothing held or released
 meanwhile becomes a press afterwards. The dials aren't grabbed: they're consumed elsewhere in

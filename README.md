@@ -94,7 +94,8 @@ unmodified firmware to a fully-drawn, interactively-drivable main screen.
   `sdk/examples/hello-gui/` shows a real firmware "Hello, world!" [OK] dialog and returns after
   OK. Any number of apps can sit in `\homebrew\` on the card, and Homebrew Apps lists them in a
   firmware list screen (up to 14). Apps can also take over the whole screen: a full-screen
-  canvas on the top VDC5 plane with touch input. `sdk/examples/cube/` is a spinning 3D cube.
+  canvas on the top VDC5 plane with touch input. `sdk/examples/cube/` is a spinning 3D cube, and
+  `sdk/examples/minesweeper/` a playable 10×10 Minesweeper (App 3).
   All of this is live-tested in the emulator.
 
 **Open / next**: run the firmware's own SD updater on a repacked `.dat` in the emulator, then a

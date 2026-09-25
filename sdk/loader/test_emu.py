@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 r"""End-to-end emulator test for the loader's app picker, with sdk/examples/hello-gui,
-sdk/examples/about-box and sdk/examples/cube as the apps. Boots the loader firmware in qemu-machine, taps through
+sdk/examples/about-box, sdk/examples/cube and sdk/examples/minesweeper as the apps. Boots the loader firmware in qemu-machine, taps through
 MENU > SET > SD Card > Homebrew Apps like a user would, and checks guest memory plus a
 screenshot at each step.
 
 Build the inputs first (see README.md "Build and test"), then:
-    python3 sdk/loader/test_emu.py                     # card with \homebrew\{ABOUT,CUBE,HELLO}.BIN
+    python3 sdk/loader/test_emu.py                     # card with \homebrew\{ABOUT,CUBE,HELLO,MINES}.BIN
     python3 sdk/loader/test_emu.py --sd EMPTY.img --expect-no-apps
 
 Exits non-zero on the first failed check. Screenshots land in --shots
@@ -83,8 +83,8 @@ class Emu:
         subprocess.run(["magick", str(ppm), str(ppm.with_suffix(".png"))], check=True)
         ppm.unlink()
 
-    def touch(self, x: int, y: int, settle: float = 1.5) -> None:
-        self.fp.touch(x, y)
+    def touch(self, x: int, y: int, settle: float = 1.5, hold: float = 0.15) -> None:
+        self.fp.touch(x, y, hold)
         time.sleep(settle)
 
     def press(self, key: str, settle: float = 1.2) -> None:
@@ -179,6 +179,96 @@ def run_cube(emu: Emu, api: int, row: int) -> None:
     check(emu.read(CURRENT_SCREEN, 1)[0] == 0x63, "back on the picker")
 
 
+MINES_N, MINES_CELL, MINES_GRID = 10, 26, 6
+READY, PLAYING, WON, LOST = range(4)
+HIDDEN, DUG, FLAGGED = range(3)
+MINES_MODE, MINES_NEW = (329, 190), (429, 190)
+
+
+def mines_xy(i: int) -> tuple[int, int]:
+    return (MINES_GRID + i % MINES_N * MINES_CELL + 13, MINES_GRID + i // MINES_N * MINES_CELL + 13)
+
+
+def run_mines(emu: Emu, api: int, row: int) -> None:
+    rt = nm(EXAMPLES / "minesweeper" / "build" / "app.elf")
+    state = lambda: emu.read(rt["g_state"], 1)[0]
+    cells = lambda: emu.read(rt["g_cell"], 100)
+    print(f"-- launch minesweeper (row {row})")
+    emu.touch(150, ROW_Y[row], 2.5)
+    cursor = emu.read(0x20390222, 2)            # the launch tap itself moves it
+    emu.shot("mines-1-new")
+    check(emu.word(GR3 + 0x20) & 3 == 2 and emu.word(GR3 + 0x0c) in FB, "GR3 overlay shown")
+    check(emu.word(api + 12) == 1, "input grabbed")
+    check(state() == READY and cells() == bytes(100), "new board: all hidden, no mines laid")
+
+    first = 44
+    emu.touch(*mines_xy(first), 1.0)
+    mine = emu.read(rt["g_mine"], 100)
+    c = cells()
+    near = [i for i in range(100) if abs(i % 10 - first % 10) <= 1 and abs(i // 10 - first // 10) <= 1]
+    print(f"     mines at {[i for i in range(100) if mine[i]]}, {c.count(DUG)} cells dug")
+    check(state() == PLAYING and sum(mine) == 12, "first dig: 12 mines laid, playing")
+    check(not any(mine[i] for i in near) and all(c[i] == DUG for i in near),
+          "  ...none on or next to the first cell, which opened an area")
+    emu.shot("mines-2-first-dig")
+
+    hidden = [i for i in range(100) if c[i] == HIDDEN]
+    m, safe = next(i for i in hidden if mine[i]), next(i for i in hidden if not mine[i])
+    emu.touch(*mines_xy(m), 1.0, hold=1.0)
+    check(cells()[m] == FLAGGED, "hold: flag planted")
+    emu.touch(*mines_xy(m), 1.0, hold=1.0)
+    check(cells()[m] == HIDDEN, "hold again: flag pulled")
+    emu.touch(*MINES_MODE, 1.0)
+    check(emu.read(rt["g_flag_mode"], 1)[0] == 1, "DIG/FLAG button: flag mode")
+    emu.touch(*mines_xy(m), 1.0)
+    check(cells()[m] == FLAGGED, "  ...a tap flags")
+    emu.touch(*mines_xy(safe), 1.0, hold=1.0)
+    check(cells()[safe] == DUG and state() == PLAYING, "  ...a hold digs")
+    emu.touch(*MINES_MODE, 1.0)
+    check(emu.read(rt["g_flag_mode"], 1)[0] == 0, "back to dig mode")
+    emu.shot("mines-3-flag")
+
+    taps = 0
+    while state() == PLAYING:
+        c = cells()
+        todo = [i for i in range(100) if c[i] == HIDDEN and not mine[i]]
+        if not todo:
+            break
+        emu.touch(*mines_xy(todo[0]), 0.4)
+        taps += 1
+        if taps > 100:
+            break
+    time.sleep(1.0)
+    emu.shot("mines-4-won")
+    c = cells()
+    check(state() == WON, f"digging every safe cell ({taps} taps) wins")
+    check(all(c[i] == (FLAGGED if mine[i] else DUG) for i in range(100)),
+          "  ...every mine flagged, every other cell dug")
+
+    emu.touch(*MINES_NEW, 1.0)
+    check(state() == READY and cells() == bytes(100), "NEW: fresh board")
+    emu.touch(*mines_xy(0), 1.0)
+    mine = emu.read(rt["g_mine"], 100)
+    c = cells()
+    m = next(i for i in range(100) if mine[i] and c[i] == HIDDEN)
+    emu.touch(*mines_xy(m), 1.5)
+    emu.shot("mines-5-lost")
+    check(state() == LOST and emu.read(rt["g_boom"], 1)[0] == m, "digging a mine loses")
+    before = cells()
+    emu.touch(*mines_xy(next(i for i in range(100) if before[i] == HIDDEN)), 1.0)
+    check(cells() == before, "  ...and the board is frozen")
+
+    check(emu.read(0x20390222, 2) == cursor and emu.read(CURRENT_SCREEN, 1)[0] == 0x63,
+          "picker underneath never reacted")
+    emu.press("EXIT", 2.5)
+    emu.shot("mines-6-exit")
+    check(emu.word(GR3 + 0x04) & 1 == 0 and emu.word(GR3 + 0x20) & 3 == 1,
+          "EXIT key: GR3 back to read-off / LOWER")
+    check(emu.word(api + 12) == 0 and emu.word(api + 8) == 0, "grab released, app gone")
+    check(emu.read(rt["g_app_done"], 1)[0] == 1, "main() returned")
+    check(emu.read(CURRENT_SCREEN, 1)[0] == 0x63, "still on the picker: EXIT didn't reach it")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", type=Path, default=SCRATCH / "shots")
@@ -249,11 +339,13 @@ def main() -> None:
             emu.touch(448, 170)                 # page 3/4
             launch(emu, api, 2, "hello-gui", [b"Hello, world!"])
         else:
-            check(labels == [b"ABOUT", b"CUBE", b"HELLO"], "lists ABOUT, CUBE, HELLO (sorted)")
+            check(labels == [b"ABOUT", b"CUBE", b"HELLO", b"MINES"],
+                  "lists ABOUT, CUBE, HELLO, MINES (sorted)")
             launch(emu, api, 2, "hello-gui", [b"Hello, world!"])
             launch(emu, api, 0, "about-box",
                    [b"Homebrew SDK for the IC-7300", b"Apps live in \\homebrew"])
             run_cube(emu, api, 1)
+            run_mines(emu, api, 3)
             launch(emu, api, 2, "hello-gui", [b"Hello, world!"])     # relaunch after the cube
 
         emu.press("EXIT", 2.0)                  # back out of the picker

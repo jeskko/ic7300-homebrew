@@ -10,8 +10,11 @@ All addresses below verified against the live Ghidra project (`body.bin`) 2026-0
 `hb_touch_read()` (`sdk/include/hb/input.h`) returns touch down/X/Y in screen pixels from the
 front-panel register file. While an app holds the screen (`hb_gfx_open()`), the loader skips the
 firmware's own touch and key handling so the UI underneath doesn't react. Live-tested with
-`sdk/examples/cube/`. Key and dial reads for apps aren't wrapped yet;
-`notes/front-panel-report.md` has the full field and key tables. (The sections below predate
+`sdk/examples/cube/`. `hb_key_down(HB_KEY_…)` reads a front-panel key's live bit (the key
+names are from `notes/front-panel-report.md`'s key-code table). `sdk/examples/minesweeper/`
+quits on EXIT, and the test checks the press doesn't reach the picker afterwards. The dials
+aren't wrapped yet, and aren't grabbed either. `notes/front-panel-report.md` has the full
+field and key tables. (The sections below predate
 that file and are superseded by it.)
 
 ## 🔎 Front-panel packet protocol: framing understood, most message types not decoded

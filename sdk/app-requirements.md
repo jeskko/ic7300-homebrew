@@ -87,6 +87,13 @@ more than a minimal hello-world needs — the research question is really "how m
 
 ## App 3 — A simple game (e.g. Tetris)
 
+**✅ Done 2026-09-25, as a 10×10 Minesweeper instead of Tetris: `sdk/examples/minesweeper/`.** It
+uses touch only, drawn as raw raster on the SDK canvas. That README explains why the firmware's
+list screens, dialogs and tiles can't express the board. The bullets below are the original
+2026-08-30 survey. Their input gaps were closed by `notes/front-panel-report.md` (the full key,
+dial and touch field table) and the loader's input grab. The icon-blit idea was superseded by
+the GR3 canvas (`sdk/api/display.md`).
+
 Builds on App 2's display access plus real-time input, which is the substantial new research area here.
 
 - 🔎 **Front-panel input is only partially decoded.** `scif3_frame_dispatch_by_type`
@@ -146,5 +153,5 @@ Builds on App 2's display access; the substantial new area is getting at live re
 |---|---|---|---|
 | 1. Serial hello world | no | no | Low — CI-V path is fully ready; standalone-UART variant needs one primitive documented |
 | 2. Display hello world | yes (minimal) | no | Medium — confirm icon-blit's target buffer; VDC5 itself not required if that pans out |
-| 3. Tetris | yes | yes (real-time) | High — front-panel packet decoding for game controls is the main gap; touch is optional/deferrable |
+| 3. Tetris → Minesweeper | yes | yes (real-time) | ✅ Done (`examples/minesweeper/`): touch + EXIT key on the GR3 canvas; the input research gap closed via `notes/front-panel-report.md` |
 | 4. SSTV receiver | yes (reuse #2) | no | High, but concentrated — one big question (tap the RX-audio buffer); the decode algorithm itself is free |

@@ -47,4 +47,13 @@ void hb_line(hb_canvas *c, int x0, int y0, int x1, int y1, hb_color color);
 void hb_fill_triangle(hb_canvas *c, int x0, int y0, int x1, int y1, int x2, int y2,
                       hb_color color);
 
+/* Text in the SDK's built-in 5x7 font (ASCII ' '..'Z'; lower case is drawn as upper case,
+ * anything else as '?'), each font pixel drawn as a scale x scale square. Characters advance
+ * HB_FONT_ADVANCE * scale pixels. hb_text returns the width drawn; hb_text_width measures. */
+#define HB_FONT_W       5
+#define HB_FONT_H       7
+#define HB_FONT_ADVANCE 6
+int hb_text(hb_canvas *c, int x, int y, const char *s, int scale, hb_color color);
+int hb_text_width(const char *s, int scale);
+
 #endif

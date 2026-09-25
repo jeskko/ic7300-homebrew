@@ -10,8 +10,9 @@ All addresses below verified against the live Ghidra project (`body.bin`) 2026-0
 
 `hb_gfx_open()` / `hb_gfx_present()` / `hb_gfx_close()` (`sdk/include/hb/gfx.h`) give an app a
 double-buffered 480×272 RGB565 canvas on VDC5 plane GR3, on top of the firmware's own GR2 UI,
-plus software clear/rect/line/triangle. It's live-tested in the emulator with
-`sdk/examples/cube/` at 30 frames/s. Mechanism: `sdk/loader/README.md`, "Graphics and input";
+plus software clear/rect/line/triangle and `hb_text()` in a built-in 5×7 font at any integer
+scale (the firmware's own text is TrueType drawn through OpenVG, which apps can't reach). It's live-tested in the emulator with
+`sdk/examples/cube/` at 30 frames/s and `sdk/examples/minesweeper/`. Mechanism: `sdk/loader/README.md`, "Graphics and input";
 register facts: `notes/display-vdc5.md`. An app with the canvas doesn't need the icon-blit or
 OpenVG paths below; those questions stay open for anyone wanting to draw *into* the radio's own
 UI (which is GR2 at `0x20974fe0`).

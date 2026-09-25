@@ -65,6 +65,11 @@ for why this whole effort exists.
   a firmware list screen of them (a borrowed stock screen, restored on exit). The scripted
   emulator test `loader/test_emu.py` covers launching, relaunch, paging, the 14-app cap, and
   empty/junk/no-card cases.
+- **`examples/minesweeper/`** (same day): App 3 of `app-requirements.md`, retargeted from Tetris
+  to a 10×10 Minesweeper. Tap to dig, hold to flag, EXIT key or X to quit. Drawn as raw raster
+  on the GR3 canvas; its README explains why the firmware's GUI components can't express the
+  board. Added `hb_text()` (a built-in 5×7 font) and `hb_key_down()` to the SDK. Covered by
+  `loader/test_emu.py`: win, loss, flags, and no input leaking to the UI.
 
 ## Expected growth
 

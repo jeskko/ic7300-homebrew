@@ -12,6 +12,13 @@ void hb_touch_read(hb_touch *t)
     t->y = r[FW_FP_TOUCH_Y] << 8 | r[FW_FP_TOUCH_Y + 1];
 }
 
+bool hb_key_down(int key)
+{
+    if (key < 0 || key >= 8 * (FW_FP_KEYS_LAST - FW_FP_KEYS_FIRST + 1))
+        return false;
+    return fw_fp_regs[FW_FP_KEYS_FIRST + key / 8] >> (key % 8) & 1;
+}
+
 uint32_t hb_millis(void)
 {
     return fw_tick_ms;
