@@ -4,9 +4,11 @@
 // every ARM/Thumb disassembly-context bug, collapsed into one script run.
 //
 // Reads its work from a fixed request file instead of interactive prompts,
-// specifically so Claude can write the addresses directly and just ask you
-// to click Run -- no copy-pasting addresses into dialogs. Request file:
-//   ~/src/icom/scratch/armthumb_fix_requests.txt
+// specifically so an assistant or another script can write the addresses
+// directly and just ask you to click Run -- no copy-pasting addresses into
+// dialogs. Request file (relative to the repo root, which is found from this
+// script's own location, or $ICOM_REPO if set):
+//   scratch/armthumb_fix_requests.txt
 // One line per fix: "<address> <length> <arm|thumb>", optionally followed
 // by a free-text note (kept only for the log, ignored otherwise). Blank
 // lines and lines starting with # are skipped. Example:
@@ -16,7 +18,7 @@
 //
 // After a run, every line's outcome (OK or the error message) is appended,
 // timestamped, to:
-//   ~/src/icom/scratch/armthumb_fix_results.txt
+//   scratch/armthumb_fix_results.txt
 // and the request file is replaced with a single "processed at <time>"
 // comment line, so a stray re-run with no new content is an obvious no-op
 // instead of silently reapplying old fixes. Write fresh lines into the
@@ -65,14 +67,24 @@ import java.util.List;
 
 public class FixArmThumbMode extends GhidraScript {
 
-    private static final String REQUEST_REL_PATH = "src/icom/scratch/armthumb_fix_requests.txt";
-    private static final String RESULT_REL_PATH = "src/icom/scratch/armthumb_fix_results.txt";
+    private static final String REQUEST_REL_PATH = "scratch/armthumb_fix_requests.txt";
+    private static final String RESULT_REL_PATH = "scratch/armthumb_fix_results.txt";
+
+    /** The repo root: $ICOM_REPO if set, else three levels up from this file
+     *  (<repo>/tools/ghidra_scripts/FixArmThumbMode.java). */
+    private File repoRoot() {
+        String env = System.getenv("ICOM_REPO");
+        if (env != null && !env.isEmpty()) {
+            return new File(env);
+        }
+        return new File(getSourceFile().getAbsolutePath()).getParentFile().getParentFile().getParentFile();
+    }
 
     @Override
     public void run() throws Exception {
-        File home = new File(System.getProperty("user.home"));
-        File requestFile = new File(home, REQUEST_REL_PATH);
-        File resultFile = new File(home, RESULT_REL_PATH);
+        File repo = repoRoot();
+        File requestFile = new File(repo, REQUEST_REL_PATH);
+        File resultFile = new File(repo, RESULT_REL_PATH);
 
         if (!requestFile.exists()) {
             println("No request file at " + requestFile + " -- nothing to do.");

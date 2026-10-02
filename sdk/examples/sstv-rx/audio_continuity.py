@@ -14,6 +14,7 @@ import re
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +38,7 @@ def main():
     s = syms(elf)
     q = qmp_open(sock)
     qmp_cmd(q, "stop")
-    tmp = Path("/tmp/claude-1000/ring.bin")
+    tmp = Path(tempfile.mkdtemp(prefix="hb_ring-")) / "ring.bin"   # QEMU writes it (pmemsave)
     qmp_cmd(q, "pmemsave", val=s["g_ring"], size=RING * 2, filename=str(tmp))
     w = int(qmp_cmd(q, "human-monitor-command",
                     **{"command-line": f"xp /1wx {s['g_w']:#x}"})["return"].split()[-1], 16)

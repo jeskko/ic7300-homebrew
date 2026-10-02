@@ -2486,7 +2486,7 @@ software interrupt, not just those 2 sites -- a genuinely generic OS primitive, 
 burst's own onset (`t=40.654s`, `pending` jumping from 0 to 4) caught `pc=0x200051ec`. That
 address was undefined bytes in Ghidra (no disassembly-context ever applied there -- the
 project's own known ARM/Thumb Ghidra bug, see the "Known Ghidra/tooling gotchas" entry in
-`../.claude/projects/.../icom-ic7300-re-project.md`), so cross-checked directly against
+the assistant's private project notes), so cross-checked directly against
 `arm-none-eabi-objdump -D -b binary -m arm --adjust-vma=0x20005000` on `scratch/unpacked/142/
 body.bin`: decodes cleanly and gaplessly as real ARM code from `0x200051c0` (`cps #19` --
 switch to SVC mode, the literal entry of an exception vector) through a real `rfeia sp!`
@@ -3860,7 +3860,7 @@ the smoke test's own two leads at full scale: of 932,273 outer-loop iterations i
 itself spans median ~3us up to a 44ms tail -- both reproduce, not smoke-test noise.
 
 **Did the actual join the prior session flagged as the missing piece.** Wrote a one-off
-correlation script (not committed -- lived in the session scratchpad, easily rebuilt from
+correlation script (not committed -- lived in a throwaway scratch directory, easily rebuilt from
 `tools/trace_rr_loop_overhead.py`'s own parsing logic if needed again) that, for every
 `riic.c` "schedule irq=..." log line, finds which outer-loop iteration's `[loop_top, next
 loop_top)` window contains its host timestamp. **First result, unambiguous**: all 10,261 riic
