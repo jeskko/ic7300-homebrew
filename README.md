@@ -104,8 +104,20 @@ building the loader and the full end-to-end test. Worked examples are under `sdk
 
 Older top-level status and narrative: [README-history.md](README-history.md).
 
+## Licence
+
+MIT — see [LICENSE](LICENSE), which also lists the exceptions: `qemu-machine/patches/` (changes to
+QEMU itself) is GPL-2.0-or-later like QEMU, and material belonging to Icom (the firmware, icons
+extracted from it, screenshots of its UI, firmware-generated EEPROM images) isn't ours to license.
+The `qemu-machine/src/` device models are MIT, but a QEMU binary built with them is distributed
+under QEMU's GPL.
+
+Not affiliated with or endorsed by Icom. "IC-7300" and "Icom" are Icom Inc. trademarks.
+
 ## Credits
 
-Firmware timings in the SSTV example app come from [slowrx](https://github.com/windytan/slowrx)
-(ISC licence). The RZ/A1H QEMU peripherals are our own, informed where noted by upstream QEMU's own
-SuperH/SH-family models (see [qemu-machine/README.md](qemu-machine/README.md)).
+The SSTV mode timings and VIS codes in `sdk/examples/sstv-rx/` follow
+[slowrx](https://github.com/windytan/slowrx) by Oona Räisänen (ISC licence), via
+[slowrx-cli](https://github.com/sgarriga/slowrx-cli); the decoder itself is original. The QEMU
+machine builds on [QEMU](https://www.qemu.org/) (GPL-2.0-or-later) and reuses its generic SD-card
+and 24Cxx EEPROM models.
