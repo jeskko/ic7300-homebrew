@@ -10,6 +10,8 @@ should unload the app and clear the hook.
 
     python3 sdk/examples/sstv-rx/test_emu.py [--sample scratch/samples/SSTV.test.au]
 
+The default sample is generated (qemu-machine/tools/gen_samples.py) if it does not exist yet.
+
 Exits non-zero on the first failed check; screenshots and images go to --shots.
 """
 
@@ -43,7 +45,7 @@ def build(sample: Path) -> tuple[Path, Path, Path]:
     SCRATCH.mkdir(parents=True, exist_ok=True)
     sh(sys.executable, REPO / "sdk/loader/build.py")
     flash = SCRATCH / "flash.bin"
-    sh(REPO / "emu/.venv/bin/python3", REPO / "qemu-machine/tools/build_flash.py",
+    sh(sys.executable, REPO / "qemu-machine/tools/build_flash.py",
        REPO / "scratch/hb_loader_142.dat", flash, stdout=subprocess.DEVNULL)
     app = SCRATCH / "SSTV.BIN"
     sh(sys.executable, REPO / "sdk/tools/build_app.py", "--keep", HERE / "build/app", "-o", app,
@@ -82,6 +84,8 @@ def main() -> None:
     args = ap.parse_args()
     args.shots.mkdir(parents=True, exist_ok=True)
     sample = args.sample.resolve()
+    if not sample.exists():             # synthetic Scottie 2 test card (qemu-machine/tools/gen_samples.py)
+        sh(sys.executable, REPO / "qemu-machine/tools/gen_samples.py", "--only", "sstv", "-o", sample)
 
     flash, card, ref_ppm = build(sample)
     loader = lt.nm(REPO / "sdk/loader/build/loader.elf")

@@ -6,7 +6,7 @@ SD Card > Homebrew Apps > **SSTV**. The app listens for a VIS header, shows the 
 receives the image. CLEAR drops the image and listens again, and EXIT (or the X) quits.
 Research and design: [`../../sstv-app-design.md`](../../sstv-app-design.md).
 
-![Scottie 2 test card, decoded in the emulator](screenshots/done.png)
+![The project's Scottie 2 test card, decoded in the emulator](screenshots/done.png)
 
 **Status:** runs in the emulator; not yet tried on hardware. It needs the loader built
 from this tree (ABI v4, audio hook), so flash `sdk/loader/`'s output again.
@@ -21,7 +21,7 @@ from this tree (ABI v4, audio hook), so flash `sdk/loader/`'s output again.
 | `host_test.c` | Runs the core on a 12 kHz file on the PC and writes a PPM. |
 | `test_emu.py` | End to end in the emulator (below). |
 | `audio_continuity.py` | Checks the app's audio ring against a stimulus file for lost or repeated blocks (`test_emu.py --noise FILE`). |
-| `prototype/` | The Python prototype the core was checked against, plus the slowrx-cli comparison. |
+| `prototype/` | The Python prototype the core was checked against, and its decode of the test card. |
 
 ## Test
 
@@ -34,9 +34,10 @@ cd ../../..                                     # emulator test: run from the re
 python3 sdk/examples/sstv-rx/test_emu.py        # about 5 min
 ```
 
-The test recording `scratch/samples/SSTV.test.au` is not included in the repo. Supply any Scottie
-or Martin SSTV recording (12 kHz mono 16-bit .au or .wav) there, or pass `--sample FILE` to
-`test_emu.py`.
+`scratch/samples/SSTV.test.au` is synthetic: `qemu-machine/tools/gen_samples.py` sends this
+project's own test card in Scottie 2 (or any mode with `--sstv-mode`), and writes the transmitted
+image next to it as `SSTV.test.png`. `test_emu.py` generates it if it's missing. Any other 12 kHz
+mono 16-bit .au/.wav recording works too, via `--sample FILE`.
 
 `test_emu.py` builds the loader, flash, app and SD card. Then it boots with `-icount shift=1`,
 launches SSTV from the picker, and checks that the audio hook delivers 12 kHz per emulated
@@ -56,7 +57,9 @@ damage is timing, not spikes. So the runtime's audio ISR (`sdk/runtime/audio.c`)
 the earliest time each block can arrive against OSTM0. A lost block shows up as a whole block
 of lateness, and gets filled with 9 interpolated samples. After that, `audio_continuity.py`
 finds no discontinuities with a noise stimulus. `hb_audio_gaps()` counts the fills, shown
-as GAPS on screen. Whether real hardware loses blocks at all is open.
+as GAPS on screen. With gap filling, the emulator decode of the generated test card matches
+`host_test`'s at 28.7 dB PSNR (2026-10-02); the 19.6 dB above was measured without it, on the
+earlier third-party recording. Whether real hardware loses blocks at all is open.
 
 ## Next
 

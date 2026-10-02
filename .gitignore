@@ -3,7 +3,7 @@ ghidra_project/
 
 # Firmware you supply (see README.md "Firmware you supply"); default dir, overridable
 # with $ICOM_FW_DIR. Never commit Icom firmware/manuals.
-firmware/
+/firmware
 
 # Extracted/regenerated firmware artifacts (large binaries, reproducible from
 # tools/ against your own firmware under $ICOM_FW_DIR)

@@ -4,7 +4,7 @@
 Checks the algorithm the app will use: a quadrature FM discriminator at 12 kHz (mix by 1900 Hz,
 FIR low-pass, phase difference), VIS decode, and per-line sync lock. It is not a port of
 slowrx-cli's FFT-per-6-samples estimator. The Scottie family only (VIS 60/56/76); only Scottie 2
-is tested (scratch/samples/SSTV.test.au, 12 kHz .au -> BBC Test Card F).
+is tested (scratch/samples/SSTV.test.au, 12 kHz .au, from qemu-machine/tools/gen_samples.py).
 
 Usage: sstv_proto.py IN.au|IN.wav OUT.png
 """

@@ -24,7 +24,8 @@ Test 3: FM, TSQL 88.5 Hz, tones on DX_FMT: expect the detector to flag 88.5 Hz o
 Usage: decode_stimulus_test.py RTTY_FILE [--expect TEXT] [--out DIR]
   RTTY_FILE: any RTTY recording (.au/.wav, 16-bit). Its two FSK tones are found by FFT and the
   signal is shifted (SSB, Hilbert) so they sit at 2125/2295 Hz, written as a 12 kHz WAV.
-  e.g. decode_stimulus_test.py "../scratch/samples/rtty 10 seconds.wav"
+  e.g. decode_stimulus_test.py scratch/samples/RTTY.test.au --expect "QUICK BROWN FOX"
+  (RTTY.test.au is synthetic, from gen_samples.py, which also has the text it carries).
 """
 
 from __future__ import annotations
@@ -204,10 +205,12 @@ def main():
               f"{hz(lo):.0f} Hz ({bins[lo]}), {hz(hi):.0f} Hz ({bins[hi]}); "
               f"median bin {sorted(bins)[52]}")
         check("RTTY file played", play_once(stim, start=False), "fmt-status done")
-        text = new_text(before).split("\r")[-1]
+        full = new_text(before)
+        lines = [l.strip("\n") for l in full.split("\r") if l.strip()]
+        text = lines[-1] if lines else ""     # the last non-empty line (the file may end in CR LF)
         letters = sum(ch.isalpha() for ch in text)
-        good = (args.expect in text) if args.expect else letters >= 8
-        check("RTTY text decoded", good, repr(text))
+        good = (args.expect in full) if args.expect else letters >= 8
+        check("RTTY text decoded", good, repr(full if args.expect else text))
         ref = args.expect or text.strip()
         shot("rtty-decode")
 

@@ -34,10 +34,9 @@ in `api/audio.md` has been answered by the audio-link work in `notes/dsp-protoco
 **2. slowrx-cli decodes our sample, but its demodulator doesn't suit a real-time embedded
 decoder.** Repo: https://github.com/sgarriga/slowrx-cli (ISC-style licence, from Oona
 Räisänen's slowrx; reuse with the copyright notice kept). Built on the host with FFTW, it
-decodes `SSTV.test.au` (resampled to 44.1 kHz) as **Scottie 2** (VIS 56). The result,
-[prototype/scottie2-testcard-slowrx-cli.png](examples/sstv-rx/prototype/scottie2-testcard-slowrx-cli.png),
-is BBC Test Card F, with a blue colour cast and a slightly shifted left edge. Why its design
-doesn't port as is:
+decoded the original test recording (a third-party Scottie 2 recording of a broadcast test card,
+not redistributed here; resampled to 44.1 kHz) as **Scottie 2** (VIS 56), with a blue colour
+cast and a slightly shifted left edge. Why its design doesn't port as is:
 
 | slowrx-cli | Problem on the radio |
 |---|---|
@@ -50,10 +49,11 @@ doesn't port as is:
 **3. A quadrature discriminator with per-line sync lock is cheaper, and on this sample it
 decodes better.** `prototype/sstv_proto.py` works at 12 kHz. It mixes by 1900 Hz, applies a
 33-tap FIR at 900 Hz, and takes frequency = arg(z[n]·z*[n−1]). VIS is decoded from that same
-frequency track. Each line re-locks on the end of its 9 ms 1200 Hz sync. Result:
-[prototype/scottie2-testcard.png](examples/sstv-rx/prototype/scottie2-testcard.png), with the
-correct colours (the red top) and no slant. The left-edge R/G/B misalignment is a few pixels at
-most. Cost in C: about 100 flops per sample (mixer 4, complex FIR 66, atan2 approximation about
+frequency track. Each line re-locks on the end of its 9 ms 1200 Hz sync. On that same recording
+it gave the correct colours and no slant, with a left-edge R/G/B misalignment of a few pixels at
+most. [prototype/scottie2-testcard.png](examples/sstv-rx/prototype/scottie2-testcard.png) is its
+decode of the synthetic test card that replaced the recording
+(`qemu-machine/tools/gen_samples.py`). Cost in C: about 100 flops per sample (mixer 4, complex FIR 66, atan2 approximation about
 20, sync filter), so about 1.2 MFLOP/s at 12 kHz, well under 1% of the CPU. The
 real-time-budget question in `app-requirements.md` is answered for the discriminator.
 Unmeasured on hardware.
@@ -106,7 +106,8 @@ Unmeasured on hardware.
 ## Test plan
 
 1. **Host**: port the C decoder core (`sstv_core.c`, no SDK dependencies) and run it against the
-   prototype on the sample. Compare pixel-wise with `scottie2-testcard.png`. Add samples per mode.
+   prototype on the sample. Compare pixel-wise with `scottie2-testcard.png`, and with the transmitted
+image (`SSTV.test.png`, written by `gen_samples.py`). Add samples per mode (`--sstv-mode`).
 2. **Emulator, audio path**: `RZA1H_AF_FILE=scratch/samples/SSTV.test.au` feeds DX_REC L, and
    the fake DSP already resamples to 96 kHz (`qemu-machine/src/ssif.c`). Check that the hook's
    12 kHz ring matches the file (the same method as `tools/audio_stimulus_check.py`).

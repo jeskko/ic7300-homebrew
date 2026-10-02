@@ -41,8 +41,8 @@ Measured with `tools/bench_boot.py`.
   replacing the tone: `af` = DX_REC L (RX audio: audio FFT, QSO recorder), `mic` = DX_REC R,
   `fmt` = DX_FMT L (demod output, read by the decoders), `fmt-r` = DX_FMT R. Formats: Sun .au or
   WAV, 16-bit PCM, any rate up to 96 kHz, first channel of several. Resampled to 96 kHz with a
-  16-tap windowed sinc (passband 0.45 of the file's rate). Samples: `scratch/samples/*.test.au`
-  (CW, FT8, SSTV; 12 kHz mono).
+  16-tap windowed sinc (passband 0.45 of the file's rate). Samples: `tools/gen_samples.py`
+  synthesises `scratch/samples/{SSTV,RTTY,CW}.test.au` (12 kHz mono, known content).
   - Boot: `RZA1H_AF_FILE="path[,gain=G][,delay=S][,loop]"`, likewise `RZA1H_MIC_FILE`,
     `RZA1H_FMT_FILE`, `RZA1H_FMT_R_FILE`. fmt follows af unless it's set itself. A file starts S
     seconds of link time after it's armed, then plays once (silence after) or loops. The noise
