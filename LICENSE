@@ -34,7 +34,7 @@ Exceptions — the MIT licence above does not cover the following:
 
 2. Material that belongs to Icom Inc. is not ours to license: the firmware
    itself, and anything reproduced from it or rendered by it — the extracted
-   icon images (notes/icon_table.png, notes/assets/version-screen-icon-*.png),
+   icon images (notes/assets/version-screen-icon-*.png),
    screenshots of the radio's own user interface, the EEPROM images produced
    by the firmware (qemu-machine/tools/eeprom_factory_defaults.bin,
    qemu-machine/riic2_eeprom_pwrk_test.img), and short quotations of firmware

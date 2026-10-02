@@ -48,7 +48,9 @@ image: it's the touchscreen UI's icon/glyph resource set, format and structure b
 150 of 319 unique icons individually identified and renamed in Ghidra (`icon_TUNE_off/active/...`,
 the full main-menu set, meter-select labels, filter-selector states, transport controls, status
 badges, and more) — see `notes/icon_table.csv` for the full 708-row id/address/dimensions/label
-table and `notes/icon_table.png` for a corrected contact-sheet montage of the whole set.
+table. For a contact sheet of the whole set, run `tools/extract_icons.py <body.bin> --montage
+icons.png` on a `body.bin` unpacked from your own firmware (`tools/icom_fw`); the sheet itself isn't
+in the repo, since it is a copy of Icom's artwork.
 
 ## Open questions
 
