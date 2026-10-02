@@ -37,7 +37,7 @@ Copy `HELLO.BIN` into `\homebrew\` on the card, then pick **HELLO** from SD Card
 `sdk/loader/README.md` has the full emulator recipe and the end-to-end test
 (`sdk/loader/test_emu.py`), which launches this app alongside `about-box`.
 
-On real hardware: install `hb_loader_142.dat` once with SET > SD Card > Firmware Update.
+On real hardware: install `hb_loader_142.dat` once with SET > SD Card > Firmware Update. **Read the warning in the top-level [README](../../../README.md#scope) first** — nothing here has run on a real radio, and you need a verified way to re-flash a radio that no longer boots before trying.
 **Not yet tried on real hardware** (see the loader README's open items).
 
 ## What was verified (2026-09-25, `qemu-machine`, `--icount off`)

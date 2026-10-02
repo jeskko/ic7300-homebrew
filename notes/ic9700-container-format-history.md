@@ -386,7 +386,7 @@ template), just not what it was first read as.
 ## Ground truth arrives: live radio version readout, then Icom's own published history (2026-08-30)
 
 The user plugged their own IC-9700 into the network for an unrelated side-thread (network port probing —
-see [[icom-ic7300-re-project]]/README for that separate story) and, in the course of that, read off the
+not covered in this repo) and, in the course of that, read off the
 radio's own firmware-info screen: **Main CPU 1.50, Sub CPU 1.00, Front CPU 1.00, FPGA Program 1.08, FPGA
 Data 1.00, DV DSP 1.10**. This was the single most valuable fact this thread had received since its cold
 start — up to this point, every "component" claim in this file was inferred purely from byte-diffing

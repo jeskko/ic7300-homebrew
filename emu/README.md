@@ -3,7 +3,7 @@
 Runs real, unmodified firmware bytes on a CPU model instead of just reading them — lets this
 project verify RE hypotheses by execution, and (see the roadmap below) eventually test a
 custom/patched `body.bin` end-to-end offline, with zero hardware risk and no dependency on the
-still-not-arrived JTAG adapter. See [[icom-custom-code-goal]] for why that matters to the
+still-not-arrived JTAG adapter. See `sdk/roadmap.md` for why that matters to the
 project overall, and the planning session (2026-09-08) this implements.
 
 ## Status

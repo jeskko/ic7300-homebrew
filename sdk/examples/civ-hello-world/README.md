@@ -1,5 +1,7 @@
 # `civ-hello-world` — the first custom code actually running on (emulated) IC-7300 firmware
 
+> **Historical proof of concept, superseded by [`sdk/loader/`](../../loader/).** Kept as the record of how the injection mechanism was first proven. New apps should use the loader and the C SDK (see [`sdk/README.md`](../../README.md)); this example's baked-in payload (no `APP.BIN`) and key-combo trigger are not how the current loader works.
+
 Live-tested 2026-09-25 in `qemu-machine`. This is the proof of concept `sdk/roadmap.md` Phase 2/3
 asked for, at the simplest possible scope: hold a front-panel key combo, the radio emits one CI-V
 frame, and resumes completely normal operation. Everything before this was design and static
@@ -67,7 +69,7 @@ which this unsolicited frame isn't necessarily using).
 
 ## Corrections from an adversarial review pass (2026-09-25)
 
-An Opus review of all three `sdk/examples/` (see `sdk/app-loader-design.md`'s own writeup for the
+An adversarial review of all three `sdk/examples/` (see `sdk/app-loader-design.md`'s own writeup for the
 full report) found and this session fixed one real bug in this specific example:
 
 - **`app.s`'s CI-V staging used to skip IRQ masking based on a wrong diagnosis.** The original

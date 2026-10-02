@@ -136,8 +136,8 @@ readiness check" section below for the real picture: `JP0_0`/`JP0_1` are a separ
 Port 0 (not muxed with it), default to JTAG mode with no strap needed, and pin 4 is just an unconnected
 pulldown, not a debug-enable strap.
 
-**Practical implication**: the FT2232H adapter + FFC breakout already ordered for the IC-7300
-([[icom-ic7300-re-project]]) should now work for both radios as-is — pinout is confirmed identical,
+**Practical implication**: the FT2232H adapter + FFC breakout chosen for the IC-7300
+should now work for both radios as-is — pinout is confirmed identical,
 not just the connector part.
 
 ## Firmware readiness check: are the JTAG pins actually live by default? (2026-08-30)

@@ -1,4 +1,4 @@
-/* Homebrew loader <-> app ABI (v3).
+/* Homebrew loader <-> app ABI (v4).
  *
  * The loader (sdk/loader/, flashed once as part of a modified body.bin) reads APP.BIN from the
  * SD card into HB_APP_REGION, checks its header, and calls header->entry(api) on the UI thread

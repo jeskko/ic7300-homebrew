@@ -2,7 +2,7 @@
  * RZ/A1H 10-bit wired A/D converter (ADC, 0xE8005800) -- minimal fixed-reading stub, same
  * permissive spirit as rspi2.c/riic.c/openvg.c.
  *
- * 2026-09-21, continued (icom-openvg-rendering thread). Why this exists:
+ * 2026-09-21, continued (OpenVG-rendering thread). Why this exists:
  *
  *   A full `-d unimp,guest_errors` survey of a 180s PWRK-hold boot (well past main_idle_loop and
  *   the one render-dispatch pass, per README.md's own Status section) found exactly ONE region

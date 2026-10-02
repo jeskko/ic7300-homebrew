@@ -6,6 +6,8 @@ it once with SET > SD Card > Firmware Update. From then on, an app is just a `.B
 `\homebrew\` on the SD card, built from C with `sdk/tools/build_app.py`. MENU > SET > SD Card >
 **Homebrew Apps** opens a list of them; tap one to run it.
 
+> **Untested on real hardware.** Before flashing this to a radio, read the warning in the top-level [README](../../README.md#scope): prepare and verify a way to re-flash a radio that no longer boots first.
+
 ![The app picker](screenshots/picker.png)
 
 This replaces the proof-of-concept chain in `sdk/examples/{civ-hello-world,sd-card-app,

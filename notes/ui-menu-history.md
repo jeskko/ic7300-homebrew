@@ -152,7 +152,7 @@ ways:
    builder — 7 call sites, all inside the boot fade-in/hold/fade-out driver at `0x2002a2a4`, ramping
    brightness 0→0x64 in steps of 0x14) does `memmove(dispbuf+8, g_my_call_text, 10)` directly into the
    splash frame buffer (`dispbuf` = `DAT_200382e4`/`0x20403f64`) — **this is the real, direct link
-   between this setting and the boot screen** `icom-openvg-rendering`'s own thread was looking for.
+   between this setting and the boot screen** `OpenVG-rendering`'s own thread was looking for.
 2. The text-entry field descriptor table (`g_text_entry_field_table`, `0x201998cc`, 10 records × 44
    bytes) — record 3, MY CALL's field kind — has both its edit-buffer and source-buffer pointers set
    to `0x203de53c`, length `10` (edited in place, unlike MEMORY NAME/FILE NAME which stage through a

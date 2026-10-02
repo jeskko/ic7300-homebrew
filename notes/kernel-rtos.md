@@ -243,7 +243,7 @@ not a loose end.
 
 ## `sd_menu_dispatch_task`'s command dispatch, byte-verified — a clean custom-app injection point (2026-09-25)
 
-Picked up while starting to scope [[icom-custom-code-goal]]'s Phase 2 (injection-point design). Fully
+Picked up while starting to scope `sdk/roadmap.md`'s Phase 2 (injection-point design). Fully
 decompiled and, unusually for this table, **cross-checked against the raw ARM listing instruction by
 instruction**, not just the decompiler's view — worth doing whenever a jump table is involved, since the
 decompiler's `switch` rendering can silently paper over exactly the detail (which case IDs are really
@@ -380,7 +380,7 @@ record. Spot-checked against `civ_rx_frame_stage_and_dispatch`'s own decompile (
 
 ## `kernel_start`'s bring-up initializes a runtime memory pool right after the static image (2026-09-25)
 
-Found while getting [[icom-custom-code-goal]]'s first real proof-of-concept custom code
+Found while getting the project's first real proof-of-concept custom code
 (`sdk/examples/civ-hello-world/`) to actually run — code appended to `body.bin` right after its own static
 image end (`0x20395b18`) decompressed into RAM correctly but was silently zeroed before `main_idle_loop`
 ever ran, breaking the whole approach. Traced far enough to explain it, not exhaustively:

@@ -20,9 +20,21 @@ researched here has no built-in network interface at all (USB/serial only), and 
 superseded on the market by the IC-7300MK2 (announced 2025). "No signature check on the firmware-update
 path" only ever matters to someone with the radio physically in hand and an SD card.
 
-**Nothing on real hardware yet.** Everything in `sdk/` and `qemu-machine/` has been tested in the
-emulator only. Flashing a real radio is at your own risk; the firmware-update path has no signature
-check but a mistake can still brick the unit.
+> [!WARNING]
+> **Nothing here has run on real hardware yet, and flashing it can brick your radio.**
+> Everything in `sdk/` and `qemu-machine/` has been tested in the emulator only.
+>
+> **Before you flash any modified firmware, prepare and verify a way to re-flash a radio that no
+> longer boots** — and test that method on your unit *before* you need it. Don't rely on the
+> firmware's own SD-card updater for recovery: it runs inside the main firmware, so a modified image
+> that crashes or hangs before the menu comes up leaves you no way to reach it. The A/B flash slots
+> don't save you either: the boot loader starts whichever slot the update marked active, and no
+> automatic fall-back to the previous slot has been found ([notes/firmware-update.md](notes/firmware-update.md)).
+> The main CPU's JTAG header is the most likely recovery path
+> ([notes/hardware-debug-access.md](notes/hardware-debug-access.md)), but nobody has yet restored a
+> flash image through it. Until someone has, assume a bad flash means a trip to Icom service.
+>
+> You flash at your own risk.
 
 ## Firmware you supply
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Captures real OpenVG command-FIFO traffic (RZA1H_DEBUG=openvg) over a long PWRK-hold boot, to
 scope what `ui_graphics_lifecycle_task`'s real present-frame loop actually asks the GPU to do --
-step 3 of icom-openvg-rendering's suggested approach (memory: "scope down what's actually drawn
+step 3 of OpenVG-rendering's suggested approach (memory: "scope down what's actually drawn
 before committing to an approach"). openvg.c's own model just logs "cmd %08x (#N)" per FIFO write
 with no decoding; this tool aggregates the raw command words themselves (frequency by value, and
 by putative opcode-tag nibble) instead of decoding hardware semantics, since nothing in this

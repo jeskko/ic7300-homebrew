@@ -427,7 +427,7 @@ shared open item with that section, not specific to the front panel). Items 1 (b
   only the same 4 frames (`0xf0`/`0xf1` handshake, `type=0x00`, `type=0x01`) as the very first
   capture. No new offsets fired.
 - **PWRK-wait branch, held for a full 100s of genuine post-boot idle** (`idle_loop_wfe_spin`, per
-  [[icom-pwrk-handler-located]] — this branch doesn't hit the ring-overflow trap at all, so it's a
+  `qemu-machine/README-history.md`'s PWRK-handler entries — this branch doesn't hit the ring-overflow trap at all, so it's a
   much longer real window): same script pattern as `tools/vdc5_framebuffer_peek.py --hold-pwrk`
   (wait for PC `0x20029B18`, `qom-set pwrk-pressed=true` over QMP, no GDB). **Still exactly the
   same 4 frames, nothing more, across the entire 100s of idle.** This is a real, meaningful

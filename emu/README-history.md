@@ -34,7 +34,7 @@ executes fine, `WFE` doesn't). Fixed generically in **`hint_instructions.py`**: 
 conforming implementation, not a target-specific hack either.
 
 That unblocked execution into a **real WFE-based wait loop** that only a genuine periodic
-timer interrupt can end -- exactly [[icom-custom-code-goal]]-adjacent territory the roadmap
+timer interrupt can end -- exactly the territory the roadmap (`sdk/roadmap.md`)
 already flagged as the next real threshold. Attempted it, and hit a genuine, reproducible
 **Unicorn correctness bug**, confirmed independent of anything IRQ-specific: splitting
 execution across multiple `count`-limited `emu_start` calls (needed to inject something

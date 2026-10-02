@@ -8,7 +8,7 @@
 > blocker they were assumed to be.
 
 **Written for a fresh session picking up the OpenVG rendering thread.** Read
-[README.md](../README.md)'s Status section and the `icom-openvg-rendering` project memory first for
+[README.md](../README.md)'s Status section and the OpenVG entries in `README-history.md` first for
 the full derivation; this file is the concrete plan for the *next* move, not a re-derivation.
 Created 2026-09-23.
 

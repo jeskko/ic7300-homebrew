@@ -26,10 +26,17 @@ from this tree (ABI v4, audio hook), so flash `sdk/loader/`'s output again.
 ## Test
 
 ```
+cd sdk/examples/sstv-rx                         # host decode: run from this directory
+mkdir -p build
 cc -O2 -Wall -o build/host_test host_test.c sstv_core.c
 build/host_test ../../../scratch/samples/SSTV.test.au build/host.ppm     # VIS 56, 256 lines
-python3 sdk/examples/sstv-rx/test_emu.py        # from the repo root; about 5 min
+cd ../../..                                     # emulator test: run from the repo root
+python3 sdk/examples/sstv-rx/test_emu.py        # about 5 min
 ```
+
+The test recording `scratch/samples/SSTV.test.au` is not included in the repo. Supply any Scottie
+or Martin SSTV recording (12 kHz mono 16-bit .au or .wav) there, or pass `--sample FILE` to
+`test_emu.py`.
 
 `test_emu.py` builds the loader, flash, app and SD card. Then it boots with `-icount shift=1`,
 launches SSTV from the picker, and checks that the audio hook delivers 12 kHz per emulated

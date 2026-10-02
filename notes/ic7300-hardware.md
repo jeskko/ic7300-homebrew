@@ -138,8 +138,7 @@ control feature the way the IC-9700 does.
 
 Per [[hardware-debug-access]], IC301 is confirmed to have its
 TCK/TMS/TDI/TRST/TDO cluster routed to a physically-populated connector
-(`J491`, JST `10FLT-SM2-TB`). Once the JTAG hardware (ordered, ETA per
-[[icom-ic7300-re-project]] memory) is in hand and working on the 7300,
-user intends to check whether the IC-9700's IC101 has an equivalent
+(`J491`, JST `10FLT-SM2-TB`). Once JTAG works on the 7300, the plan is
+to check whether the IC-9700's IC101 has an equivalent
 exposed debug connector — not yet checked, no schematic access to the
 9700 board confirmed either way.

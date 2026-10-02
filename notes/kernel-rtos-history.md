@@ -2213,7 +2213,7 @@ confirmed.
    struct-fill code that presumably runs before every sibling handler in that cluster, not just this one).
 3. Decode the frequency-ceiling table at `DAT_200108ac+0x300` (what unit, what values) — would help confirm
    or refute the "band-limited" domain guess above.
-4. Live JTAG (once hardware arrives, see [[icom-ic7300-re-project]]) could settle this fast: send
+4. Live JTAG (once a JTAG adapter works, see `notes/hardware-debug-access.md`) could settle this fast: send
    `FE FE <addr> E0 2A 01 01 FD` and watch for any visible radio behavior change, or breakpoint
    `civ_cmd_2a_handler_UNDOCUMENTED` and watch the two GPIO-shaped registers.
 

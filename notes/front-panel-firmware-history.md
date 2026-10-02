@@ -14,8 +14,7 @@ a **handoff plan**, written before any real analysis of the front-panel firmware
 
 - **`IC501` = `R5F104LCAFB`**, a Renesas **RL78/G14** MCU (64-pin LQFP), the Display/Front Unit's MCU —
   the "SX3765" mystery from an early session, resolved via the service manual's parts list and
-  independently visible on the Front Unit schematic. See [[icom-ic7300-re-project]]'s memory-file history
-  and `notes/ic7300-hardware.md`.
+  independently visible on the Front Unit schematic. See `notes/ic7300-hardware.md`.
 - **Full physical pinout already supplied by the user**: 8 buttons on direct individual GPIOs `P70`-`P77`
   (including `MENUK`=`P73`=MENU, confirmed elsewhere `P74`/`SCPEK`=FUNCTION per a schematic-silkscreen
   correction), a 16-button resistor-multiplexed matrix on 4 pins, and two quadrature dial-encoder pairs. See

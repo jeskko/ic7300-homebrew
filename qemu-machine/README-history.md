@@ -4215,8 +4215,8 @@ full analysis in this already-long session.
 
 **Checked QEMU's own facilities before building anything new** (matching the same "check
 upstream first" habit the SCIF/`sh_serial.c` check just re-affirmed as worth keeping permanently
--- see this file's own prior section and the new `[[qemu-machine-check-upstream-peripherals]]`
-memory). Found `contrib/plugins/hotblocks.c` -- a real, already-maintained QEMU TCG plugin that
+-- see this file's own prior section and the "check upstream first" rule now in
+`CLAUDE.md`). Found `contrib/plugins/hotblocks.c` -- a real, already-maintained QEMU TCG plugin that
 counts per-translation-block execution counts and instruction counts at the TCG level, dumping a
 sorted report on exit. Not part of this project's default build (needed one explicit `ninja`
 invocation to produce `libhotblocks.so`), but otherwise usable completely as-is -- zero new C
@@ -8141,7 +8141,7 @@ detect a site that is hit repeatedly and then parked on), `--image` on both walk
 ## runs exactly ONCE around bring-up completion and produces ZERO GPU commands. There is
 ## currently no real command-FIFO traffic anywhere in this project to reverse-engineer.
 
-Picked up `icom-openvg-rendering`'s suggested next step (scope real command traffic before
+Picked up `OpenVG-rendering`'s suggested next step (scope real command traffic before
 deciding hardware-ISA-replication vs. higher-level software rasterization). Two live,
 zero/single-perturbation checks, both GDB-free or single-breakpoint:
 
@@ -8159,7 +8159,7 @@ zero/single-perturbation checks, both GDB-free or single-breakpoint:
    and (per check #1) pushes nothing to the GPU while doing so.
 
 **Together these resolve the "why is the VDC50 framebuffer dump blank" question from
-`icom-openvg-rendering`'s own confirmed starting point**: it's blank because the one and only
+`OpenVG-rendering`'s own confirmed starting point**: it's blank because the one and only
 present-frame this boot path ever does is presenting freshly-`memset`-zeroed buffers
 (`ui_graphics_buffers_init` zeros them immediately beforehand) — not because rendering is
 unreachable, and not because the OpenVG stub silently drops real draw commands. **No code path
@@ -8169,7 +8169,7 @@ equivalent entry points are** (candidates: some subset of the ~26 `FUN_2014f818`
 certainly needs a live stimulus this boot never provides — a front-panel touch, a CI-V command,
 or a periodic redraw tick — none of which any current tool injects.
 
-**Consequence for the approach decision `icom-openvg-rendering` flagged (replicate the real GPU
+**Consequence for the approach decision `OpenVG-rendering` flagged (replicate the real GPU
 command ISA vs. software-rasterize at a higher level)**: moot for now — there is no real command
 stream to decode either way, since nothing has ever been observed asking the GPU to draw
 anything. **The actual next step is producing ANY real draw traffic first** — most directly by
@@ -8206,7 +8206,7 @@ into it, not because the loop itself ever stops or skips a cycle.
 dumped rows, exactly 14 (rows 259-272, right at the very bottom edge of the real 272-row screen)
 have any nonzero bytes at all, and those bytes decode to widely-scattered, non-repeating RGB565
 values with no visible structure (not text/logo-shaped runs) — the same "uninitialized-RAM noise
-near the top/bottom" signature `icom-openvg-rendering`'s own original starting point already
+near the top/bottom" signature `OpenVG-rendering`'s own original starting point already
 described, unchanged by any of today's fixes.
 
 **Tried to identify who's actually supposed to draw the boot logo + configured callsign, and came

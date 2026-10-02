@@ -3,7 +3,7 @@
  * free-running frame-timing interrupt source. Nothing is composited or scanned
  * out; this only reproduces "the panel finished another frame".
  *
- * 2026-09-23 (icom-openvg-rendering thread). Why this exists, end to end:
+ * 2026-09-23 (OpenVG-rendering thread). Why this exists, end to end:
  *
  *   With the factory-default "Opening Message = ON" setting (reset-table item
  *   0x70, EEPROM 0x1a8f -- see tools/build_riic_eeprom_image.py),

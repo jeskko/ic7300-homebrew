@@ -1,5 +1,7 @@
 # `sd-card-app` — apps loaded from the SD card, no reflash to iterate
 
+> **Historical proof of concept, superseded by [`sdk/loader/`](../../loader/).** Kept as the record of how the injection mechanism was first proven. New apps should use the loader and the C SDK (see [`sdk/README.md`](../../README.md)); this example's fixed `C:\IC-7300\APP.BIN` path and key-combo trigger are not how the current loader works.
+
 Live-tested 2026-09-25 in `qemu-machine`, built directly on
 [`sdk/examples/civ-hello-world/`](../civ-hello-world/)'s proven injection mechanism. This is
 the actual "install an app = drop a file on the SD card" ergonomics `sdk/roadmap.md`'s
@@ -72,7 +74,7 @@ open item.) Trigger and read the frame exactly as in `civ-hello-world/README.md`
 
 ## Corrections from an adversarial review pass, and a second bug found while fixing them (2026-09-25)
 
-An Opus review of all three `sdk/examples/` found several real issues (`sdk/app-loader-design.md`
+An adversarial review of all three `sdk/examples/` found several real issues (`sdk/app-loader-design.md`
 has the full report). Fixed here, all regression-tested afterward (same frame, same clean resume,
 same fail-closed behavior with no `APP.BIN`):
 

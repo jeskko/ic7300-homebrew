@@ -1,102 +1,105 @@
-# `sdk/` — the forward-looking half of this project
+# `sdk/` — writing homebrew apps for the IC-7300
 
-`notes/` is the reverse-engineering record: what's actually true about the real, existing IC-7300
-firmware, written as it's confirmed. It doesn't change once something is settled, only gets corrected
-when a finding turns out to be wrong.
+An app is a plain C program. You build it into a `NAME.BIN`, put it in `\homebrew\` on the SD
+card, and start it from **MENU > SET > SD Card > Homebrew Apps**. Behind that menu row is a
+one-time **loader firmware** (`loader/`): stock v1.42 with a small loader appended, installed
+once like any firmware update. After that, installing an app is just copying a file.
 
-`sdk/` is different in kind, not just topic: it's the emerging **design and plan for building on top of**
-what `notes/` has established — running custom code on the radio, and eventually a real SDK for writing
-apps. It's forward-looking and expected to change as work progresses, will eventually hold real code
-(headers, a toolchain config, example app sources) alongside markdown, and mixes confirmed facts (cited
-back to `notes/`) with genuine design decisions and open questions that don't have a "true answer" to
-discover the way an RE finding does.
+> **Emulator only so far.** None of this has run on a real radio. Read the warning in the
+> top-level [README](../README.md#scope) before flashing anything: you need a verified way to
+> re-flash a radio that no longer boots.
 
-Started 2026-08-30 as this distinction became worth keeping clean — see [[icom-custom-code-goal]] (memory)
-for why this whole effort exists.
+## Quick start (in the emulator)
 
-## Current contents
+After the one-time emulator setup in the top-level README (`qemu-machine/setup.sh`, your own
+`7300_142.dat` in `firmware/`), from the repo root:
 
-- **`roadmap.md`** — the overall goal, the key reframing insight (the firmware-update mechanism has no
-  signature check, so a "flash once" custom-app loader is already feasible on its own), and the phased
-  plan.
-- **`app-requirements.md`** — for four representative example apps (serial hello-world, display
-  hello-world, a simple game, an SSTV receiver), what's already known vs. what still needs researching,
-  deliberately excluding the app-launching/memory-placement question (expected to get much easier once a
-  live-device memory dump exists via JTAG).
-- **`api/`** — per-subsystem reference docs (started 2026-08-30, a synthesis pass over `notes/*.md`, not
-  new RE work): `task-model.md`, `serial-civ.md`, `display.md`, `input.md`, `filesystem.md`, `audio.md`,
-  `settings.md`. Each cites back to the underlying `notes/` evidence and marks open questions ✅/🔎 in the
-  same style as `app-requirements.md`. Scope is deliberately "what can an app call/use once it's running,"
-  not "how does it start" (still `roadmap.md` Phase 2's open question). Addresses cited in these files were
-  verified against the live Ghidra project as of the date each file was written — re-verify before trusting
-  one blindly if picking this up much later, since renames happen across sessions.
-- **`app-loader-design.md`** — started 2026-09-25, the concrete answer to `roadmap.md`'s Phase 2 (injection
-  point/loading mechanism): hook point, where appended code actually has to live in memory (a real, live-
-  tested correction lives here — read before placing anything past `body.bin`'s own static image), and the
-  fail-closed contract. Kept current as the design firms up; open items tracked at its end.
-- **`examples/civ-hello-world/`** — the first real, running code from this whole effort (2026-09-25,
-  live-tested in `qemu-machine`): a front-panel key combo makes the radio emit one CI-V frame and resume
-  normal operation. Real ARM assembly (`app.s`), a reproducible build script, and a README with the full
-  test log. Proves the injection mechanism `app-loader-design.md` designed actually works.
-- **`examples/sd-card-app/`** — same day, built directly on top: the payload is no longer baked in, it's a
-  real, separate `APP.BIN` file loaded fresh from the SD card at runtime and executed, using file-I/O
-  wrapper functions found and confirmed via `firmware_update_main`'s own real code (`sdk/api/filesystem.md`
-  has the confirmed command IDs). This is the actual "install an app = drop a file on the SD card, no
-  reflash" mechanism the project's whole reframing was built around — proven, not just designed.
-- **`examples/homebrew-apps-menu/`** — same day, the real menu-button trigger the other two examples
-  lacked: two *data* patches (no instruction touched) add a genuine, correctly-labeled "Homebrew Apps" row
-  to the real SD CARD menu, live-verified through the real touchscreen UI (screenshots in its README) —
-  MENU → SET → SD Card now shows 3 pages instead of 2, and tapping the new row runs `APP.BIN` from the SD
-  card exactly like `sd-card-app` does. This closes out both halves of the user's original ask.
+```
+D=scratch/homebrew; mkdir -p $D
+python3 sdk/loader/build.py                                   # -> scratch/hb_loader_142.dat
+python3 qemu-machine/tools/build_flash.py scratch/hb_loader_142.dat $D/flash.bin
+python3 sdk/tools/build_app.py -o $D/HELLO.BIN sdk/examples/hello-gui/main.c
+python3 qemu-machine/tools/build_sdcard.py -o $D/sdcard.img --size-mb 128
+mmd   -i $D/sdcard.img@@1M ::homebrew
+mcopy -i $D/sdcard.img@@1M $D/HELLO.BIN ::homebrew/
+python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --flash $D/flash.bin --sd $D/sdcard.img
+```
 
-- **`loader/`, `include/hb/`, `runtime/`, `tools/build_app.py`** — started 2026-09-25, the first
-  real SDK: a one-time loader firmware (the Homebrew Apps row plus a per-`main_idle_loop` tick and
-  a header-checked APP.BIN ABI), and a C runtime that runs an app's `main()` as a coroutine on the
-  UI thread so calls like `ui_message_box()` can block without freezing the radio.
-  `loader/README.md` has the design, ABI and open items.
-- **`examples/hello-gui/`** — the first C app and first GUI app: a firmware-drawn "Hello, world!"
-  dialog with an OK button; `ui_message_box()` returns after OK, then the app exits.
-  **`examples/about-box/`** shows two popups in a row.
-- **Graphics** (same day): `hb/gfx.h` + `hb/input.h`. An app gets a full-screen double-buffered
-  canvas on VDC5 plane GR3, over the radio's own UI, with software drawing, touch input the UI
-  underneath doesn't see, and a ms clock. **`examples/cube/`**, a spinning 3D cube (tap it for
-  wireframe/filled, X to exit), is live-tested at 30 frames/s in the emulator.
-- **Multiple apps** (same day): apps are `\homebrew\*.BIN` on the card, and Homebrew Apps opens
-  a firmware list screen of them (a borrowed stock screen, restored on exit). The scripted
-  emulator test `loader/test_emu.py` covers launching, relaunch, paging, the 14-app cap, and
-  empty/junk/no-card cases.
-- **Bigger apps** (same day, ABI v3): apps may be 1 MB (code, data, bss, stack) and get a
-  448 KB heap (`hb/heap.h`: `hb_malloc`/`calloc`/`realloc`/`free`), all in RAM the firmware
-  never uses (`notes/memory-map.md`). The loader reads apps in 64 KB chunks.
-  `loader/test_emu.py --big` loads a 789 KB test app and exercises the heap.
-- **`examples/minesweeper/`** (same day): App 3 of `app-requirements.md`, retargeted from Tetris
-  to a 10×10 Minesweeper. Tap to dig, hold to flag, EXIT key or X to quit. Drawn as raw raster
-  on the GR3 canvas; its README explains why the firmware's GUI components can't express the
-  board. Added `hb_text()` (a built-in 5×7 font) and `hb_key_down()` to the SDK. Covered by
-  `loader/test_emu.py`: win, loss, flags, and no input leaking to the UI.
+In the window: MENU > SET > SD Card, page to **Homebrew Apps**, tap **HELLO**. Use
+`--icount off` for anything touching the SD card (heavy mounts stall under `-icount`).
 
-## Expected growth
+A minimal app:
 
-No fixed structure imposed up front — following this project's own established pattern in `notes/`
-(files start flat, split into a lean "current state" file plus a `-history.md` narrative companion only
-once they actually get long). `api/` and `examples/` (above) are the first structured additions. Further
-plausible growth:
-- More `examples/` — the remaining three apps in `app-requirements.md`, and a real SD-card-loaded app once
-  that increment is built.
-- A toolchain/build doc once the cross-compiler and linker setup is worked out.
-- Splitting an `api/*.md` file into a `-history.md` companion if/when one of them grows past the point of
-  being a quick reference, same pattern as `notes/`.
+```c
+#include "hb/app.h"
 
-Keep new SDK-design material here, not in `notes/` — if something is a confirmed fact about the real
-firmware, it belongs in `notes/` (and `sdk/` docs should cite it from there); if it's a plan, a design
-choice, or an open question about what to build, it belongs here.
+int main(void)
+{
+    ui_message_box("Hello, world!");    /* the radio's own dialog; returns after OK */
+    return 0;
+}
+```
 
-## Keep this in sync with ordinary RE work
+## How an app runs
 
-`app-requirements.md` and `roadmap.md` each list open questions that ordinary `notes/`-side investigation
-can answer incidentally, without anyone specifically going looking for them — e.g. confirming what buffer
-`icon_blit_by_id_v1`/`_v2` writes into, decoding more `scif3_frame_dispatch_by_type` message types,
-tracing `voice_recording_file_task`'s audio source back to its producer. **When a session's RE work
-happens to resolve (or bear on) one of these, update the relevant `sdk/` doc's open-question status at
-the same time as recording the finding in `notes/`** — don't leave it to a dedicated "check the SDK docs"
-pass, since one may not happen for a long time otherwise.
+- `main()` runs on the radio's UI thread, but on its own 16 KB stack, as a coroutine. A blocking
+  call (`ui_message_box()`, `hb_wait_until()`, `hb_yield()`) switches back to the firmware, which
+  carries on normally, and resumes your code on a later UI loop pass. The radio keeps working while
+  your app is up. Don't busy-wait: a loop that never yields freezes the UI.
+- The image (code, data, bss, stack) may be up to 1 MB, plus a 448 KB heap. It lives in RAM the
+  firmware never uses.
+- When `main()` returns, the runtime puts everything back: the screen, input, the audio tap.
+- The loader and an app must agree on the ABI version (`hb/abi.h`, currently v4). Rebuild apps
+  when the loader changes.
+
+## API
+
+| Header | What it gives you |
+|---|---|
+| `hb/app.h` | `main()` conventions, `hb_yield()`, `hb_wait_until()`, `ui_message_box()` (firmware popup, up to 6 lines + OK) |
+| `hb/gfx.h` | A full-screen 480×272 RGB565 double-buffered canvas over the radio's UI: `hb_gfx_open/present/close`, `hb_clear`, `hb_fill_rect`, `hb_line`, `hb_fill_triangle`, `hb_text` (built-in 5×7 font, any integer scale) |
+| `hb/input.h` | Touch in screen pixels (`hb_touch_read`), front-panel keys (`hb_key_down`), a ms clock |
+| `hb/heap.h` | `hb_malloc` / `hb_calloc` / `hb_realloc` / `hb_free` |
+| `hb/audio.h` | Receive audio, 12 kHz mono int16, gap-filled (`hb_audio_open/read/close`) |
+| `hb/math.h` | `hb_sinf`, `hb_cosf` (there is no libm) |
+| `hb/abi.h`, `hb/firmware.h` | The loader ABI and the stock-firmware addresses the runtime uses (1.42 only) |
+
+No libc beyond what `runtime/libc.c` provides. Build with `sdk/tools/build_app.py`, which needs
+`arm-none-eabi-gcc` on `PATH`.
+
+## Examples
+
+| Example | Shows |
+|---|---|
+| [`hello-gui`](examples/hello-gui/) | The smallest app: one firmware dialog |
+| [`about-box`](examples/about-box/) | Two blocking dialogs in a row |
+| [`cube`](examples/cube/) | The graphics canvas and touch: a spinning, shaded 3D cube |
+| [`minesweeper`](examples/minesweeper/) | A full touch game drawn as raw raster, with text and keys |
+| [`sstv-rx`](examples/sstv-rx/) | The audio tap: a Scottie/Martin SSTV receiver |
+
+`civ-hello-world`, `sd-card-app` and `homebrew-apps-menu` are the earlier proofs of concept the
+loader replaced. They're kept for the record; don't start new work from them.
+
+## Limits (today)
+
+- Firmware **v1.42 only**: every firmware address the loader and runtime use is specific to it.
+- At most 14 apps in the picker; names are 8.3 (`SnakeGame.BIN` shows as `SNAKEG~1`).
+- The dials aren't grabbed: while an app is up, turning them still tunes the radio.
+- Real-hardware unknowns: cache maintenance before jumping into a freshly loaded app, frame rate,
+  resistive-touch slop, audio block loss. See [`loader/README.md`](loader/README.md), "Open items".
+
+## Docs
+
+- [`loader/README.md`](loader/README.md) — the loader's patches, the app picker, the ABI, the
+  coroutine runtime, graphics and input internals, the end-to-end emulator test, open items.
+- [`api/`](api/) — per-subsystem reference (task model, CI-V, display, input, filesystem, audio,
+  settings), each backed by the RE notes in `../notes/`.
+- [`app-requirements.md`](app-requirements.md), [`roadmap.md`](roadmap.md),
+  [`app-loader-design.md`](app-loader-design.md), [`sstv-app-design.md`](sstv-app-design.md) —
+  design and planning.
+- [`README-history.md`](README-history.md) — how the SDK came together.
+
+`sdk/` is the forward-looking half of the project: design decisions and plans live here, while
+confirmed facts about the stock firmware belong in `../notes/` (and get cited from here). When RE
+work in `notes/` answers one of the open questions in `app-requirements.md` or `roadmap.md`,
+update the `sdk/` doc at the same time.

@@ -1,8 +1,10 @@
 # `homebrew-apps-menu` — a real, visible "Homebrew Apps" menu button
 
+> **Historical proof of concept, superseded by [`sdk/loader/`](../../loader/).** Kept as the record of how the injection mechanism was first proven. New apps should use the loader and the C SDK (see [`sdk/README.md`](../../README.md)); this example's fixed `C:\IC-7300\APP.BIN` path and single menu row trigger are not how the current loader works.
+
 Live-tested 2026-09-25 in `qemu-machine`, driven through the real touchscreen UI (not a
-shortcut). This is the other half of the user's original ask that
-[`civ-hello-world`](../civ-hello-world/) and [`sd-card-app`](../sd-card-app/) didn't cover: both
+shortcut). This adds the piece
+[`civ-hello-world`](../civ-hello-world/) and [`sd-card-app`](../sd-card-app/) lacked: both
 of those trigger via a hidden front-panel key combo. This one adds a **real row in the real SD
 CARD menu** that does the same SD-card app load `sd-card-app` does — MENU → SET → SD Card →
 "Homebrew Apps".
@@ -84,7 +86,7 @@ at each step (not just CI-V — the actual rendered screen, confirming nothing e
 
 ## Corrections from an adversarial review pass (2026-09-25)
 
-An Opus review of all three `sdk/examples/` (full report in `sdk/app-loader-design.md`) found
+An adversarial review of all three `sdk/examples/` (full report in `sdk/app-loader-design.md`) found
 several issues that also apply here, since `menu_hook.s` started as a copy of `sd-card-app/
 loader_hook.s`. Fixed and **re-verified through the real UI afterward** (same screenshots, same
 3-page menu, same `SDAPP` frame on tap, same fail-closed with no `APP.BIN`):

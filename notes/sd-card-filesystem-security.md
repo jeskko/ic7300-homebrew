@@ -6,7 +6,7 @@ not just the (already-confirmed-feasible) unauthenticated-firmware-update path. 
 investigation specifically for the SD-card filesystem angle.
 
 **Deprioritized 2026-09-25** — the SD-card app-loading mechanism (see `sdk/examples/sd-card-app/`,
-[[icom-custom-code-goal]] in memory) fully delivered the project's north star without needing this
+and its successor `sdk/loader/`) fully delivered the project's north star without needing this
 thread. Kept here as a real, honest record of a real code-level finding; not being actively pursued.
 
 See [notes/sd-card-filesystem-security-history.md](sd-card-filesystem-security-history.md) for the full session-by-session narrative and evidence trail.

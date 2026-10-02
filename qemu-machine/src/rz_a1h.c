@@ -505,7 +505,7 @@ static void rza1h_init(MachineState *machine)
                        qdev_get_gpio_in(gic,
                            RZA1H_OPENVG_INT0_IRQ - RZA1H_GIC_NUM_INTERNAL));
 
-    /* adc.c -- added 2026-09-21, continued (icom-openvg-rendering thread). Found via a
+    /* adc.c -- added 2026-09-21, continued (OpenVG-rendering thread). Found via a
      * `-d unimp` steady-state survey: the ADC is the only region still touched continuously deep
      * into steady-state boot (every other unimplemented region is one-time config). Full
      * derivation in adc.c's own file comment. Overlap-mapped: sits inside the broader
