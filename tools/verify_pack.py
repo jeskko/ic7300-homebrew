@@ -29,6 +29,7 @@ Usage: python3 tools/verify_pack.py
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from pathlib import Path
 
@@ -40,7 +41,7 @@ from icom_fw.container import (  # noqa: E402
     parse,
 )
 
-SOURCE_DIR = Path("/data/misc/icom/7300")
+SOURCE_DIR = Path(os.environ.get("ICOM_FW_DIR", Path(__file__).resolve().parent.parent / "firmware"))
 VERSIONS = ["111", "112", "113", "114", "120", "121", "130", "140", "141", "142"]
 
 

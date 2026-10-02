@@ -5,7 +5,7 @@ considering any software custom-code loading route for live RAM access — see
 [[firmware-update]]'s security section for that alternative, now
 deprioritized by this finding). Checked the two USB CDC serial ports
 first as the user's own lead, then the schematics
-(`/data/misc/icom/7300/doc/IC-7300_Schematic_Diagram_2.pdf`, extracted
+(`docs/IC-7300_Schematic_Diagram_2.pdf`, extracted
 via `pdftotext`, cross-checked visually by rendering the actual pages —
 schematics lose too much positional information as flat text to trust
 without the image).

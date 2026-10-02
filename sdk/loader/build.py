@@ -6,7 +6,7 @@ and wired in. Flash the result once (SET > SD Card > Firmware Update); after tha
 Usage:
     python3 sdk/loader/build.py [container.dat] [output.dat]
 
-Defaults to /data/misc/icom/7300/7300_142.dat -> scratch/hb_loader_142.dat (repo-relative).
+Defaults to $ICOM_FW_DIR/7300_142.dat (default firmware/7300_142.dat) -> scratch/hb_loader_142.dat (repo-relative).
 
 Patches, all checked against the expected stock bytes first:
   - main_idle_loop's `bl civ_tx_pump` (0x20052f64) -> `bl hb_idle_hook` (per-pass app tick)
@@ -23,6 +23,7 @@ Patches, all checked against the expected stock bytes first:
 
 from __future__ import annotations
 
+import os
 import re
 import struct
 import subprocess
@@ -32,6 +33,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SDK = HERE.parent
 REPO = SDK.parent
+FW_DIR = Path(os.environ.get("ICOM_FW_DIR", REPO / "firmware"))
 sys.path.insert(0, str(REPO / "tools"))
 from icom_fw.container import pack, parse  # noqa: E402
 
@@ -133,7 +135,7 @@ def build(container_in: Path, container_out: Path) -> None:
 
 
 if __name__ == "__main__":
-    src = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("/data/misc/icom/7300/7300_142.dat")
+    src = Path(sys.argv[1]) if len(sys.argv) > 1 else FW_DIR / "7300_142.dat"
     dst = Path(sys.argv[2]) if len(sys.argv) > 2 else REPO / "scratch" / "hb_loader_142.dat"
     dst.parent.mkdir(parents=True, exist_ok=True)
     build(src, dst)

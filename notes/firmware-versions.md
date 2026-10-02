@@ -1,6 +1,6 @@
 # Firmware releases — header field survey
 
-Parsed directly from all 10 read-only originals in `/data/misc/icom/7300/`
+Parsed directly from all 10 read-only originals in `firmware/`
 (`7300_1XX.dat`) using the layout in [[container-format]]. This supersedes
 `foo.txt`'s hand-collected hex diffs (which mixed in `base.hex` dumps) —
 figures below are computed straight from the actual files.

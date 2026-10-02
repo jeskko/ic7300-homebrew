@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from unicorn import UcError  # noqa: E402
 from emu.board import RAM_BASE, Board  # noqa: E402
 from emu.flash_image import FLASH_BASE  # noqa: E402
 
-DEFAULT_CONTAINER = Path("/data/misc/icom/7300/7300_142.dat")
+DEFAULT_CONTAINER = Path(os.environ.get("ICOM_FW_DIR", Path(__file__).resolve().parent.parent.parent / "firmware")) / "7300_142.dat"
 BODY_ENTRY = 0x20005000
 
 # Generous safety limits for stage 1 -- LZSS decompressing a multi-MB body one byte at a

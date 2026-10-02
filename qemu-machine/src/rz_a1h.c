@@ -287,7 +287,7 @@ static void rza1h_init(MachineState *machine)
                          RZA1H_CPG_DEEP_STANDBY_BASE, RZA1H_CPG_DEEP_STANDBY_SIZE);
 
     /* VDC50 (real LCD/display controller, base+register layout confirmed against
-     * ~/Downloads/rza1.svd) + LVDS (its output serializer, a small sub-block at the same
+     * rza1.svd) + LVDS (its output serializer, a small sub-block at the same
      * page, +0x630) -- 2026-09-20, found via `-d unimp` tracing: firmware genuinely
      * configures multiple graphics planes (GR0-3, GR_VIN, GR_OIR) during boot, previously
      * silently swallowed by the generic unimplemented-device catch-all (writes discarded,

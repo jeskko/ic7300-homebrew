@@ -1,6 +1,6 @@
 """RZ/A1H CPG (Clock Pulse Generator) register file.
 
-Register names, offsets, and widths confirmed via `~/Downloads/rza1.svd` (the same SVD
+Register names, offsets, and widths confirmed via `rza1.svd` (the same SVD
 `gpio.py` uses, and this project's Ghidra project imports per README.md's "RZ/A1H
 peripheral SVD" bullet). `CPG` base `0xFCFE0010`, plus a separate deep-standby-related
 cluster at `0xFCFF1800` (`RRAMKP`/`DSCTR`/`DSSSR`/`DSESR`/`DSFR`/`XTALCTR`).

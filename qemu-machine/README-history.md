@@ -131,7 +131,7 @@ hardware block servicing the 4-bit SD bus this schematic wires up (`SD_CMD`/`SD_
 `sdk/roadmap.md` Phase 0 payoff item -- a fully-offline way to test whether a custom
 `body.bin` gets accepted and boots, without JTAG -- and the first peripheral in this
 directory whose bit-level layout came from the real Renesas hardware manual (Chapter 51,
-pages 51-1 to 51-42) rather than `~/Downloads/rza1.svd` (which lists this peripheral's
+pages 51-1 to 51-42) rather than `rza1.svd` (which lists this peripheral's
 register names/offsets but zero bit fields, unlike every other peripheral here).
 
 **What's implemented**: the real register set (`CE_CMD_SETH`/`SETL`, `CE_ARG`,
@@ -312,11 +312,11 @@ enough real interrupt-completion behavior to unblock this one boot-time read), t
 of fix every other peripheral here has already needed, not a deeper RTOS-semantics question.
 
 **Deliberately not attempted that session**: implementing real RIIC register/interrupt
-behavior. The real RZ/A1H hardware manual (`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_
+behavior. The real RZ/A1H hardware manual (`docs/REN_r01uh0403ej0600_
 rz_a1h_MAT_20210129-2931443.pdf`, Section 18 "I²C Bus Interface") documents the
 named interrupt sources (`INTRIICTMOI`/`INTRIICALII`/`INTRIICSTI`/`INTRIICSPI`/`INTRIICNAKI`/
 `INTRIICRI`/`INTRIICTEI`/`INTRIICTI`) and the `RIICnCR1`/`CR2`/`MR1-3`/`FER`/`SER`/`IER`/`SR1`/
-`SR2`/`SAR0-2`/`BRL`/`BRH`/`DRT`/`DRR` register set (offsets also in `~/Downloads/rza1.svd`, but
+`SR2`/`SAR0-2`/`BRL`/`BRH`/`DRT`/`DRR` register set (offsets also in `rza1.svd`, but
 — like MMCIF before this — with zero bit-field detail, manual needed for real semantics), but
 which of `riic2_driver_init`'s 6 registered handlers actually clears `sdcard_file_rpc_dispatch_
 task`'s struct's completion flag, and via what exact `CR2`/`SR2` bit sequence, wasn't traced —
@@ -514,7 +514,7 @@ RX side") — the real first blocker is TX *completion*, not the reply.
 **Deriving TXI3's real GIC ID independently, and getting an unplanned cross-check**: `0xec`=236
 already told us the ID directly, but to build the fix properly (and to generalize to all 8 SCIF
 channels, matching this project's own "wire it once, correctly, for all instances" habit from
-`riic.c`), the ID was independently re-derived from `~/Downloads/rza1.svd`'s `ICDISR6`/`ICDISR7`
+`riic.c`), the ID was independently re-derived from `rza1.svd`'s `ICDISR6`/`ICDISR7`
 register fields, using the exact same "register-index×32+bit" formula that already gave OSTM0
 its confirmed-correct ID 134 (`ICDISR4`, `OSTM0TINT` at bit 6 → 4×32+6=134). `ICDISR7`'s own
 fields give SCIF-n's group as `BRIn=221+4n, ERIn=222+4n, RXIn=223+4n, TXIn=224+4n` — TXI3 lands
@@ -774,7 +774,7 @@ TXI3/RXI3=236/235 from `ICDISR7`'s `TXIn=224+4n`/`RXIn=223+4n` fields):
 `ICDISR4` (register index 4, covering absolute IDs 128-159) has bit 26 named **`TGI3A`** —
 `4*32+26 = 154`, an exact match. **`TGI3A` is MTU2 (Multi-Function Timer Pulse Unit 2) channel
 3's Timer-General-Interrupt-A, the compare-match-A interrupt** — confirmed against
-`~/Downloads/rza1.svd`'s own `MTU2` peripheral block (base `0xFCFF0000`) and its channel-3
+`rza1.svd`'s own `MTU2` peripheral block (base `0xFCFF0000`) and its channel-3
 register offsets (`TCR_3`=0x200, `TMDR_3`=0x202, `TIORH_3`/`TIORL_3`=0x204/0x205,
 `TIER_3`=0x208, `TCNT_3`=0x210, `TGRA_3`=0x218 — all 16-bit-spaced, matching the real MTU2
 extended-channel layout).
@@ -3553,7 +3553,7 @@ order of magnitude on a persistent breakpoint, not just shift timing by a small 
 ## GT24C128B datasheet and the RZ/A1H hardware manual, per the user's own follow-up question
 
 User asked, prompted by the EEPROM investigation above, how well this project's RIIC2 timing
-matches the real GT24C128B EEPROM's own datasheet (`/data/misc/icom/7300/doc/
+matches the real GT24C128B EEPROM's own datasheet (`docs/
 GT24C128B-2UDLI-TR.pdf`, page 17's AC electrical characteristics). Answer required going past the
 datasheet alone, to the real RZ/A1H hardware manual (`R01UH0403EJ0600`) and the real
 firmware-programmed register values (via Ghidra decompile of `riic2_driver_init`,
@@ -5895,7 +5895,7 @@ auto-boot log's tail **byte-for-byte** (identical `io-e8100000` magic-value sequ
 branches converge on the exact same downstream feature/task bring-up code once "boot" completes,
 not just the same final PC address.
 
-**Mapped every touched region against `~/Downloads/rza1.svd`**: `spi-status-and-neighbors` =
+**Mapped every touched region against `rza1.svd`**: `spi-status-and-neighbors` =
 `SPIBSC0` (boot-flash controller, expected/cosmetic); `io-e8200000` = `SSIF0`/`SSIF1` (DSP audio
 link, expected — the DSP itself isn't emulated); `io-e8100000`'s repeated single-register-push
 pattern doesn't match anything in this SVD (unidentified, not forced); **`io-fcfe0000`'s 212 hits

@@ -109,7 +109,7 @@ Implemented the peripheral the MVP's criterion 3 stopped on: `peripherals/gpio.p
 RZ/A1H `PORT_BASE`(`0xFCFE3000`)/`IBC_BASE`(`0xFCFE7000`) register cluster (P/PM/PMC/PPR/PFC/
 PFCE/PFCAE/PNOT/PIBC/PBDC/PIPC/SNCR, all ports), with offsets cross-checked against both
 `notes/ic7300-signal-chain.md`'s own derived formula and the RZ/A1H SVD
-(`~/Downloads/rza1.svd`, the same file this project's Ghidra project imports) -- both agree
+(`rza1.svd`, the same file this project's Ghidra project imports) -- both agree
 exactly. P/PM/PMC/PPR/PIBC's *roles* are hardware-confirmed (via `notes/ic7300-signal-chain.md`'s
 `DRESD` trace and a fresh decompile of `FUN_2002b878`, see gpio.py's own docstring);
 PSR/PMSR/PMCSR/PNOT's exact set/clear semantics are a structurally-motivated inference (the
@@ -141,7 +141,7 @@ boot sequence and land on `body.bin`'s real entry point — **passes**, verified
 ways:
 
 ```
-emu/.venv/bin/python3 -m emu.mvp   # defaults to /data/misc/icom/7300/7300_142.dat
+emu/.venv/bin/python3 -m emu.mvp   # defaults to firmware/7300_142.dat
 ```
 
 1. **PC reaches `0x20005000`** (body.bin's real entry, per [[base-loader]]) without crashing on

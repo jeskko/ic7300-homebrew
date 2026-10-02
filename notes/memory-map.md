@@ -1,9 +1,9 @@
 # IC-7300 main CPU memory map (Renesas RZ/A1H)
 
-Source: hand-derived by the user in `/data/misc/icom/memmap.txt` (read-only
+Source: hand-derived by the user in `memmap.txt` (read-only
 original), cross-referenced against the Renesas RZ/A1H/RZ/A1M Hardware
 User's Manual shipped alongside the service manuals in
-`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_rz_a1h_MAT_20210129-2931443.pdf`.
+`docs/REN_r01uh0403ej0600_rz_a1h_MAT_20210129-2931443.pdf`.
 
 The main CPU is an ARM Cortex-A9-based **Renesas RZ/A1H**.
 

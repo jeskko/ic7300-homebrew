@@ -2,7 +2,7 @@
  * RZ/A1H SCIF (Serial Communication Interface with FIFO) -- Extension-
  * roadmap item 4. No emu/peripherals/ Python original exists for this one
  * (genuinely new work, not a port) -- register offsets/widths/bit layout
- * confirmed via ~/Downloads/rza1.svd (the same SVD every other peripheral
+ * confirmed via rza1.svd (the same SVD every other peripheral
  * in this directory cites), a real Renesas FIFO-capable SCIF, distinct
  * from the byte-addressed non-FIFO "SCI" QEMU already ships a model for
  * (hw/char/renesas_sci.c, for the RX62N family) -- that device's register

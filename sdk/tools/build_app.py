@@ -4,7 +4,8 @@
 Usage:
     python3 sdk/tools/build_app.py -o APP.BIN main.c [more.c ...]
 
-Put the output at C:\\IC-7300\\APP.BIN on the card and start it from
+Put the output on the SD card as \\homebrew\\NAME.BIN (any 1-8 char name + .BIN;
+the loader lists \\homebrew\\*.BIN) and start it from
 MENU > SET > SD Card > Homebrew Apps (needs the loader firmware from sdk/loader/).
 Requires arm-none-eabi-gcc on PATH.
 """

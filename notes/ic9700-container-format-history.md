@@ -9,7 +9,7 @@ art, so the specific things already ruled out matter as much as what's confirmed
 
 **Status: cold start, not cracked.** Unlike the IC-7300 side of this repo,
 there was no prior art to lean on here — no existing unpacker script, no
-pre-decompressed reference image, nothing in `/data/misc/icom/9700/`
+pre-decompressed reference image, nothing in `firmware/9700/`
 except raw `.dat`/`.zip` release files (confirmed by search). This note
 exists so a future session doesn't repeat the same dead ends.
 
@@ -99,7 +99,7 @@ yet.
 Checked all available `.dat` files: J102, J103, J105, J106, J110, J111,
 J113, J120, J121, J124, J130–J132, J140–J144, J150 (19 files) and E105,
 E106, E110, E111, E113, E120, E121, E123, E124, E130–E132, E140–E144,
-E150 (18 files) — every version in `/data/misc/icom/9700/`.
+E150 (18 files) — every version in `firmware/9700/`.
 
 - **Container layout is byte-identical in shape across all 37 releases**
   spanning 2019–2025: same ramp-filler region, same island positions

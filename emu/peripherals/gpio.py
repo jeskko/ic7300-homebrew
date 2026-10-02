@@ -1,6 +1,6 @@
 """RZ/A1H GPIO/port register block.
 
-Register offsets below are ground-truthed two independent ways: `/home/jvaarani/Downloads/rza1.svd`
+Register offsets below are ground-truthed two independent ways: `rza1.svd`
 (the RZ/A1H SVD this project's Ghidra project also imports, per README.md's "RZ/A1H peripheral SVD"
 bullet) gives every register's exact address, and `notes/ic7300-signal-chain.md`'s own
 independently-derived formula (`PORTn_base=0xFCFE3000`, per-register-type strides `+0x100`/`+0x200`/...,

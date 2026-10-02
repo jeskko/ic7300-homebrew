@@ -1,8 +1,8 @@
 # `icom_fw` — IC-7300 firmware container unpacker/packer
 
 A clean, tested rewrite of the existing ad-hoc `tunk.py`/`tunk3.py` scripts
-(read-only originals at `/data/misc/icom/7300/`). See `/notes/` for the
-reverse-engineered format this implements, and `/notes/multi-cpu-images.md`
+(the `$ICOM_FW_DIR` originals). See `../notes/` for the
+reverse-engineered format this implements, and `../notes/multi-cpu-images.md`
 in particular for why this rewrite exists: the original scripts silently
 dropped ~1.46 MB (~37%) of every container.
 
@@ -13,7 +13,7 @@ No third-party dependencies — pure standard library, Python 3.9+.
 Unpack one firmware file:
 
 ```
-python3 -m icom_fw.cli unpack /data/misc/icom/7300/7300_142.dat scratch/out-142
+python3 -m icom_fw.cli unpack firmware/7300_142.dat scratch/out-142
 ```
 
 Writes `body.bin` (main ARM image), `chunk1_font1.ttf`, `chunk2_font2.ttf`,
@@ -25,7 +25,7 @@ test (edit `body.bin`, get back a checksum-correct container to try flashing
 via the normal SD-card update flow):
 
 ```
-python3 -m icom_fw.cli pack /data/misc/icom/7300/7300_142.dat scratch/out-142/body.bin scratch/repacked_142.dat
+python3 -m icom_fw.cli pack firmware/7300_142.dat scratch/out-142/body.bin scratch/repacked_142.dat
 ```
 
 Recompresses the given body with this project's own from-scratch LZSS

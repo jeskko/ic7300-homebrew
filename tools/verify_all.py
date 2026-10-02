@@ -6,7 +6,7 @@
 - Diffs `body` against the existing `7300_1XX/unpacked.dat` reference (and,
   for v1.42, the top-level `out.dat`) to make sure the rewritten LZSS
   decoder is byte-identical to the original tool's output.
-- Never writes into /data/misc/icom/7300/ (read-only) -- output goes to
+- Never writes into the firmware directory (read-only; `$ICOM_FW_DIR`, default `firmware/`) -- output goes to
   ./scratch/unpacked/<version>/ (git-ignored).
 
 Usage: python3 tools/verify_all.py
@@ -15,13 +15,14 @@ Usage: python3 tools/verify_all.py
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from icom_fw.container import parse  # noqa: E402
 
-SOURCE_DIR = Path("/data/misc/icom/7300")
+SOURCE_DIR = Path(os.environ.get("ICOM_FW_DIR", Path(__file__).resolve().parent.parent / "firmware"))
 VERSIONS = ["111", "112", "113", "114", "120", "121", "130", "140", "141", "142"]
 OUT_DIR = Path(__file__).parent.parent / "scratch" / "unpacked"
 

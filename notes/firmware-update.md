@@ -252,7 +252,7 @@ not traced here) with whatever full path the user picked from a displayed list, 
 one buffer's content at call time.
 
 **The real path convention, found directly in Icom's own published manual** (not derived
-from firmware code at all — `pdftotext` of `/data/misc/icom/7300/doc/
+from firmware code at all — `pdftotext` of `docs/
 IC-7300_ENG_FM_12b.pdf`, section 15 "Updating the firmware"): *"Copy the downloaded firmware
 data into the IC-7300 folder on an SD card"*, followed by a file-selection screen showing
 the available firmware files by name (e.g. "7300_101") for the user to pick from. This
@@ -316,7 +316,7 @@ unchanged by the update.
 
 **Correction — checked directly, this is not a rare edge case:**
 `md5sum`-compared `base.dat` across all 10 real releases
-(`/data/misc/icom/7300/7300_1XX/base.dat`) — **every single one has a
+(`firmware/7300_1XX/base.dat`) — **every single one has a
 different hash.** This isn't necessarily the boot-loader *code*
 differing — `base.dat` = `container[0x0:0x101d0]`, which includes the
 `size1..size7` header fields, and `size1` (the compressed body's length)
@@ -390,11 +390,11 @@ Procedure (all reproducible; system `python3` needs PIL for the screenshot step)
 
     W=/tmp/fwtest; mkdir -p $W
     # 1. unpack a real release
-    python3 -m tools.icom_fw.cli unpack /data/misc/icom/7300/7300_142.dat $W/orig
+    python3 -m tools.icom_fw.cli unpack firmware/7300_142.dat $W/orig
     # 2. same-length, non-executable string edit in the DECOMPRESSED body:
     #    "IC-7300 Ver\x001.42" -> "IC-7300 Ver\x009.99" (offset 0x64674, the version display literal)
     # 3. repack: recompresses body (our LZSS), re-inserts, recomputes the update MD5
-    python3 -m tools.icom_fw.cli pack /data/misc/icom/7300/7300_142.dat $W/body_mod.bin $W/7300_142_mod.dat
+    python3 -m tools.icom_fw.cli pack firmware/7300_142.dat $W/body_mod.bin $W/7300_142_mod.dat
     # 4. build the flat flash image and boot it
     python3 qemu-machine/tools/build_flash.py $W/7300_142_mod.dat $W/flash_mod.bin
     cp $W/flash_mod.bin qemu-machine/flash.bin   # (back up the original first)

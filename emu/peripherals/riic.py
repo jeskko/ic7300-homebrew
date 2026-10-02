@@ -1,6 +1,6 @@
 """RZ/A1H RIIC (I2C bus interface) -- plain register storage only, no I2C protocol modeled.
 
-Register layout confirmed via `~/Downloads/rza1.svd` (`RIIC0` base `0xFCFEE000`; `RIIC1`/
+Register layout confirmed via `rza1.svd` (`RIIC0` base `0xFCFEE000`; `RIIC1`/
 `RIIC2` are declared `derivedFrom="RIIC0"` at `0xFCFEE400`/`0xFCFEE800` -- matching
 [[diode-matrix]]'s already-documented base addresses for these three real controllers, one
 per notes/ic7300-hardware.md's I2C device map). One instance of this class is created per

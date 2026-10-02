@@ -1,7 +1,7 @@
 /*
  * ARM PL310-style L2 cache controller (RZ/A1H's `L2C`) -- direct C port of
  * emu/peripherals/l2c.py. See that module's own docstring for the full
- * derivation (register offsets from ~/Downloads/rza1.svd, the real
+ * derivation (register offsets from rza1.svd, the real
  * REG7_INV_WAY self-clearing bug found and fixed there first).
  *
  * Not a faithful cache model, same as the Python version: no actual

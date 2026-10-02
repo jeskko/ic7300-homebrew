@@ -6,7 +6,7 @@ directly dereferences it) and `notes/kernel-rtos.md` pins the CPU Interface at `
 (`INTC_ICCIAR_ADDR = 0xE820200C` / `INTC_ICCEOIR_ADDR = 0xE8202010`, matched against the real
 Renesas FreeRTOS port in `scratch/r01an5093ej0170-rza1-swpkg/`). Register offsets within each
 (`ICDDCR`/`ICDICTR`/`ICDIIDR`/... and `ICCICR`/`ICCPMR`/`ICCIAR`/`ICCEOIR`/...) are the standard
-ARM GICv1/PL390 layout -- also confirmed present in `~/Downloads/rza1.svd`'s `INTC` peripheral.
+ARM GICv1/PL390 layout -- also confirmed present in `rza1.svd`'s `INTC` peripheral.
 
 Found via `gic_distributor_disable`/`FUN_200b848c` (already-decompiled, real functions -- see
 notes/memory-map.md) while extending the emulator, 2026-09-08: distributor init reads `ICDICTR`

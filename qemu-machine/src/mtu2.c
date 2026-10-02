@@ -13,7 +13,7 @@
  * -- confirmed (via the same "ICDISRn register-index*32+bit" SVD formula
  * already used for OSTM0=134 and SCIF3's TXI/RXI=236/235) to be MTU2
  * channel 3's TGI3A (TGRA compare-match A) interrupt. Register offsets
- * confirmed against ~/Downloads/rza1.svd's own MTU2 peripheral block (base
+ * confirmed against rza1.svd's own MTU2 peripheral block (base
  * 0xFCFF0000, matching RZA1H_MTU2_BASE): TCR_3=0x200, TMDR_3=0x202,
  * TIORH_3/TIORL_3=0x204/0x205, TIER_3=0x208, TCNT_3=0x210, TGRA_3=0x218,
  * TSR_3=0x22c. Cross-checked live: TGRA_3 reads back 0x1f40 (8000, an

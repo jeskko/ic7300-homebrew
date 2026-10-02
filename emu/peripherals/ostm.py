@@ -1,7 +1,7 @@
 """Minimal RZ/A1H OSTM (one-shot/free-running timer) model -- just enough for a polling
 busy-wait to see time actually pass.
 
-Register offsets confirmed against `/home/jvaarani/Downloads/rza1.svd` (`OSTM0` base
+Register offsets confirmed against `rza1.svd` (`OSTM0` base
 `0xFCFEC000`, `OSTM1` derived at `0xFCFEC400`; `CMP`=`+0x0`, `CNT`=`+0x4`, `TE`=`+0x10`,
 `TS`=`+0x14`, `TT`=`+0x18`, `CTL`=`+0x20`). One instance of this class is created per real
 timer (see `board.py`). Found via `OSTM1.CNT` (`0xfcfec404`) while extending the emulator,

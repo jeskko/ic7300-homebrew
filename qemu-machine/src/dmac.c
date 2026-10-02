@@ -14,7 +14,7 @@
  * register index 1, bit 9) to be `DMAINT0`, DMA controller channel 0's
  * completion interrupt.
  *
- * Register offsets confirmed against ~/Downloads/rza1.svd's own DMAC
+ * Register offsets confirmed against rza1.svd's own DMAC
  * peripheral block (base 0xE8200000, matching RZA1H_DMAC_BASE): `N0SA_0`
  * (source address) = 0x00, `N0DA_0` (dest address) = 0x04, `N0TB_0`
  * (transfer byte count) = 0x08, `CHSTAT_0` = 0x24, `CHCTRL_0` = 0x28,

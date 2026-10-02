@@ -1,6 +1,6 @@
 """ARM PL310-style L2 cache controller (RZ/A1H's `L2C`).
 
-Register names/offsets confirmed via `~/Downloads/rza1.svd` (`L2C` base `0x3ffff000`) --
+Register names/offsets confirmed via `rza1.svd` (`L2C` base `0x3ffff000`) --
 the same SVD `gpio.py`/`cpg.py`/`gic.py` use. This is a standard ARM peripheral (PL310),
 not an Icom-specific design, unlike the vendor port/clock registers elsewhere in this
 project.

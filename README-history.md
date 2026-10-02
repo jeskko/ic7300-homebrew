@@ -79,7 +79,7 @@ past a reasonable size. Read the active README first; come here only for "how di
   (2026-08-30): `civ_dispatch_lookup_validate` indexes a 43-entry command table (`g_civ_cmd_table`,
   wire commands `0x00`-`0x2A`) into a 16-bytes/entry handler table (`g_civ_handler_table`, function
   pointer + permission/length-bound fields), cross-checked entry-by-entry against the official manual
-  (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`, pp.19-2–19-13) — every unimplemented slot matches
+  (`docs/IC-7300_ENG_FM_12b.pdf`, pp.19-2–19-13) — every unimplemented slot matches
   a real gap in the manual. **Command `0x2A` sub `0x01` is real and fully implemented but has no manual
   entry at all** (the manual's table ends at `28 00`) — a confirmed undocumented CI-V command, also
   absent from `wfview`'s command set for every one of its ~40 supported Icom models, not just this one

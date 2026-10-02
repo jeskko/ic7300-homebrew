@@ -27,7 +27,7 @@ criteria 1+2 need none at all).
 Run it:
 
 ```
-emu/.venv/bin/python3 -m emu.mvp   # defaults to /data/misc/icom/7300/7300_142.dat
+emu/.venv/bin/python3 -m emu.mvp   # defaults to firmware/7300_142.dat
 ```
 
 See [README-history.md](README-history.md) for the full pass-by-pass build narrative: the

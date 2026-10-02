@@ -8,7 +8,7 @@
  * this project moved to QEMU). This device instead backs OSTM0 with a real
  * `ptimer` and raises a genuine GIC interrupt line on expiry.
  *
- * Register offsets confirmed against ~/Downloads/rza1.svd (the same SVD
+ * Register offsets confirmed against rza1.svd (the same SVD
  * emu/peripherals/ostm.py's docstring cites): CMP=+0x0, CNT=+0x4, TE=+0x10,
  * TS=+0x14, TT=+0x18, CTL=+0x20. The real interrupt ID this device's IRQ
  * output is wired to in rz_a1h.c -- 134 for OSTM0 -- comes from Renesas's own

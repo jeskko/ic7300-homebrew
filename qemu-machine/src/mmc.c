@@ -6,9 +6,9 @@
  *
  * Register bit layout confirmed 2026-09-08 against the real Renesas RZ/A1H
  * hardware manual, Chapter 51 "MMC Host Interface" (pages 51-1 to 51-42;
- * /data/misc/icom/7300/doc/REN_r01uh0403ej0600_rz_a1h_MAT_20210129-
+ * docs/REN_r01uh0403ej0600_rz_a1h_MAT_20210129-
  * 2931443.pdf) -- unlike every other peripheral in this directory, no
- * bit-level fields exist in ~/Downloads/rza1.svd for this one (register
+ * bit-level fields exist in rza1.svd for this one (register
  * names/offsets only), so this is the first device here derived directly
  * from the manual text rather than the SVD.
  *

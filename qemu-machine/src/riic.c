@@ -4,7 +4,7 @@
  * project found busy-waiting forever on a completion interrupt once the
  * channel was still a bare RAM region (see qemu-machine/README.md's "The
  * above resolved" section, 2026-09-08 second-pass session). Register
- * offsets confirmed against ~/Downloads/rza1.svd: CR1=+0x00 CR2=+0x04
+ * offsets confirmed against rza1.svd: CR1=+0x00 CR2=+0x04
  * MR1=+0x08 MR2=+0x0c MR3=+0x10 FER=+0x14 SER=+0x18 IER=+0x1c SR1=+0x20
  * SR2=+0x24 SAR0=+0x28 SAR1=+0x2c SAR2=+0x30 BRL=+0x34 BRH=+0x38
  * DRT=+0x3c DRR=+0x40 (the SVD lists names/offsets only, zero bit fields,

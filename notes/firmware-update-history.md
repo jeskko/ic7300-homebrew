@@ -54,7 +54,7 @@ whether the RZ/A1H SoC's own on-chip, immutable boot ROM (a *silicon*
 feature, not anything in Icom's firmware or in any of our `.dat`
 containers) performs a signature check before jumping into SPI flash for
 boot-mode-3. That would be documented in the Renesas hardware manual
-(`/data/misc/icom/7300/doc/REN_r01uh0403ej0600...`), not discoverable from
+(`docs/REN_r01uh0403ej0600...`), not discoverable from
 anything reverse-engineered so far. **Next steps if this is worth
 pursuing, in order: (1) check the Renesas manual for boot-mode-3 secure
 boot / signature behavior — settles whether this matters at all; (2) if

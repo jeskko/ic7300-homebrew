@@ -2,7 +2,7 @@
 
 Source: user-supplied service manual pages 3-1 through 3-6 (2026-08-27),
 OCR'd/read directly via PDF page extraction from
-`/data/misc/icom/7300/doc/IC-7300_Servicio.pdf` (the actual filename —
+`docs/IC-7300_Servicio.pdf` (the actual filename —
 Spanish for "service", not a translated-content indicator; body text is
 English). Complements [[ic7300-hardware]] (which chip is which) with
 what each one actually *does* in the signal path — useful context for
@@ -277,7 +277,7 @@ All renamed and plate-commented in the live Ghidra project (saved).
 
 ## Schematic sheet map (2026-08-27 sweep)
 
-Swept all 17 pages of `/data/misc/icom/7300/doc/IC-7300_Schematic_Diagram_2.pdf`
+Swept all 17 pages of `docs/IC-7300_Schematic_Diagram_2.pdf`
 (A3, one 17-page PDF — confirmed duplicated in the service manual itself
 as §8 General Wiring/§9 Block Diagram, pages 57-61, just with TX/RX
 color-coding overlaid — no unique content there beyond the color, don't

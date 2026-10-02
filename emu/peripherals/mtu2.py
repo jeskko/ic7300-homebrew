@@ -1,7 +1,7 @@
 """RZ/A1H MTU2 (Multi-Function Timer Pulse Unit 2) -- plain register storage only.
 
 Base address and the full 79-register layout (5 channels, `TCR`/`TMDR`/`TIOR`/`TIER`/`TSR`/
-`TCNT`/`TGRx` per channel plus shared `TSTR`/`TSYR`/etc.) confirmed via `~/Downloads/rza1.svd`
+`TCNT`/`TGRx` per channel plus shared `TSTR`/`TSYR`/etc.) confirmed via `rza1.svd`
 (`MTU2` base `0xFCFF0000`). Found via a write to `TCR_3` (`0xfcff0200`, channel 3's control
 register) while extending the emulator, 2026-09-08, right after fixing the L2 cache
 controller's `REG7_INV_WAY` hang (see `l2c.py`) -- `body.bin` moves on to configuring this

@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from emu import flash_image  # noqa: E402
 
-DEFAULT_CONTAINER = Path("/data/misc/icom/7300/7300_142.dat")
+DEFAULT_CONTAINER = Path(os.environ.get("ICOM_FW_DIR", Path(__file__).resolve().parent.parent.parent / "firmware")) / "7300_142.dat"
 DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "flash.bin"
 
 

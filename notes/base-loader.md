@@ -33,7 +33,7 @@ file-relative, not as literal flash addresses, until each is individually correc
 | `0x0078` onward | First real boot loader function (ARM code), per `tunk.py`'s note ("120 → 0x78, ARM instructions, function prologue") — decimal 120 == 0x78, confirmed by the hex dump: `10 40 2d e9` at `0x78` is `push {r4, lr}`, a textbook ARM prologue. |
 
 ## Found: full boot sequence, already named in the prior `icom_loader.rep`
-## Ghidra project (`base.dat`, read-only reference at `/data/misc/icom/7300/`)
+## Ghidra project (`base.dat`, read-only reference at `firmware/`)
 
 The prior session had already named and partially documented the whole
 chain. Confirmed by reading it (not re-derived from scratch), and now

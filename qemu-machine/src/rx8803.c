@@ -18,7 +18,7 @@
  * (gated the EEPROM to channel 2 only, attach this device to channel 1).
  *
  * Register map straight from Epson's own datasheet
- * (`/data/misc/icom/7300/doc/RX-8803LC_en.pdf`, section 8, "Basic time and
+ * (`docs/RX-8803LC_en.pdf`, section 8, "Basic time and
  * calendar register" table, page 6) -- only the basic register bank
  * (00h-0Fh) is modeled; the two extension banks (10h-2Fh, 1/100s counter +
  * capture/event registers) are plain storage, matching this project's

@@ -8,7 +8,7 @@ Requires the arm-none-eabi toolchain (as/ld/objcopy) on PATH.
 Usage:
     python3 sdk/examples/sd-card-app/build.py [container.dat] [output.dat] [app_output.bin]
 
-Defaults to /data/misc/icom/7300/7300_142.dat -> scratch/sd_card_app_142.dat + scratch/APP.BIN
+Defaults to $ICOM_FW_DIR/7300_142.dat (default firmware/7300_142.dat) -> scratch/sd_card_app_142.dat + scratch/APP.BIN
 (repo-relative). To test in qemu-machine:
     python3 qemu-machine/tools/build_flash.py scratch/sd_card_app_142.dat qemu-machine/flash.bin
     python3 qemu-machine/tools/build_sdcard.py -o scratch/sdcard.img --size-mb 64
@@ -21,12 +21,14 @@ Then trigger and read the frame exactly as in sdk/examples/civ-hello-world/READM
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
+FW_DIR = Path(os.environ.get("ICOM_FW_DIR", REPO / "firmware"))
 sys.path.insert(0, str(REPO / "tools"))
 from icom_fw.container import pack  # noqa: E402
 
@@ -100,7 +102,7 @@ def build(container_in: Path, container_out: Path, app_out: Path) -> None:
 
 
 if __name__ == "__main__":
-    default_in = Path("/data/misc/icom/7300/7300_142.dat")
+    default_in = FW_DIR / "7300_142.dat"
     default_out = REPO / "scratch" / "sd_card_app_142.dat"
     default_app = REPO / "scratch" / "APP.BIN"
     container_in = Path(sys.argv[1]) if len(sys.argv) > 1 else default_in

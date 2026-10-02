@@ -516,7 +516,7 @@ Ghidra state: 21 renames, several plate comments (notably at `cold_boot_hw_init`
 
 Full derivation, the reviewing agent's own flagged caveats, and Ghidra-state bookkeeping moved to
 the history file. Two follow-up passes cross-checked the sweep table's own shakiest entries against
-the RZ/A1H manual and the real schematic (both already local in `/data/misc/icom/7300/doc/`).
+the RZ/A1H manual and the real schematic (both already local in `docs/`).
 Corrected/confirmed findings — these supersede the matching sweep-table rows above, which still show
 the old `FUN_*` names/guesses:
 

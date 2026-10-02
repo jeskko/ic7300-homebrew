@@ -1,7 +1,7 @@
 /*
  * RZ/A1H GPIO/port register block -- direct C port of
  * emu/peripherals/gpio.py. See that module's own docstring for the full
- * derivation (register offsets/roles from ~/Downloads/rza1.svd and direct
+ * derivation (register offsets/roles from rza1.svd and direct
  * decompilation of real body.bin code; PSR/PMSR/PMCSR/PNOT semantics are a
  * structurally well-motivated inference, not independently confirmed --
  * same caveat carried over here unchanged).

@@ -39,7 +39,7 @@ UART bridge (`IC641`) — CI-V is available over either physical interface, same
 - **`civ_dispatch_invoke_handler`** (`0x2000acd8`) — permission-gates against a current-mode byte and the
   matched entry's flags, then calls the real handler through **`g_civ_handler_table`**: a pointer cell at
   `0x2000b234` (verified 2026-08-30 to hold `0x2018ab84`), 16 bytes/entry, function pointer at `+4`.
-- Cross-checked entry-by-entry against the real manual (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`,
+- Cross-checked entry-by-entry against the real manual (`docs/IC-7300_ENG_FM_12b.pdf`,
   pp. 19-2–19-13) — every unimplemented table slot matches a real manual gap.
 
 ## ✅ TX path

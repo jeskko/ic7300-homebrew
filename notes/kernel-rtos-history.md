@@ -2154,7 +2154,7 @@ CI-V consumer, not anything previously named.
   loose end too.
 
 **Cross-checked the whole table against the real manual** (user supplied the exact location this session:
-`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`, pages 19-2 through 19-13, full "Command table" and "Data
+`docs/IC-7300_ENG_FM_12b.pdf`, pages 19-2 through 19-13, full "Command table" and "Data
 content description" sections). Every `handler_base_idx == 0` slot (meaning: `civ_dispatch_lookup_validate`
 outright rejects the command, no handler at all) matches a **real gap in the manual's own command list**:
 `0x0C`/`0x0D` (manual jumps `0B`→`0E`), `0x12` (jumps `11`→`13`), `0x1D` (jumps `1C`→`1E`), `0x1F`/`0x20`
@@ -2218,7 +2218,7 @@ confirmed.
    `civ_cmd_2a_handler_UNDOCUMENTED` and watch the two GPIO-shaped registers.
 
 Also worth noting for anyone revisiting this: the manual PDF's real path is
-`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf` (user supplied this exact path this session after the
+`docs/IC-7300_ENG_FM_12b.pdf` (user supplied this exact path this session after the
 28th/29th sessions apparently had a temporary copy that wasn't saved anywhere locatable — future sessions
 needing the CI-V command table, or any other section of the full manual, should read directly from here
 rather than re-deriving from notes).
@@ -2634,7 +2634,7 @@ Read `table1` (`0x2019ac0c`, 19 entries × 24 bytes — table2 at `0x2019add4` f
 
 **Why it matters for the overflow-hunting angle**: a per-mode "enter mode" hook that plausibly initializes buffers/state for a hardware decode engine is a textbook place for a fixed-vs-variable-size mismatch (e.g. a buffer sized for one mode's sample format reused for another). Nothing found yet — the function isn't readable — but it's a substantially better-targeted candidate than the SD-card directory code audited in part 1 above, which came back clean.
 
-**Next step if picked up again**: get the user's manual ARM/Thumb GUI fix at `0x20056fd4` (and worth doing its siblings `0x20056fd0`/`0x20056fd8`/`f64`/`f84`/`f9c`/`fcc`/`f90`/`f94`/`f98`/`f88` in the same pass, all currently undissassembled), then decompile all of them; separately, confirm the table-index ↔ CI-V-mode-code mapping directly (trace the real `06`-command "select operating mode" CI-V handler forward, or check `/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`'s mode-code table against a live JTAG mode-change test) rather than relying on the coherence argument above.
+**Next step if picked up again**: get the user's manual ARM/Thumb GUI fix at `0x20056fd4` (and worth doing its siblings `0x20056fd0`/`0x20056fd8`/`f64`/`f84`/`f9c`/`fcc`/`f90`/`f94`/`f98`/`f88` in the same pass, all currently undissassembled), then decompile all of them; separately, confirm the table-index ↔ CI-V-mode-code mapping directly (trace the real `06`-command "select operating mode" CI-V handler forward, or check `docs/IC-7300_ENG_FM_12b.pdf`'s mode-code table against a live JTAG mode-change test) rather than relying on the coherence argument above.
 
 ## Correction, same day: the per-mode hook table is NOT the demod-arming code — it's trivial bookkeeping
 
@@ -2669,7 +2669,7 @@ User supplied a genuinely new, concrete input: the real on-radio UI flow is **RT
 
 **Couldn't get from the string to the triggering code — same wall this project has hit before on UI strings**: no static cross-reference exists to either string address (`references_to` returns empty for both) — they're reached via a computed table-index, not a direct literal pointer, the *exact* same shape `notes/firmware-update.md` already documented for the update-confirmation dialog's own message table (`~0x2032f000`-`0x20360000`, "no static xrefs — reached via a computed/indexed table"). Traced the surrounding data layout far enough to find it sits in the same general resource region as `notes/diode-matrix.md`'s already-known 216-item menu table (`get_next_hidden_menu_item`, `DAT_2000e230` = `0x2018a698`) and a sibling per-item "format the current value as a string" table (`DAT_20010854`, read from `FUN_2000ffb0`) — real, previously-undocumented structure (looks like a menu-item-ID-indexed help-text table with small lists of item IDs sharing one string, e.g. bytes `01 02 04 05 06` immediately preceding the RTTY caption look like "menu items 1/2/4/5/6 all use this text"), but **the actual function that reads this table by menu-item-ID to render the help caption wasn't located** — no code exists anywhere nearby (searched `0x20189800`-`0x2018c000`: zero functions in that whole span, it's a pure data region), so whatever reads it does so from a generic, not-yet-identified "render current menu item" routine used by every menu screen in the firmware, not something RTTY-specific to search for by proximity.
 
-**Tried a more surgical angle — checked the real CI-V `1A` command's subcommand table directly, since a guess "there's a documented 'read RTTY decode data' CI-V command" would hand us the decoder's output buffer directly if right.** Read `g_civ_cmd_table`'s real `0x1A` entry (`handler_idx=0x5a`, subcommand list `0x2018b4da` = `[00,01,02,03,04,05,06,07,d0,d1,d3,d5,d6,e0,e1,e2,e3,e4,e5,e6]`), resolved subcommand `06` to `g_civ_handler_table[0x60]` → `FUN_2000dd38`, and decompiled it. **It's not a decode-data reader** — no text-buffer copy, no reference to the already-known RTTY staging struct (`0x2039bfc4`); it reads/writes a couple of small bitfields via `FUN_20013108`/`FUN_20031638`, shaped more like a simple numeric-parameter get/set (its real identity not chased further). **Retracting the "`1A 06` = RTTY decode data" guess** — it was an unverified recollection of the CI-V spec, not something confirmed from the manual before checking, and the decompiled code doesn't match. The manual (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`) wasn't actually consulted for `1A`'s real subcommand breakdown this session — that's the right next step before guessing at another subcommand number, rather than continuing to probe `g_civ_handler_table` blind.
+**Tried a more surgical angle — checked the real CI-V `1A` command's subcommand table directly, since a guess "there's a documented 'read RTTY decode data' CI-V command" would hand us the decoder's output buffer directly if right.** Read `g_civ_cmd_table`'s real `0x1A` entry (`handler_idx=0x5a`, subcommand list `0x2018b4da` = `[00,01,02,03,04,05,06,07,d0,d1,d3,d5,d6,e0,e1,e2,e3,e4,e5,e6]`), resolved subcommand `06` to `g_civ_handler_table[0x60]` → `FUN_2000dd38`, and decompiled it. **It's not a decode-data reader** — no text-buffer copy, no reference to the already-known RTTY staging struct (`0x2039bfc4`); it reads/writes a couple of small bitfields via `FUN_20013108`/`FUN_20031638`, shaped more like a simple numeric-parameter get/set (its real identity not chased further). **Retracting the "`1A 06` = RTTY decode data" guess** — it was an unverified recollection of the CI-V spec, not something confirmed from the manual before checking, and the decompiled code doesn't match. The manual (`docs/IC-7300_ENG_FM_12b.pdf`) wasn't actually consulted for `1A`'s real subcommand breakdown this session — that's the right next step before guessing at another subcommand number, rather than continuing to probe `g_civ_handler_table` blind.
 
 **Next step if picked up again**: (1) read the manual's real `1A` subcommand table (likely a dedicated sub-section beyond the pp.19-2–19-13 overview already used for the top-level command list) to get the *real* RTTY-decode-data command number, if one exists, then repeat the same lookup done above with the right number; (2) separately, the generic "render current menu item" function that must read the help-text table found here is a genuinely valuable, reusable find for *any* future menu-string archaeology in this project (title/help text for every screen, not just RTTY) — worth locating once, from the menu-navigation code around `FUN_2000ffb0`/`get_next_hidden_menu_item`'s other callers, rather than re-discovering per-feature each time.
 
@@ -2781,7 +2781,7 @@ confirmed" section — summary:
   each `{handler_base_idx; subcmd_list ptr}`) → **`civ_dispatch_invoke_handler`** (`0x2000acd8`, permission-
   gates against **`g_civ_handler_table`**, base `0x2018ab84`, 16 bytes/entry, function pointer at `+4`) →
   the real per-command handler.
-- Cross-checked entry-by-entry against the real manual (`/data/misc/icom/7300/doc/IC-7300_ENG_FM_12b.pdf`,
+- Cross-checked entry-by-entry against the real manual (`docs/IC-7300_ENG_FM_12b.pdf`,
   pages 19-2 to 19-13): every unimplemented table slot (`0x0C`/`0x0D`/`0x12`/`0x1D`/`0x1F`/`0x20`/`0x22`/
   `0x23`/`0x24`/`0x29`) matches a real gap in the manual's own command list — strong confirmation this
   table really is CI-V's (unlike the retracted `sdcard_file_rpc_dispatch_task` false lead below).
@@ -2980,7 +2980,7 @@ guess), all saved.
 
 ## Follow-up, 2026-09-21 — every one of the previous section's own two flagged caveats (the
 ## derived-not-manual-confirmed pin/register identifications) now directly confirmed against the
-## real RZ/A1H hardware manual (`/data/misc/icom/7300/doc/REN_r01uh0403ej0600_...pdf`, already
+## real RZ/A1H hardware manual (`docs/REN_r01uh0403ej0600_...pdf`, already
 ## sitting locally, extracted via `pdftotext`) and the real IC-7300 schematic (user-supplied)
 
 **The stride-4 port-register derivation for `ext_irq6_config_init`/`ext_irq1_config_init` is
@@ -3013,7 +3013,7 @@ remain unresolved without live QMP capture or tracing `FUN_2005fdb4`'s own compu
 reasonable stopping point, not pursued further here.
 
 **Lesson reinforced**: the RZ/A1H manual and the IC-7300 schematic were already sitting locally
-in `/data/misc/icom/7300/doc/` the whole time — every one of this pass's answers came from
+in `docs/` the whole time — every one of this pass's answers came from
 material already on disk, not new acquisition. Worth checking that directory before spending
 more static-analysis effort deriving something a datasheet states directly.
 

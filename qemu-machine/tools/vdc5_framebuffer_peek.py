@@ -7,7 +7,7 @@ compositing/scaling/timing pipeline at all (see rz_a1h.c's own comment on why VD
 register-storage-only RAM region: this project doesn't emulate the display pipeline, it just makes
 sure firmware's real register writes are no longer silently discarded, so they can be read back).
 
-Register layout confirmed against `~/Downloads/rza1.svd` (offsets) and the vendored Renesas VDC5
+Register layout confirmed against `rza1.svd` (offsets) and the vendored Renesas VDC5
 driver in `scratch/r01an5093ej0170-rza1-swpkg/.../r_vdc_l_register.c` (bit-field packing):
   GRn_FLM2 = framebuffer base address (guest RAM), low 3 bits reserved/masked.
   GRn_FLM3 bits [30:16] = line offset (stride) -- units per the driver: same as gr_ln_off,

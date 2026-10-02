@@ -4,7 +4,7 @@ What the firmware does with the RZ/A1H VDC5 (channel 0, `0xFCFF7400`). Read live
 registers in `qemu-machine` after boot; register meanings are from the Renesas VDC5 driver in
 `scratch/r01an5093ej0170-rza1-swpkg/.../drivers/r_vdc_vdec/vdc_h/src/r_vdc_register.c` and the
 RZ/A1H hardware manual ch. 35 ("Image Synthesizer",
-`/data/misc/icom/7300/doc/REN_r01uh0403ej0700_rz_a1h_MAH_20240930.pdf`).
+`docs/REN_r01uh0403ej0700_rz_a1h_MAH_20240930.pdf`).
 
 ## Planes
 

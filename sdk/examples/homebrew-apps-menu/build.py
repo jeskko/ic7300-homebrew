@@ -10,7 +10,7 @@ toolchain (as/ld/objcopy/nm) on PATH.
 Usage:
     python3 sdk/examples/homebrew-apps-menu/build.py [container.dat] [output.dat] [app_output.bin]
 
-Defaults to /data/misc/icom/7300/7300_142.dat -> scratch/homebrew_apps_menu_142.dat +
+Defaults to $ICOM_FW_DIR/7300_142.dat (default firmware/7300_142.dat) -> scratch/homebrew_apps_menu_142.dat +
 scratch/APP.BIN (repo-relative). To test in qemu-machine, same steps as
 sdk/examples/sd-card-app/README.md, but there's no key combo to press -- MENU > SET > (page 2)
 SD Card > (page 3) Homebrew Apps.
@@ -24,6 +24,7 @@ hardcoded, so an edit to menu_hook.s can't silently desync the patches from the 
 
 from __future__ import annotations
 
+import os
 import re
 import struct
 import subprocess
@@ -33,6 +34,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SD_CARD_APP = HERE.parent / "sd-card-app"
 REPO = HERE.parent.parent.parent
+FW_DIR = Path(os.environ.get("ICOM_FW_DIR", REPO / "firmware"))
 sys.path.insert(0, str(REPO / "tools"))
 from icom_fw.container import pack  # noqa: E402
 
@@ -177,7 +179,7 @@ def build(container_in: Path, container_out: Path, app_out: Path) -> None:
 
 
 if __name__ == "__main__":
-    default_in = Path("/data/misc/icom/7300/7300_142.dat")
+    default_in = FW_DIR / "7300_142.dat"
     default_out = REPO / "scratch" / "homebrew_apps_menu_142.dat"
     default_app = REPO / "scratch" / "APP.BIN"
     container_in = Path(sys.argv[1]) if len(sys.argv) > 1 else default_in

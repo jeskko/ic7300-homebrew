@@ -7,7 +7,7 @@ Requires the arm-none-eabi toolchain (as/ld/objcopy) on PATH.
 Usage:
     python3 sdk/examples/civ-hello-world/build.py [container.dat] [output.dat]
 
-Defaults to /data/misc/icom/7300/7300_142.dat -> scratch/civ_hello_world_142.dat (repo-relative).
+Defaults to $ICOM_FW_DIR/7300_142.dat (default firmware/7300_142.dat) -> scratch/civ_hello_world_142.dat (repo-relative).
 To boot it in qemu-machine:
     python3 qemu-machine/tools/build_flash.py scratch/civ_hello_world_142.dat qemu-machine/flash.bin
     python3 qemu-machine/tools/run_gui.py --no-pwrk --icount off --civ /tmp/civ.sock --display none
@@ -19,6 +19,7 @@ civ.py's own frame filter only keeps frames addressed to its own controller addr
 
 from __future__ import annotations
 
+import os
 import struct
 import subprocess
 import sys
@@ -26,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent.parent
+FW_DIR = Path(os.environ.get("ICOM_FW_DIR", REPO / "firmware"))
 sys.path.insert(0, str(REPO / "tools"))
 from icom_fw.container import pack  # noqa: E402
 
@@ -97,7 +99,7 @@ def build(container_in: Path, container_out: Path) -> None:
 
 
 if __name__ == "__main__":
-    default_in = Path("/data/misc/icom/7300/7300_142.dat")
+    default_in = FW_DIR / "7300_142.dat"
     default_out = REPO / "scratch" / "civ_hello_world_142.dat"
     container_in = Path(sys.argv[1]) if len(sys.argv) > 1 else default_in
     container_out = Path(sys.argv[2]) if len(sys.argv) > 2 else default_out

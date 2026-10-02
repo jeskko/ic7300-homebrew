@@ -105,7 +105,7 @@
 #define RZA1H_CPG_DEEP_STANDBY_BASE 0xFCFF1800
 #define RZA1H_CPG_DEEP_STANDBY_SIZE 0x00000020
 
-/* VDC50 (real base per ~/Downloads/rza1.svd) + its LVDS output block (a small sub-block at
+/* VDC50 (real base per rza1.svd) + its LVDS output block (a small sub-block at
  * +0x630 within the same page) -- see rza1h_init()'s own comment for why this is a plain
  * RAM region (register-storage only, no display/timing behavior modeled) rather than a
  * real device. Size covers every offset this project has actually observed touched
@@ -122,7 +122,7 @@
  * a real periodic interrupt only MTU2 channel 3 can produce -- see mtu2.c's
  * own comment and qemu-machine/README.md's Status section. GIC ID 154
  * (TGI3A, channel 3's compare-match-A interrupt) confirmed via
- * ~/Downloads/rza1.svd's ICDISR4 register (index*32+bit formula, the same
+ * rza1.svd's ICDISR4 register (index*32+bit formula, the same
  * one that already gave OSTM0 its ID 134). */
 #define RZA1H_MTU2_BASE 0xFCFF0000
 #define RZA1H_MTU2_SIZE 0x00000400
@@ -153,7 +153,7 @@
 #define RZA1H_RIIC_IRQ_STRIDE 8  /* per channel, to INTIICTEI(n+1) */
 #define TYPE_RZA1H_RIIC "rza1h-riic"
 
-/* scif.c -- matches ~/Downloads/rza1.svd's SCIF0-7 base addresses, +0x800
+/* scif.c -- matches rza1.svd's SCIF0-7 base addresses, +0x800
  * apart each. Real confirmed roles (notes/ic7300-signal-chain.md): SCIF0
  * is the CI-V UART, SCIF1 the service/calibration link, SCIF3 the
  * front-panel link, SCIF5 the DSP link -- all eight wired identically in
@@ -181,7 +181,7 @@
  * FUN_200b8308, with id=0xec=236) -- with scif.c's TX side having "no IRQ
  * line wired to the GIC yet" (this file's own prior comment), that ISR can
  * never run, and *nothing* past the first frame ever proceeds again. IDs
- * derived from ~/Downloads/rza1.svd's ICDISR6/ICDISR7 fields (register
+ * derived from rza1.svd's ICDISR6/ICDISR7 fields (register
  * index * 32 + bit, the same formula ostm.c's ID 134 already established)
  * -- SCIF-n's group is BRIn=221+4n, ERIn=222+4n, RXIn=223+4n, TXIn=224+4n;
  * TXI3 lands on 236, exactly matching the firmware's own 0xec literal
@@ -214,7 +214,7 @@
 #define RZA1H_SDHI0_SDIO_IRQ   304
 #define TYPE_RZA1H_SDHI "rza1h-sdhi"
 
-/* dmac.c -- matches ~/Downloads/rza1.svd's DMAC peripheral base. Real
+/* dmac.c -- matches rza1.svd's DMAC peripheral base. Real
  * device for channel 0 only, added 2026-09-09 once body.bin's own
  * cold-boot init chain (right after MTU2 channel 3, see mtu2.c) was found
  * depending on a real DMA-transfer-completion interrupt (GIC ID 41,

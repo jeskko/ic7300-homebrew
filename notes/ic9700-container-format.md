@@ -4,7 +4,7 @@ See [notes/ic9700-container-format-history.md](ic9700-container-format-history.m
 narrative, offsets, and negative results behind every finding below.
 
 Separate product line from the IC-7300, genuine cold-start effort — no prior art, no existing
-unpacker, nothing in `/data/misc/icom/9700/` except raw `.dat`/`.zip` release files. Main CPU
+unpacker, nothing in `firmware/9700/` except raw `.dat`/`.zip` release files. Main CPU
 confirmed as Renesas RZ/A1 series (R7S721001VCBG), same Cortex-A9 family as the IC-7300's
 R7S721000 — see [[ic9700-hardware]].
 

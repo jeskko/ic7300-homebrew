@@ -25,7 +25,7 @@ already documented for the main body (`chunk_lzss_decompress_init`/`_fill`, was 
 page). Full derivation, including the exact decompiled source, is in `firmware_update_main`'s own Ghidra
 plate comment now.
 
-**Verified against a real v1.42 container (`/data/misc/icom/7300/7300_142.dat`), about as thoroughly as static
+**Verified against a real v1.42 container (`firmware/7300_142.dat`), about as thoroughly as static
 analysis allows**: computed all 3 offsets from the real header, sliced out the 3 compressed blobs, ran them
 through `tools/icom_fw`'s existing LZSS decoder (already proven correct for the main body), and got — for
 all 3 components — **exact byte-for-byte LZSS stream consumption** (no leftover bytes, no early exhaustion)
@@ -532,7 +532,7 @@ track after v1.14.
 ## `SX3765` strings found in the decompressed main body (`out.dat`, v1.42)
 
 Ground-truthed with `strings -t x` against the read-only v1.42 decompressed
-image (`/data/misc/icom/7300/out.dat`):
+image (`firmware/out.dat`):
 
 ```
      3f  SX3765 V4.96-000
@@ -690,7 +690,7 @@ remain the only unexplained pair.
 ## Checked: `vanah.rep` (prior project, `unpacked.dat` only) — no manual analysis to harvest
 
 Peeked at the prior `vanah` Ghidra project (read-only,
-`/data/misc/icom/7300/vanah.rep`), hoping for prior manual RE work on the
+`firmware/vanah.rep`), hoping for prior manual RE work on the
 main body. It doesn't have any:
 
 - Confirms the `0x20005000` base independently (loaded there back in Apr

@@ -1,7 +1,7 @@
 # Firmware container format (`7300_1XX.dat`)
 
 Derived by tracing `tunk3.py` (the user's existing extractor script,
-read-only original at `/data/misc/icom/7300/tunk3.py`) — the starting
+read-only original at `firmware/tunk3.py`) — the starting
 hypothesis for the rewritten `tools/` unpacker. **Now independently
 verified against all 10 releases** ([[firmware-versions]]'s full
 cross-version survey), and the region beyond chunk3 that `tunk3.py` never
