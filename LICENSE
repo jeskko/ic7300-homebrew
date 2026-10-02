@@ -19,28 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
--------------------------------------------------------------------------------
-
-Exceptions — the MIT licence above does not cover the following:
-
-1. qemu-machine/patches/*.patch modify QEMU's own source files and are
-   therefore licensed under the GNU General Public License, version 2 or (at
-   your option) any later version, like QEMU itself.
-
-   The device models in qemu-machine/src/ are original work under the MIT
-   licence above. They are built into QEMU, so a QEMU binary that includes them
-   is distributed under the terms of QEMU's licence (GPL-2.0-or-later).
-
-2. Material that belongs to Icom Inc. is not ours to license: the firmware
-   itself, and anything reproduced from it or rendered by it — the extracted
-   icon images (notes/assets/version-screen-icon-*.png),
-   screenshots of the radio's own user interface, the EEPROM images produced
-   by the firmware (qemu-machine/tools/eeprom_factory_defaults.bin,
-   qemu-machine/riic2_eeprom_pwrk_test.img), and short quotations of firmware
-   strings and code in the notes. It is included for documentation and
-   interoperability. No Icom firmware, manual or schematic is distributed here;
-   you supply your own.
-
-"IC-7300" and "Icom" are trademarks of Icom Inc. This project is not
-affiliated with or endorsed by Icom.

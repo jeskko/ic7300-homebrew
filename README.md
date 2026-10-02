@@ -106,7 +106,7 @@ Older top-level status and narrative: [README-history.md](README-history.md).
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE), which also lists the exceptions: `qemu-machine/patches/` (changes to
+MIT — see [LICENSE](LICENSE). The exceptions are listed in [NOTICE](NOTICE): `qemu-machine/patches/` (changes to
 QEMU itself) is GPL-2.0-or-later like QEMU, and material belonging to Icom (the firmware, icons
 extracted from it, screenshots of its UI, firmware-generated EEPROM images) isn't ours to license.
 The `qemu-machine/src/` device models are MIT, but a QEMU binary built with them is distributed
